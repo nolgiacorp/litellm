@@ -164,12 +164,15 @@ class FalAIAudioConfig(BaseTextToSpeechConfig):
         "HttpxBinaryResponseContent",
         Coroutine[Any, Any, "HttpxBinaryResponseContent"],
     ]:
+        merged_params = dict(optional_params)
+        if "extra_body" not in merged_params and kwargs.get("extra_body") is not None:
+            merged_params["extra_body"] = kwargs["extra_body"]
         if aspeech:
             return self._async_dispatch(
                 model=model,
                 input=input,
                 voice=voice,
-                optional_params=optional_params,
+                optional_params=merged_params,
                 litellm_params_dict=litellm_params_dict,
                 extra_headers=extra_headers,
                 api_base=api_base,
@@ -179,7 +182,7 @@ class FalAIAudioConfig(BaseTextToSpeechConfig):
             model=model,
             input=input,
             voice=voice,
-            optional_params=optional_params,
+            optional_params=merged_params,
             litellm_params_dict=litellm_params_dict,
             extra_headers=extra_headers,
             api_base=api_base,

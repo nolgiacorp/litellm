@@ -175,6 +175,43 @@ class TestFalAIAudioDispatch:
         assert get_urls[2] == SUBMIT_PAYLOAD["response_url"]
         assert get_urls[3] == RESULT_PAYLOAD["audio"]["url"]
 
+    def test_sync_dispatch_pulls_extra_body_from_kwargs(self, monkeypatch):
+        monkeypatch.setenv("FAL_AI_API_KEY", "key-123")
+
+        binary_resp = _resp(content=b"audio")
+        result_resp = _resp(json_payload=RESULT_PAYLOAD)
+        completed_status = _resp(json_payload={"status": "COMPLETED"})
+        submit_resp = _resp(json_payload=SUBMIT_PAYLOAD)
+        client = MagicMock()
+        client.post.return_value = submit_resp
+        client.get.side_effect = [completed_status, result_resp, binary_resp]
+
+        monkeypatch.setattr(
+            "litellm.llms.fal_ai.audio.transformation._get_httpx_client",
+            lambda: client,
+        )
+        monkeypatch.setattr(
+            "litellm.llms.fal_ai.audio.transformation.time.sleep", lambda _s: None
+        )
+
+        self.config.dispatch_text_to_speech(
+            model=ELEVEN_V3,
+            input="hello",
+            voice="Aria",
+            optional_params={},
+            litellm_params_dict={},
+            logging_obj=MagicMock(),
+            timeout=30.0,
+            extra_headers=None,
+            base_llm_http_handler=None,
+            aspeech=False,
+            api_base=None,
+            api_key="key-123",
+            extra_body={"is_instrumental": True},
+        )
+        post_args = client.post.call_args
+        assert post_args.kwargs["json"]["is_instrumental"] is True
+
     def test_sync_dispatch_raises_on_failed_status(self, monkeypatch):
         monkeypatch.setenv("FAL_AI_API_KEY", "key-123")
         submit_resp = _resp(json_payload=SUBMIT_PAYLOAD)
