@@ -9737,6 +9737,10 @@ class ProviderConfigManager:
             )
 
             return AWSPollyTextToSpeechConfig()
+        elif litellm.LlmProviders.FAL_AI == provider:
+            from litellm.llms.fal_ai.audio.transformation import FalAIAudioConfig
+
+            return FalAIAudioConfig()
         return None
 
     @staticmethod
