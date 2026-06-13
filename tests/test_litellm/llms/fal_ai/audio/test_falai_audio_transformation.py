@@ -97,6 +97,7 @@ class TestFalAIAudioBasics:
         )
         body = request["dict_body"]
         assert body["text"] == "hello"
+        assert body["prompt"] == "hello"
         assert body["voice"] == "Aria"
         assert body["stability"] == 0.5
         assert body["language_code"] == "en"
@@ -162,7 +163,11 @@ class TestFalAIAudioDispatch:
         assert out.response.content == binary_payload
         post_args = client.post.call_args
         assert post_args.kwargs["url"] == f"{FAL_API_BASE}/{ELEVEN_V3_ID}"
-        assert post_args.kwargs["json"] == {"text": "hello", "voice": "Aria"}
+        assert post_args.kwargs["json"] == {
+            "text": "hello",
+            "prompt": "hello",
+            "voice": "Aria",
+        }
         assert post_args.kwargs["headers"]["Authorization"] == "Key key-123"
         get_urls = [c.kwargs.get("url") or c.args[0] for c in client.get.call_args_list]
         assert get_urls[0] == SUBMIT_PAYLOAD["status_url"]
