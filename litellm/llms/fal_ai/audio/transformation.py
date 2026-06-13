@@ -123,7 +123,7 @@ class FalAIAudioConfig(BaseTextToSpeechConfig):
         litellm_params: Dict,
         headers: dict,
     ) -> TextToSpeechRequestData:
-        body: Dict[str, Any] = {"text": input}
+        body: Dict[str, Any] = {"text": input, "prompt": input}
         if voice is not None:
             body["voice"] = voice
         for key, value in optional_params.items():
