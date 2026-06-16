@@ -36,7 +36,12 @@ def _add_base64_padding(value: str) -> str:
 
 
 def encode_video_id_with_provider(
-    video_id: str, provider: str, model_id: Optional[str] = None
+    video_id: str,
+    provider: str,
+    model_id: Optional[str] = None,
+    status_url: Optional[str] = None,
+    response_url: Optional[str] = None,
+    cancel_url: Optional[str] = None,
 ) -> str:
     """Encode provider and model_id into video_id using base64."""
     if not provider or not video_id:
@@ -54,6 +59,12 @@ def encode_video_id_with_provider(
     assembled_id = str(SpecialEnums.LITELLM_MANAGED_VIDEO_COMPLETE_STR.value).format(
         provider, model_id or "", video_id
     )
+    if status_url:
+        assembled_id += f";status_url:{status_url}"
+    if response_url:
+        assembled_id += f";response_url:{response_url}"
+    if cancel_url:
+        assembled_id += f";cancel_url:{cancel_url}"
 
     base64_encoded_id: str = base64.b64encode(assembled_id.encode("utf-8")).decode(
         "utf-8"
@@ -95,22 +106,33 @@ def decode_video_id_with_provider(encoded_video_id: str) -> DecodedVideoId:
         custom_llm_provider = None
         model_id = None
         decoded_video_id = encoded_video_id
+        status_url = None
+        response_url = None
+        cancel_url = None
 
-        if len(parts) >= 3:
-            custom_llm_provider_part = parts[0]
-            model_id_part = parts[1]
-            video_id_part = parts[2]
-
-            custom_llm_provider = custom_llm_provider_part.replace(
-                "litellm:custom_llm_provider:", ""
-            )
-            model_id = model_id_part.replace("model_id:", "")
-            decoded_video_id = video_id_part.replace("video_id:", "")
+        for part in parts:
+            if part.startswith("litellm:custom_llm_provider:"):
+                custom_llm_provider = part.replace(
+                    "litellm:custom_llm_provider:", ""
+                )
+            elif part.startswith("model_id:"):
+                model_id = part.replace("model_id:", "")
+            elif part.startswith("video_id:"):
+                decoded_video_id = part.replace("video_id:", "")
+            elif part.startswith("status_url:"):
+                status_url = part.replace("status_url:", "")
+            elif part.startswith("response_url:"):
+                response_url = part.replace("response_url:", "")
+            elif part.startswith("cancel_url:"):
+                cancel_url = part.replace("cancel_url:", "")
 
         return DecodedVideoId(
             custom_llm_provider=custom_llm_provider,
             model_id=model_id,
             video_id=decoded_video_id,
+            status_url=status_url,
+            response_url=response_url,
+            cancel_url=cancel_url,
         )
     except Exception as e:
         verbose_logger.debug(f"Error decoding video_id '{encoded_video_id}': {e}")

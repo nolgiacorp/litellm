@@ -177,6 +177,9 @@ class FalAIVideoConfig(BaseVideoConfig):
     ) -> VideoObject:
         response_data = raw_response.json()
         model_id = _normalize_fal_model_id(model)
+        status_url = response_data.get("status_url")
+        response_url = response_data.get("response_url")
+        cancel_url = response_data.get("cancel_url")
 
         video_data: Dict[str, Any] = {
             "id": response_data.get("request_id", ""),
@@ -197,7 +200,12 @@ class FalAIVideoConfig(BaseVideoConfig):
 
         if custom_llm_provider and video_obj.id:
             video_obj.id = encode_video_id_with_provider(
-                video_obj.id, custom_llm_provider, model_id
+                video_obj.id,
+                custom_llm_provider,
+                model_id,
+                status_url=status_url,
+                response_url=response_url,
+                cancel_url=cancel_url,
             )
 
         usage: Dict[str, Any] = {}
@@ -217,7 +225,11 @@ class FalAIVideoConfig(BaseVideoConfig):
         litellm_params: GenericLiteLLMParams,
         headers: dict,
     ) -> Tuple[str, Dict]:
-        original_id, model_id = self._extract_request_and_model_id(video_id)
+        original_id, model_id, status_url, _, _ = self._extract_request_and_model_id(
+            video_id
+        )
+        if status_url:
+            return status_url, {}
         encoded = encode_url_path_segment(original_id, field_name="video_id")
         return f"{api_base}/{model_id}/requests/{encoded}/status", {}
 
@@ -265,7 +277,11 @@ class FalAIVideoConfig(BaseVideoConfig):
         headers: dict,
         variant: Optional[str] = None,
     ) -> Tuple[str, Dict]:
-        original_id, model_id = self._extract_request_and_model_id(video_id)
+        original_id, model_id, _, response_url, _ = self._extract_request_and_model_id(
+            video_id
+        )
+        if response_url:
+            return response_url, {}
         encoded = encode_url_path_segment(original_id, field_name="video_id")
         return f"{api_base}/{model_id}/requests/{encoded}", {}
 
@@ -310,11 +326,16 @@ class FalAIVideoConfig(BaseVideoConfig):
         )
 
     @staticmethod
-    def _extract_request_and_model_id(video_id: str) -> Tuple[str, str]:
+    def _extract_request_and_model_id(
+        video_id: str,
+    ) -> Tuple[str, str, Optional[str], Optional[str], Optional[str]]:
         # fal.ai queue URLs embed the model id, so we need it back at lookup time.
         decoded = decode_video_id_with_provider(video_id)
         original_id = decoded.get("video_id") or extract_original_video_id(video_id)
         model_id = decoded.get("model_id")
+        status_url = decoded.get("status_url")
+        response_url = decoded.get("response_url")
+        cancel_url = decoded.get("cancel_url")
 
         if not model_id:
             raise ValueError(
@@ -322,7 +343,7 @@ class FalAIVideoConfig(BaseVideoConfig):
                 "in the video_id. Use the id returned by video creation."
             )
 
-        return original_id, model_id
+        return original_id, model_id, status_url, response_url, cancel_url
 
     def transform_video_remix_request(
         self,
@@ -378,7 +399,11 @@ class FalAIVideoConfig(BaseVideoConfig):
         litellm_params: GenericLiteLLMParams,
         headers: dict,
     ) -> Tuple[str, Dict]:
-        original_id, model_id = self._extract_request_and_model_id(video_id)
+        original_id, model_id, _, _, cancel_url = self._extract_request_and_model_id(
+            video_id
+        )
+        if cancel_url:
+            return cancel_url, {}
         encoded = encode_url_path_segment(original_id, field_name="video_id")
         return f"{api_base}/{model_id}/requests/{encoded}/cancel", {}
 

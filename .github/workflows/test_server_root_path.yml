@@ -102,9 +102,11 @@ jobs:
           exit 1
 
       - name: Setup Node for Playwright
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        uses: actions/setup-node@v6
         with:
-          node-version: "20"
+          node-version: "24.16.0"
+          cache: "npm"
+          cache-dependency-path: ui/litellm-dashboard/package-lock.json
 
       - name: Install UI deps and Chromium
         working-directory: ui/litellm-dashboard

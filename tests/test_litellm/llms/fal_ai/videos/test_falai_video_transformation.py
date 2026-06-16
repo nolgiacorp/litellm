@@ -112,6 +112,9 @@ class TestFalAIVideoTransformation:
         mock_response.json.return_value = {
             "request_id": "abc-123",
             "status": "IN_QUEUE",
+            "status_url": f"{FAL_API_BASE}/{KLING_MODEL_ID}/requests/abc-123/status",
+            "response_url": f"{FAL_API_BASE}/{KLING_MODEL_ID}/requests/abc-123",
+            "cancel_url": f"{FAL_API_BASE}/{KLING_MODEL_ID}/requests/abc-123/cancel",
         }
 
         video_obj = self.config.transform_video_create_response(
@@ -127,9 +130,12 @@ class TestFalAIVideoTransformation:
         assert video_obj.id.startswith("video_")
 
         decoded = decode_video_id_with_provider(video_obj.id)
-        assert decoded["video_id"] == "abc-123"
-        assert decoded["custom_llm_provider"] == "fal_ai"
-        assert decoded["model_id"] == KLING_MODEL_ID
+        assert decoded.get("video_id") == "abc-123"
+        assert decoded.get("custom_llm_provider") == "fal_ai"
+        assert decoded.get("model_id") == KLING_MODEL_ID
+        assert (decoded.get("status_url") or "").endswith("/requests/abc-123/status")
+        assert (decoded.get("response_url") or "").endswith("/requests/abc-123")
+        assert (decoded.get("cancel_url") or "").endswith("/requests/abc-123/cancel")
 
         assert video_obj.seconds == "5"
         assert video_obj.size == "16x9"
@@ -144,6 +150,23 @@ class TestFalAIVideoTransformation:
         )
 
         assert url == f"{FAL_API_BASE}/{KLING_MODEL_ID}/requests/abc-123/status"
+        assert params == {}
+
+    def test_transform_video_status_retrieve_request_prefers_submit_status_url(self):
+        encoded_id = encode_video_id_with_provider(
+            "abc-123",
+            "fal_ai",
+            KLING_MODEL_ID,
+            status_url="https://queue.fal.run/custom-status",
+        )
+        url, params = self.config.transform_video_status_retrieve_request(
+            video_id=encoded_id,
+            api_base=FAL_API_BASE,
+            litellm_params=GenericLiteLLMParams(),
+            headers={},
+        )
+
+        assert url == "https://queue.fal.run/custom-status"
         assert params == {}
 
     def test_transform_video_status_request_url_path_segment_is_encoded(self):
@@ -214,6 +237,22 @@ class TestFalAIVideoTransformation:
         assert url == f"{FAL_API_BASE}/{KLING_MODEL_ID}/requests/abc-123"
         assert params == {}
 
+    def test_transform_video_content_request_prefers_submit_response_url(self):
+        encoded_id = encode_video_id_with_provider(
+            "abc-123",
+            "fal_ai",
+            KLING_MODEL_ID,
+            response_url="https://queue.fal.run/custom-result",
+        )
+        url, params = self.config.transform_video_content_request(
+            video_id=encoded_id,
+            api_base=FAL_API_BASE,
+            litellm_params=GenericLiteLLMParams(),
+            headers={},
+        )
+        assert url == "https://queue.fal.run/custom-result"
+        assert params == {}
+
     def test_extract_video_url_handles_video_object(self):
         url = self.config._extract_video_url(
             {"video": {"url": "https://cdn.example.com/v.mp4"}}
@@ -247,6 +286,22 @@ class TestFalAIVideoTransformation:
             headers={},
         )
         assert url == f"{FAL_API_BASE}/{KLING_MODEL_ID}/requests/abc-123/cancel"
+        assert data == {}
+
+    def test_transform_video_delete_request_prefers_submit_cancel_url(self):
+        encoded_id = encode_video_id_with_provider(
+            "abc-123",
+            "fal_ai",
+            KLING_MODEL_ID,
+            cancel_url="https://queue.fal.run/custom-cancel",
+        )
+        url, data = self.config.transform_video_delete_request(
+            video_id=encoded_id,
+            api_base=FAL_API_BASE,
+            litellm_params=GenericLiteLLMParams(),
+            headers={},
+        )
+        assert url == "https://queue.fal.run/custom-cancel"
         assert data == {}
 
     def test_remix_and_list_raise_not_implemented(self):
@@ -286,6 +341,9 @@ class TestFalAIVideoTransformation:
         create_response.json.return_value = {
             "request_id": "queued-id-1",
             "status": "IN_QUEUE",
+            "status_url": f"{FAL_API_BASE}/{KLING_MODEL_ID}/requests/queued-id-1/status",
+            "response_url": f"{FAL_API_BASE}/{KLING_MODEL_ID}/requests/queued-id-1",
+            "cancel_url": f"{FAL_API_BASE}/{KLING_MODEL_ID}/requests/queued-id-1/cancel",
         }
         video_obj = config.transform_video_create_response(
             model=KLING_MODEL,
