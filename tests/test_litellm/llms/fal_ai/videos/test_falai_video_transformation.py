@@ -189,6 +189,20 @@ class TestFalAIVideoTransformation:
         assert status_obj.error is not None
         assert status_obj.error["message"] == "model timed out"
 
+    def test_transform_video_status_response_tolerates_non_json_body(self):
+        mock_response = Mock(spec=httpx.Response)
+        mock_response.json.side_effect = ValueError(
+            "Expecting value: line 1 column 1 (char 0)"
+        )
+
+        status_obj = self.config.transform_video_status_retrieve_response(
+            raw_response=mock_response,
+            logging_obj=self.mock_logging_obj,
+            custom_llm_provider="fal_ai",
+        )
+
+        assert status_obj.status == "in_progress"
+
     def test_transform_video_content_request_builds_result_url(self):
         encoded_id = encode_video_id_with_provider("abc-123", "fal_ai", KLING_MODEL_ID)
         url, params = self.config.transform_video_content_request(

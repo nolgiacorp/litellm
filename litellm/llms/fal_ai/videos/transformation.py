@@ -1,3 +1,4 @@
+from json import JSONDecodeError
 from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple, Union
 
 import httpx
@@ -226,7 +227,10 @@ class FalAIVideoConfig(BaseVideoConfig):
         logging_obj: LiteLLMLoggingObj,
         custom_llm_provider: Optional[str] = None,
     ) -> VideoObject:
-        response_data = raw_response.json()
+        try:
+            response_data = raw_response.json()
+        except (ValueError, JSONDecodeError):
+            return VideoObject(id="", object="video", status="in_progress")
         status_raw = response_data.get("status", "IN_QUEUE")
 
         video_data: Dict[str, Any] = {
