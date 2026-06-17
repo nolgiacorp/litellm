@@ -5,6 +5,7 @@ import inspect
 import json
 import os
 import smtplib
+import ssl
 import sys
 import threading
 import time
@@ -45,6 +46,7 @@ from litellm.proxy._types import (
 )
 from litellm.proxy.spend_tracking.spend_log_error_logger import spend_log_error
 from litellm.types.guardrails import GuardrailEventHooks
+from litellm.types.proxy.model_listing import ModelInfoResponse
 from litellm.types.utils import CallTypes, CallTypesLiteral
 
 try:
@@ -190,7 +192,7 @@ def print_verbose(print_statement):
 
     verbose_proxy_logger.debug("{}\n{}".format(print_statement, traceback.format_exc()))
     if litellm.set_verbose:
-        print(f"LiteLLM Proxy: {_redact_string(str(print_statement))}")  # noqa
+        print(f"LiteLLM Proxy: {_redact_string(str(print_statement))}")  # noqa: T201
 
 
 def _get_email_logger_class():
@@ -1170,6 +1172,8 @@ class ProxyLogging:
                     response=response, data=data, call_type=call_type
                 )
 
+            callback.mark_pre_call_hook_ran(data)
+
         except SensitiveDataRouteException:
             status = "intervened"
             raise
@@ -2085,7 +2089,7 @@ class ProxyLogging:
             litellm_call_id=request_data.get("litellm_call_id", ""), status="fail"
         )
         if AlertType.llm_exceptions in self.alert_types and not isinstance(
-            original_exception, HTTPException
+            original_exception, (HTTPException, ProxyException)
         ):
             """
             Just alert on LLM API exceptions. Do not alert on user errors
@@ -2189,6 +2193,7 @@ class ProxyLogging:
         e.g should only return True for:
             - Authentication Errors from user_api_key_auth
             - HTTP HTTPException (rate limit errors)
+            - ProxyException (guardrail blocks, budget / rate-limit errors)
         """
 
         #########################################################
@@ -2205,7 +2210,7 @@ class ProxyLogging:
         ):
             return False
 
-        return isinstance(original_exception, HTTPException) or (
+        return isinstance(original_exception, (HTTPException, ProxyException)) or (
             error_type == ProxyErrorTypes.auth_error
         )
 
@@ -3344,7 +3349,7 @@ class PrismaClient:
         on_backoff=on_backoff,  # specifying the function to call on backoff
     )
     @log_db_metrics
-    async def get_data(  # noqa: PLR0915
+    async def get_data(
         self,
         token: Optional[Union[str, list]] = None,
         user_id: Optional[str] = None,
@@ -3787,7 +3792,7 @@ class PrismaClient:
         max_time=10,  # maximum total time to retry for
         on_backoff=on_backoff,  # specifying the function to call on backoff
     )
-    async def insert_data(  # noqa: PLR0915
+    async def insert_data(
         self,
         data: dict,
         table_name: Literal[
@@ -3937,7 +3942,7 @@ class PrismaClient:
         max_time=10,  # maximum total time to retry for
         on_backoff=on_backoff,  # specifying the function to call on backoff
     )
-    async def update_data(  # noqa: PLR0915
+    async def update_data(
         self,
         token: Optional[str] = None,
         data: dict = {},
@@ -5177,6 +5182,23 @@ async def _cache_user_row(user_id: str, cache: DualCache, db: PrismaClient):
     return
 
 
+def _should_use_smtp_ssl(smtp_port: int) -> bool:
+    """
+    Port 465 expects an immediate TLS handshake (implicit SSL), so a plain
+    smtplib.SMTP connection hangs waiting for an SMTP banner. Use SMTP_SSL
+    there, or when SMTP_USE_SSL is explicitly enabled.
+    """
+    return os.getenv("SMTP_USE_SSL", "False") == "True" or smtp_port == 465
+
+
+def _create_smtp_connection(smtp_host: str, smtp_port: int) -> smtplib.SMTP:
+    if _should_use_smtp_ssl(smtp_port=smtp_port):
+        return smtplib.SMTP_SSL(
+            host=smtp_host, port=smtp_port, context=ssl.create_default_context()
+        )
+    return smtplib.SMTP(host=smtp_host, port=smtp_port)
+
+
 async def send_email(
     receiver_email: Optional[str] = None,
     subject: Optional[str] = None,
@@ -5222,13 +5244,13 @@ async def send_email(
     email_message.attach(MIMEText(html, "html"))
 
     try:
-        # Establish a secure connection with the SMTP server
-        with smtplib.SMTP(
-            host=smtp_host,
-            port=smtp_port,
+        using_ssl = _should_use_smtp_ssl(smtp_port=smtp_port)
+        with _create_smtp_connection(
+            smtp_host=smtp_host,
+            smtp_port=smtp_port,
         ) as server:
-            if os.getenv("SMTP_TLS", "True") != "False":
-                server.starttls()
+            if not using_ssl and os.getenv("SMTP_TLS", "True") != "False":
+                server.starttls(context=ssl.create_default_context())
 
             # Login to your email account only if smtp_username and smtp_password are provided
             if smtp_username and smtp_password:
@@ -5496,7 +5518,7 @@ class ProxyUpdateSpend:
         return False
 
 
-async def update_spend(  # noqa: PLR0915
+async def update_spend(
     prisma_client: PrismaClient,
     db_writer_client: Optional[AsyncHTTPHandler],
     proxy_logging_obj: ProxyLogging,
@@ -6290,56 +6312,39 @@ def create_model_info_response(
     include_metadata: bool = False,
     fallback_type: Optional[str] = None,
     llm_router: Optional["Router"] = None,
-) -> dict:
+) -> ModelInfoResponse:
     """
-    Create a standardized model info response.
+    Create a standardized OpenAI-compatible model object.
 
-    Args:
-        model_id: The model ID
-        provider: The model provider
-        include_metadata: Whether to include metadata
-        fallback_type: Type of fallbacks to include
-        llm_router: LiteLLM router instance
-
-    Returns:
-        Dictionary containing model information
+    When include_metadata is true, attaches the model's configured fallbacks
+    (resolved via the router under fallback_type, defaulting to "general").
+    Raises HTTPException(400) for an unknown fallback_type.
     """
     from litellm.proxy.auth.model_checks import get_all_fallbacks
 
-    model_info = {
+    base: ModelInfoResponse = {
         "id": model_id,
         "object": "model",
         "created": DEFAULT_MODEL_CREATED_AT_TIME,
         "owned_by": provider,
     }
+    if not include_metadata:
+        return base
 
-    # Add metadata if requested
-    if include_metadata:
-        metadata = {}
-
-        # Default fallback_type to "general" if include_metadata is true
-        effective_fallback_type = (
-            fallback_type if fallback_type is not None else "general"
+    effective_fallback_type = fallback_type if fallback_type is not None else "general"
+    valid_fallback_types = ("general", "context_window", "content_policy")
+    if effective_fallback_type not in valid_fallback_types:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid fallback_type. Must be one of: {list(valid_fallback_types)}",
         )
 
-        # Validate fallback_type
-        valid_fallback_types = ["general", "context_window", "content_policy"]
-        if effective_fallback_type not in valid_fallback_types:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Invalid fallback_type. Must be one of: {valid_fallback_types}",
-            )
-
-        fallbacks = get_all_fallbacks(
-            model=model_id,
-            llm_router=llm_router,
-            fallback_type=effective_fallback_type,
-        )
-        metadata["fallbacks"] = fallbacks
-
-        model_info["metadata"] = metadata
-
-    return model_info
+    fallbacks = get_all_fallbacks(
+        model=model_id,
+        llm_router=llm_router,
+        fallback_type=effective_fallback_type,
+    )
+    return {**base, "metadata": {"fallbacks": fallbacks}}
 
 
 def validate_model_access(
