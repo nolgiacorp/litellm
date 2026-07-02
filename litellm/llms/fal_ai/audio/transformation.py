@@ -1,4 +1,3 @@
-import asyncio
 import time
 from typing import TYPE_CHECKING, Any, Coroutine, Dict, Optional, Tuple, Union
 
@@ -7,14 +6,13 @@ import httpx
 import litellm
 from litellm._logging import verbose_logger
 from litellm.constants import FAL_AI_DEFAULT_API_BASE, FAL_AI_POLLING_TIMEOUT
+from litellm.litellm_core_utils.audio_utils.utils import calculate_request_duration
 from litellm.llms.base_llm.text_to_speech.transformation import (
     BaseTextToSpeechConfig,
     TextToSpeechRequestData,
 )
-from litellm.llms.custom_httpx.http_handler import (
-    _get_httpx_client,
-    get_async_httpx_client,
-)
+from litellm.llms.custom_httpx.http_handler import HTTPHandler, _get_httpx_client
+from litellm.llms.fal_ai.utils import normalize_fal_model_id
 from litellm.secret_managers.main import get_secret_str
 
 if TYPE_CHECKING:
@@ -35,29 +33,16 @@ _TERMINAL_FAIL = {"FAILED", "CANCELLED"}
 _POLL_INTERVAL_SECS = 1.5
 
 
-def _normalize_fal_model_id(model: str) -> str:
-    stripped = model
-    if stripped.startswith("fal_ai/"):
-        stripped = stripped[len("fal_ai/") :]
-    stripped = stripped.strip("/")
-    if not stripped:
-        raise ValueError("fal.ai model id is empty after stripping provider prefix")
-    return stripped
-
-
 class FalAIAudioConfig(BaseTextToSpeechConfig):
     """
-    fal.ai audio (TTS / music / SFX) via its queue API.
-
-    POST {api_base}/{model_id}     -> {request_id, status_url, response_url}
-    GET  status_url                -> {status: IN_QUEUE | IN_PROGRESS | COMPLETED | FAILED}
-    GET  response_url              -> {"audio": {"url": "..."}}
-    GET  audio.url                 -> binary audio bytes
-
-    Routed through main.py.aspeech / speech as a queue-style provider:
-    ``dispatch_text_to_speech`` performs the whole submit->poll->download
-    cycle and returns the binary content directly.
+    fal.ai audio (TTS / music / SFX) via its queue API: submit goes through the
+    shared BaseLLMHTTPHandler, then transform_text_to_speech_response polls the
+    queue and downloads the rendered audio.
     """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._polling_timeout_secs: float = float(FAL_AI_POLLING_TIMEOUT)
 
     def get_supported_openai_params(self, model: str) -> list:
         return [
@@ -112,7 +97,8 @@ class FalAIAudioConfig(BaseTextToSpeechConfig):
         litellm_params: dict,
     ) -> str:
         base = api_base or get_secret_str("FAL_AI_API_BASE") or FAL_AI_DEFAULT_API_BASE
-        return base.rstrip("/")
+        model_id = normalize_fal_model_id(model)
+        return f"{base.rstrip('/')}/{model_id}"
 
     def transform_text_to_speech_request(
         self,
@@ -135,16 +121,6 @@ class FalAIAudioConfig(BaseTextToSpeechConfig):
             body.update(extra_body)
         return TextToSpeechRequestData(dict_body=body, headers={})
 
-    def transform_text_to_speech_response(
-        self,
-        model: str,
-        raw_response: httpx.Response,
-        logging_obj: LiteLLMLoggingObj,
-    ) -> "HttpxBinaryResponseContent":
-        from litellm.types.llms.openai import HttpxBinaryResponseContent
-
-        return HttpxBinaryResponseContent(response=raw_response)
-
     def dispatch_text_to_speech(
         self,
         model: str,
@@ -164,179 +140,112 @@ class FalAIAudioConfig(BaseTextToSpeechConfig):
         "HttpxBinaryResponseContent",
         Coroutine[Any, Any, "HttpxBinaryResponseContent"],
     ]:
+        api_base = (
+            api_base
+            or litellm_params_dict.get("api_base")
+            or litellm.api_base
+            or get_secret_str("FAL_AI_API_BASE")
+            or FAL_AI_DEFAULT_API_BASE
+        )
+        api_key = (
+            api_key
+            or litellm_params_dict.get("api_key")
+            or litellm.api_key
+            or get_secret_str("FAL_AI_API_KEY")
+            or get_secret_str("FAL_KEY")
+        )
+        litellm_params_dict.update({"api_key": api_key, "api_base": api_base})
+
+        self._polling_timeout_secs = self._resolve_polling_timeout(timeout)
+
         merged_params = dict(optional_params)
         if "extra_body" not in merged_params and kwargs.get("extra_body") is not None:
             merged_params["extra_body"] = kwargs["extra_body"]
-        if aspeech:
-            return self._async_dispatch(
-                model=model,
-                input=input,
-                voice=voice,
-                optional_params=merged_params,
-                litellm_params_dict=litellm_params_dict,
-                extra_headers=extra_headers,
-                api_base=api_base,
-                api_key=api_key,
-            )
-        return self._sync_dispatch(
+
+        voice_param = voice if isinstance(voice, str) else None
+
+        return base_llm_http_handler.text_to_speech_handler(
             model=model,
             input=input,
-            voice=voice,
-            optional_params=merged_params,
-            litellm_params_dict=litellm_params_dict,
-            extra_headers=extra_headers,
-            api_base=api_base,
-            api_key=api_key,
-        )
-
-    def _build_request(
-        self,
-        model: str,
-        input: str,
-        voice: Optional[Union[str, Dict]],
-        optional_params: Dict,
-        litellm_params_dict: Dict,
-        extra_headers: Optional[Dict[str, Any]],
-        api_base: Optional[str],
-        api_key: Optional[str],
-    ) -> Tuple[str, Dict[str, str], Dict[str, Any]]:
-        base = self.get_complete_url(
-            model=model, api_base=api_base, litellm_params=litellm_params_dict
-        )
-        model_id = _normalize_fal_model_id(model)
-        submit_url = f"{base}/{model_id}"
-
-        headers: Dict[str, str] = {}
-        if extra_headers:
-            headers.update(extra_headers)
-        headers = self.validate_environment(
-            headers=headers, model=model, api_key=api_key, api_base=api_base
-        )
-
-        voice_str = voice if isinstance(voice, str) else None
-        request = self.transform_text_to_speech_request(
-            model=model,
-            input=input,
-            voice=voice_str,
-            optional_params=optional_params,
+            voice=voice_param,
+            text_to_speech_provider_config=self,
+            text_to_speech_optional_params=merged_params,
+            custom_llm_provider="fal_ai",
             litellm_params=litellm_params_dict,
-            headers=headers,
+            logging_obj=logging_obj,
+            timeout=timeout,
+            extra_headers=extra_headers,
+            client=None,
+            _is_async=aspeech,
         )
-        body = request.get("dict_body") or {}
-        return submit_url, headers, body
 
-    def _sync_dispatch(
+    def transform_text_to_speech_response(
         self,
         model: str,
-        input: str,
-        voice: Optional[Union[str, Dict]],
-        optional_params: Dict,
-        litellm_params_dict: Dict,
-        extra_headers: Optional[Dict[str, Any]],
-        api_base: Optional[str],
-        api_key: Optional[str],
+        raw_response: httpx.Response,
+        logging_obj: LiteLLMLoggingObj,
     ) -> "HttpxBinaryResponseContent":
         from litellm.types.llms.openai import HttpxBinaryResponseContent
 
-        submit_url, headers, body = self._build_request(
-            model=model,
-            input=input,
-            voice=voice,
-            optional_params=optional_params,
-            litellm_params_dict=litellm_params_dict,
-            extra_headers=extra_headers,
-            api_base=api_base,
-            api_key=api_key,
-        )
+        submit_payload = raw_response.json()
+        status_url, response_url = self._queue_urls(submit_payload)
+        headers = self._poll_headers(raw_response)
         client = _get_httpx_client()
-        submit_resp = client.post(url=submit_url, headers=headers, json=body)
-        submit_resp.raise_for_status()
-        submit_payload = submit_resp.json()
-
-        status_url = submit_payload.get("status_url")
-        response_url = submit_payload.get("response_url")
-        if not status_url or not response_url:
-            raise ValueError(
-                "fal.ai queue submit response missing status_url/response_url"
-            )
 
         verbose_logger.debug(
-            "fal.ai audio polling: rid=%s",
-            submit_payload.get("request_id"),
+            "fal.ai audio polling: rid=%s", submit_payload.get("request_id")
         )
         self._poll_until_complete_sync(
             status_url=status_url,
             headers=headers,
             client=client,
+            timeout_secs=self._polling_timeout_secs,
         )
 
         result_resp = client.get(url=response_url, headers=headers)
         result_resp.raise_for_status()
         audio_url = self._extract_audio_url(result_resp.json())
 
-        binary_resp = client.get(url=audio_url, headers={})
+        binary_resp = client.get(url=audio_url)
         binary_resp.raise_for_status()
-        return HttpxBinaryResponseContent(response=binary_resp)
+        result = HttpxBinaryResponseContent(response=binary_resp)
+        duration = calculate_request_duration(binary_resp.content)
+        if duration is not None:
+            result._hidden_params = {"audio_output_duration": duration}
+        return result
 
-    async def _async_dispatch(
-        self,
-        model: str,
-        input: str,
-        voice: Optional[Union[str, Dict]],
-        optional_params: Dict,
-        litellm_params_dict: Dict,
-        extra_headers: Optional[Dict[str, Any]],
-        api_base: Optional[str],
-        api_key: Optional[str],
-    ) -> "HttpxBinaryResponseContent":
-        from litellm.types.llms.openai import HttpxBinaryResponseContent
+    @staticmethod
+    def _resolve_polling_timeout(timeout: Union[float, httpx.Timeout]) -> float:
+        candidate: Any = timeout
+        if isinstance(timeout, httpx.Timeout):
+            candidate = timeout.read or timeout.connect
+        try:
+            value = float(candidate)
+        except (TypeError, ValueError):
+            return float(FAL_AI_POLLING_TIMEOUT)
+        return value if value > 0 else float(FAL_AI_POLLING_TIMEOUT)
 
-        submit_url, headers, body = self._build_request(
-            model=model,
-            input=input,
-            voice=voice,
-            optional_params=optional_params,
-            litellm_params_dict=litellm_params_dict,
-            extra_headers=extra_headers,
-            api_base=api_base,
-            api_key=api_key,
-        )
-        client = get_async_httpx_client(llm_provider=litellm.LlmProviders.FAL_AI)
-        submit_resp = await client.post(url=submit_url, headers=headers, json=body)
-        submit_resp.raise_for_status()
-        submit_payload = submit_resp.json()
-
+    @staticmethod
+    def _queue_urls(submit_payload: Dict[str, Any]) -> Tuple[str, str]:
         status_url = submit_payload.get("status_url")
         response_url = submit_payload.get("response_url")
         if not status_url or not response_url:
             raise ValueError(
                 "fal.ai queue submit response missing status_url/response_url"
             )
+        return status_url, response_url
 
-        verbose_logger.debug(
-            "fal.ai audio polling (async): rid=%s",
-            submit_payload.get("request_id"),
-        )
-        await self._poll_until_complete_async(
-            status_url=status_url,
-            headers=headers,
-            client=client,
-        )
-
-        result_resp = await client.get(url=response_url, headers=headers)
-        result_resp.raise_for_status()
-        audio_url = self._extract_audio_url(result_resp.json())
-
-        binary_resp = await client.get(url=audio_url, headers={})
-        binary_resp.raise_for_status()
-        return HttpxBinaryResponseContent(response=binary_resp)
+    @staticmethod
+    def _poll_headers(raw_response: httpx.Response) -> Dict[str, str]:
+        authorization = raw_response.request.headers.get("Authorization", "")
+        return {"Authorization": authorization} if authorization else {}
 
     def _poll_until_complete_sync(
         self,
         status_url: str,
         headers: Dict[str, str],
-        client: Any,
-        timeout_secs: int = FAL_AI_POLLING_TIMEOUT,
+        client: HTTPHandler,
+        timeout_secs: float,
     ) -> None:
         deadline = time.monotonic() + timeout_secs
         while True:
@@ -353,30 +262,11 @@ class FalAIAudioConfig(BaseTextToSpeechConfig):
                 raise RuntimeError(f"fal.ai audio job ended with status={status}")
             time.sleep(_POLL_INTERVAL_SECS)
 
-    async def _poll_until_complete_async(
-        self,
-        status_url: str,
-        headers: Dict[str, str],
-        client: Any,
-        timeout_secs: int = FAL_AI_POLLING_TIMEOUT,
-    ) -> None:
-        deadline = time.monotonic() + timeout_secs
-        while True:
-            if time.monotonic() > deadline:
-                raise TimeoutError(
-                    f"fal.ai audio job did not complete within {timeout_secs}s"
-                )
-            resp = await client.get(url=status_url, headers=headers)
-            resp.raise_for_status()
-            status = (resp.json().get("status") or "").upper()
-            if status == _TERMINAL_OK:
-                return
-            if status in _TERMINAL_FAIL:
-                raise RuntimeError(f"fal.ai audio job ended with status={status}")
-            await asyncio.sleep(_POLL_INTERVAL_SECS)
-
     @staticmethod
     def _extract_audio_url(result_payload: Dict[str, Any]) -> str:
+        error_payload = result_payload.get("error")
+        if error_payload:
+            raise ValueError(f"fal.ai audio generation failed: {error_payload}")
         audio = result_payload.get("audio")
         if isinstance(audio, dict) and isinstance(audio.get("url"), str):
             return audio["url"]

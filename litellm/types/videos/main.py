@@ -73,12 +73,8 @@ class VideoCreateOptionalRequestParams(TypedDict, total=False):
     """
 
     input_reference: Optional[FileTypes]  # File reference for input image
-    image: Optional[
-        Any
-    ]  # Image for image-to-video; dict with gcsUri/bytesBase64Encoded, or file-like object
-    parameters: Optional[
-        Dict[str, Any]
-    ]  # Provider-specific parameters block passed directly to the API
+    image: Optional[Any]  # Image for image-to-video; dict with gcsUri/bytesBase64Encoded, or file-like object
+    parameters: Optional[Dict[str, Any]]  # Provider-specific parameters block passed directly to the API
     model: Optional[str]
     seconds: Optional[str]
     size: Optional[str]
@@ -104,9 +100,6 @@ class DecodedVideoId(TypedDict, total=False):
     custom_llm_provider: Optional[str]
     model_id: Optional[str]
     video_id: str
-    status_url: Optional[str]
-    response_url: Optional[str]
-    cancel_url: Optional[str]
 
 
 class CharacterObject(BaseModel):

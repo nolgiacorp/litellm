@@ -103,9 +103,7 @@ class BidiGenerateContentRealtimeInput(TypedDict, total=False):
 StartOfSpeechSensitivityEnum = Literal[
     "START_SENSITIVITY_UNSPECIFIED", "START_SENSITIVITY_HIGH", "START_SENSITIVITY_LOW"
 ]
-EndOfSpeechSensitivityEnum = Literal[
-    "END_SENSITIVITY_UNSPECIFIED", "END_SENSITIVITY_HIGH", "END_SENSITIVITY_LOW"
-]
+EndOfSpeechSensitivityEnum = Literal["END_SENSITIVITY_UNSPECIFIED", "END_SENSITIVITY_HIGH", "END_SENSITIVITY_LOW"]
 
 
 class AutomaticActivityDetection(TypedDict, total=False):
@@ -317,8 +315,14 @@ class GeminiGeneratedVideoSample(BaseModel):
 class GeminiGenerateVideoResponse(BaseModel):
     """Generate video response containing the samples"""
 
-    generatedSamples: List[GeminiGeneratedVideoSample]
-    """List of generated video samples"""
+    generatedSamples: Optional[List[GeminiGeneratedVideoSample]] = None
+    """List of generated video samples; absent when all samples were RAI filtered"""
+
+    raiMediaFilteredCount: Optional[int] = None
+    """Number of videos filtered out by Responsible AI policies"""
+
+    raiMediaFilteredReasons: Optional[List[str]] = None
+    """Reasons why videos were filtered by Responsible AI policies"""
 
 
 class GeminiOperationResponse(BaseModel):

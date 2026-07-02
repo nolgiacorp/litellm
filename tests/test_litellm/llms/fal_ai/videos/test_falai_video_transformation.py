@@ -14,7 +14,15 @@ from litellm.types.videos.utils import (
 SORA_2_MODEL = "fal_ai/fal-ai/sora-2/text-to-video"
 KLING_MODEL = "fal_ai/fal-ai/kling-video/v2.5-turbo/pro/text-to-video"
 KLING_MODEL_ID = "fal-ai/kling-video/v2.5-turbo/pro/text-to-video"
+KLING_QUEUE_NAMESPACE = "fal-ai/kling-video"
 FAL_API_BASE = "https://queue.fal.run"
+
+
+def _fal_status_response(payload, request_id="abc-123", status_code=200):
+    request = httpx.Request(
+        "GET", f"{FAL_API_BASE}/{KLING_MODEL_ID}/requests/{request_id}/status"
+    )
+    return httpx.Response(status_code, json=payload, request=request)
 
 
 class TestFalAIVideoTransformation:
@@ -112,9 +120,6 @@ class TestFalAIVideoTransformation:
         mock_response.json.return_value = {
             "request_id": "abc-123",
             "status": "IN_QUEUE",
-            "status_url": f"{FAL_API_BASE}/{KLING_MODEL_ID}/requests/abc-123/status",
-            "response_url": f"{FAL_API_BASE}/{KLING_MODEL_ID}/requests/abc-123",
-            "cancel_url": f"{FAL_API_BASE}/{KLING_MODEL_ID}/requests/abc-123/cancel",
         }
 
         video_obj = self.config.transform_video_create_response(
@@ -133,9 +138,6 @@ class TestFalAIVideoTransformation:
         assert decoded.get("video_id") == "abc-123"
         assert decoded.get("custom_llm_provider") == "fal_ai"
         assert decoded.get("model_id") == KLING_MODEL_ID
-        assert (decoded.get("status_url") or "").endswith("/requests/abc-123/status")
-        assert (decoded.get("response_url") or "").endswith("/requests/abc-123")
-        assert (decoded.get("cancel_url") or "").endswith("/requests/abc-123/cancel")
 
         assert video_obj.seconds == "5"
         assert video_obj.size == "16x9"
@@ -149,25 +151,53 @@ class TestFalAIVideoTransformation:
             headers={},
         )
 
-        assert url == f"{FAL_API_BASE}/{KLING_MODEL_ID}/requests/abc-123/status"
+        assert url == f"{FAL_API_BASE}/{KLING_QUEUE_NAMESPACE}/requests/abc-123/status"
         assert params == {}
 
-    def test_transform_video_status_retrieve_request_prefers_submit_status_url(self):
-        encoded_id = encode_video_id_with_provider(
-            "abc-123",
-            "fal_ai",
-            KLING_MODEL_ID,
-            status_url="https://queue.fal.run/custom-status",
-        )
+    def test_transform_video_status_retrieve_request_reconstructs_from_model_id(self):
+        encoded_id = encode_video_id_with_provider("abc-123", "fal_ai", KLING_MODEL_ID)
         url, params = self.config.transform_video_status_retrieve_request(
+            video_id=encoded_id,
+            api_base="https://attacker.example.com",
+            litellm_params=GenericLiteLLMParams(),
+            headers={},
+        )
+
+        assert (
+            url
+            == f"https://attacker.example.com/{KLING_QUEUE_NAMESPACE}/requests/abc-123/status"
+        )
+        assert params == {}
+
+    def test_status_and_content_urls_use_owner_app_namespace(self):
+        seedance_id = "fal-ai/bytedance/seedance/v2/pro/text-to-video"
+        encoded_id = encode_video_id_with_provider("abc-123", "fal_ai", seedance_id)
+
+        status_url, _ = self.config.transform_video_status_retrieve_request(
+            video_id=encoded_id,
+            api_base=FAL_API_BASE,
+            litellm_params=GenericLiteLLMParams(),
+            headers={},
+        )
+        content_url, _ = self.config.transform_video_content_request(
             video_id=encoded_id,
             api_base=FAL_API_BASE,
             litellm_params=GenericLiteLLMParams(),
             headers={},
         )
 
-        assert url == "https://queue.fal.run/custom-status"
-        assert params == {}
+        assert status_url == f"{FAL_API_BASE}/fal-ai/bytedance/requests/abc-123/status"
+        assert content_url == f"{FAL_API_BASE}/fal-ai/bytedance/requests/abc-123"
+
+    def test_queue_namespace_keeps_two_segment_model_ids(self):
+        encoded_id = encode_video_id_with_provider("abc-123", "fal_ai", "fal-ai/sora-2")
+        url, _ = self.config.transform_video_status_retrieve_request(
+            video_id=encoded_id,
+            api_base=FAL_API_BASE,
+            litellm_params=GenericLiteLLMParams(),
+            headers={},
+        )
+        assert url == f"{FAL_API_BASE}/fal-ai/sora-2/requests/abc-123/status"
 
     def test_transform_video_status_request_url_path_segment_is_encoded(self):
         encoded_id = encode_video_id_with_provider(
@@ -182,12 +212,13 @@ class TestFalAIVideoTransformation:
         assert "/requests/..%2F..%2F..%2Fetc%2Fpasswd/status" in url
 
     def test_transform_video_status_response_maps_in_progress(self):
-        mock_response = Mock(spec=httpx.Response)
-        mock_response.json.return_value = {
-            "request_id": "abc-123",
-            "status": "IN_PROGRESS",
-            "queue_position": 2,
-        }
+        mock_response = _fal_status_response(
+            {
+                "request_id": "abc-123",
+                "status": "IN_PROGRESS",
+                "queue_position": 2,
+            }
+        )
         status_obj = self.config.transform_video_status_retrieve_response(
             raw_response=mock_response,
             logging_obj=self.mock_logging_obj,
@@ -197,12 +228,13 @@ class TestFalAIVideoTransformation:
         assert status_obj.progress == 2
 
     def test_transform_video_status_response_maps_failed_with_error(self):
-        mock_response = Mock(spec=httpx.Response)
-        mock_response.json.return_value = {
-            "request_id": "abc-123",
-            "status": "FAILED",
-            "error": "model timed out",
-        }
+        mock_response = _fal_status_response(
+            {
+                "request_id": "abc-123",
+                "status": "FAILED",
+                "error": "model timed out",
+            }
+        )
         status_obj = self.config.transform_video_status_retrieve_response(
             raw_response=mock_response,
             logging_obj=self.mock_logging_obj,
@@ -234,23 +266,21 @@ class TestFalAIVideoTransformation:
             litellm_params=GenericLiteLLMParams(),
             headers={},
         )
-        assert url == f"{FAL_API_BASE}/{KLING_MODEL_ID}/requests/abc-123"
+        assert url == f"{FAL_API_BASE}/{KLING_QUEUE_NAMESPACE}/requests/abc-123"
         assert params == {}
 
-    def test_transform_video_content_request_prefers_submit_response_url(self):
-        encoded_id = encode_video_id_with_provider(
-            "abc-123",
-            "fal_ai",
-            KLING_MODEL_ID,
-            response_url="https://queue.fal.run/custom-result",
-        )
+    def test_transform_video_content_request_reconstructs_from_model_id(self):
+        encoded_id = encode_video_id_with_provider("abc-123", "fal_ai", KLING_MODEL_ID)
         url, params = self.config.transform_video_content_request(
             video_id=encoded_id,
-            api_base=FAL_API_BASE,
+            api_base="https://attacker.example.com",
             litellm_params=GenericLiteLLMParams(),
             headers={},
         )
-        assert url == "https://queue.fal.run/custom-result"
+        assert (
+            url
+            == f"https://attacker.example.com/{KLING_QUEUE_NAMESPACE}/requests/abc-123"
+        )
         assert params == {}
 
     def test_extract_video_url_handles_video_object(self):
@@ -277,32 +307,23 @@ class TestFalAIVideoTransformation:
                 headers={},
             )
 
-    def test_transform_video_delete_request_builds_cancel_url(self):
+    def test_transform_video_delete_request_raises_not_implemented(self):
         encoded_id = encode_video_id_with_provider("abc-123", "fal_ai", KLING_MODEL_ID)
-        url, data = self.config.transform_video_delete_request(
-            video_id=encoded_id,
-            api_base=FAL_API_BASE,
-            litellm_params=GenericLiteLLMParams(),
-            headers={},
-        )
-        assert url == f"{FAL_API_BASE}/{KLING_MODEL_ID}/requests/abc-123/cancel"
-        assert data == {}
+        with pytest.raises(NotImplementedError, match="delete/cancel is not supported"):
+            self.config.transform_video_delete_request(
+                video_id=encoded_id,
+                api_base=FAL_API_BASE,
+                litellm_params=GenericLiteLLMParams(),
+                headers={},
+            )
 
-    def test_transform_video_delete_request_prefers_submit_cancel_url(self):
-        encoded_id = encode_video_id_with_provider(
-            "abc-123",
-            "fal_ai",
-            KLING_MODEL_ID,
-            cancel_url="https://queue.fal.run/custom-cancel",
-        )
-        url, data = self.config.transform_video_delete_request(
-            video_id=encoded_id,
-            api_base=FAL_API_BASE,
-            litellm_params=GenericLiteLLMParams(),
-            headers={},
-        )
-        assert url == "https://queue.fal.run/custom-cancel"
-        assert data == {}
+    def test_transform_video_delete_response_raises_not_implemented(self):
+        mock_response = Mock(spec=httpx.Response)
+        with pytest.raises(NotImplementedError, match="delete/cancel is not supported"):
+            self.config.transform_video_delete_response(
+                raw_response=mock_response,
+                logging_obj=self.mock_logging_obj,
+            )
 
     def test_remix_and_list_raise_not_implemented(self):
         with pytest.raises(NotImplementedError):
@@ -341,9 +362,6 @@ class TestFalAIVideoTransformation:
         create_response.json.return_value = {
             "request_id": "queued-id-1",
             "status": "IN_QUEUE",
-            "status_url": f"{FAL_API_BASE}/{KLING_MODEL_ID}/requests/queued-id-1/status",
-            "response_url": f"{FAL_API_BASE}/{KLING_MODEL_ID}/requests/queued-id-1",
-            "cancel_url": f"{FAL_API_BASE}/{KLING_MODEL_ID}/requests/queued-id-1/cancel",
         }
         video_obj = config.transform_video_create_response(
             model=KLING_MODEL,
@@ -363,11 +381,13 @@ class TestFalAIVideoTransformation:
         )
         assert status_url.endswith("/requests/queued-id-1/status")
 
-        completed_response = Mock(spec=httpx.Response)
-        completed_response.json.return_value = {
-            "request_id": "queued-id-1",
-            "status": "COMPLETED",
-        }
+        completed_response = _fal_status_response(
+            {
+                "request_id": "queued-id-1",
+                "status": "COMPLETED",
+            },
+            request_id="queued-id-1",
+        )
         completed_obj = config.transform_video_status_retrieve_response(
             raw_response=completed_response,
             logging_obj=mock_logging_obj,
@@ -389,14 +409,13 @@ def test_provider_config_manager_returns_fal_ai_video_config():
 @pytest.mark.parametrize(
     "model_id,expected_modalities",
     [
-        ("fal_ai/fal-ai/kling-video/v3/master/text-to-video", ("text",)),
+        ("fal_ai/fal-ai/kling-video/v3/standard/text-to-video", ("text",)),
         ("fal_ai/fal-ai/kling-video/v3/pro/text-to-video", ("text",)),
-        ("fal_ai/fal-ai/kling-video/v3/text-to-video", ("text",)),
-        ("fal_ai/fal-ai/bytedance/seedance/v2/pro/text-to-video", ("text",)),
-        ("fal_ai/fal-ai/kling-video/v3/master/image-to-video", ("text", "image")),
+        ("fal_ai/bytedance/seedance-2.0/text-to-video", ("text",)),
+        ("fal_ai/fal-ai/veo3.1/fast", ("text",)),
+        ("fal_ai/fal-ai/kling-video/v3/standard/image-to-video", ("text", "image")),
         ("fal_ai/fal-ai/kling-video/v3/pro/image-to-video", ("text", "image")),
-        ("fal_ai/fal-ai/kling-video/v3/image-to-video", ("text", "image")),
-        ("fal_ai/fal-ai/bytedance/seedance/v2/pro/image-to-video", ("text", "image")),
+        ("fal_ai/bytedance/seedance-2.0/image-to-video", ("text", "image")),
     ],
 )
 def test_fal_ai_video_model_registered_with_video_endpoint(

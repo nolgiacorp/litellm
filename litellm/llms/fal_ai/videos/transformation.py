@@ -15,6 +15,7 @@ from litellm.llms.custom_httpx.http_handler import (
     _get_httpx_client,
     get_async_httpx_client,
 )
+from litellm.llms.fal_ai.utils import normalize_fal_model_id as _normalize_fal_model_id
 from litellm.secret_managers.main import get_secret_str
 from litellm.types.router import GenericLiteLLMParams
 from litellm.types.videos.main import VideoCreateOptionalRequestParams, VideoObject
@@ -50,16 +51,6 @@ _SIZE_TO_ASPECT_RATIO = {
 }
 
 
-def _normalize_fal_model_id(model: str) -> str:
-    stripped = model
-    if stripped.startswith("fal_ai/"):
-        stripped = stripped[len("fal_ai/") :]
-    stripped = stripped.strip("/")
-    if not stripped:
-        raise ValueError("fal.ai model id is empty after stripping provider prefix")
-    return stripped
-
-
 class FalAIVideoConfig(BaseVideoConfig):
     """
     fal.ai uses a queue API: POST to /{model_id}, then poll
@@ -71,12 +62,21 @@ class FalAIVideoConfig(BaseVideoConfig):
         return [
             "model",
             "prompt",
+            "input_reference",
             "seconds",
             "size",
             "user",
             "extra_headers",
             "extra_body",
         ]
+
+    @staticmethod
+    def _image_url_field_for_model(model: str) -> str:
+        # Kling v3 image-to-video requires `start_image_url`; Seedance uses `image_url`.
+        normalized = model.lower()
+        if "kling-video/v3" in normalized:
+            return "start_image_url"
+        return "image_url"
 
     def map_openai_params(
         self,
@@ -97,6 +97,10 @@ class FalAIVideoConfig(BaseVideoConfig):
                 mapped["aspect_ratio"] = aspect
             elif "x" in size:
                 mapped["aspect_ratio"] = size.replace("x", ":")
+
+        input_reference = video_create_optional_params.get("input_reference")
+        if isinstance(input_reference, str) and input_reference:
+            mapped[self._image_url_field_for_model(model)] = input_reference
 
         supported = self.get_supported_openai_params(model)
         for key, value in video_create_optional_params.items():
@@ -177,9 +181,6 @@ class FalAIVideoConfig(BaseVideoConfig):
     ) -> VideoObject:
         response_data = raw_response.json()
         model_id = _normalize_fal_model_id(model)
-        status_url = response_data.get("status_url")
-        response_url = response_data.get("response_url")
-        cancel_url = response_data.get("cancel_url")
 
         video_data: Dict[str, Any] = {
             "id": response_data.get("request_id", ""),
@@ -203,9 +204,6 @@ class FalAIVideoConfig(BaseVideoConfig):
                 video_obj.id,
                 custom_llm_provider,
                 model_id,
-                status_url=status_url,
-                response_url=response_url,
-                cancel_url=cancel_url,
             )
 
         usage: Dict[str, Any] = {}
@@ -225,13 +223,10 @@ class FalAIVideoConfig(BaseVideoConfig):
         litellm_params: GenericLiteLLMParams,
         headers: dict,
     ) -> Tuple[str, Dict]:
-        original_id, model_id, status_url, _, _ = self._extract_request_and_model_id(
-            video_id
-        )
-        if status_url:
-            return status_url, {}
+        original_id, model_id = self._extract_request_and_model_id(video_id)
         encoded = encode_url_path_segment(original_id, field_name="video_id")
-        return f"{api_base}/{model_id}/requests/{encoded}/status", {}
+        namespace = self._queue_request_namespace(model_id)
+        return f"{api_base}/{namespace}/requests/{encoded}/status", {}
 
     def transform_video_status_retrieve_response(
         self,
@@ -239,35 +234,51 @@ class FalAIVideoConfig(BaseVideoConfig):
         logging_obj: LiteLLMLoggingObj,
         custom_llm_provider: Optional[str] = None,
     ) -> VideoObject:
+        self._raise_for_status(raw_response)
         try:
             response_data = raw_response.json()
         except (ValueError, JSONDecodeError):
             return VideoObject(id="", object="video", status="in_progress")
         status_raw = response_data.get("status", "IN_QUEUE")
+        error_payload = response_data.get("error")
+
+        status = _FAL_AI_STATUS_MAP.get(status_raw.upper(), "queued")
+        if error_payload:
+            status = "failed"
 
         video_data: Dict[str, Any] = {
             "id": response_data.get("request_id", ""),
             "object": "video",
-            "status": _FAL_AI_STATUS_MAP.get(status_raw.upper(), "queued"),
+            "status": status,
         }
 
         if "queue_position" in response_data:
             video_data["progress"] = response_data["queue_position"]
 
-        if status_raw.upper() == "FAILED":
+        if status == "failed":
             video_data["error"] = {
                 "code": "failed",
-                "message": str(response_data.get("error") or "Video generation failed"),
+                "message": str(error_payload or "Video generation failed"),
             }
 
         video_obj = VideoObject(**video_data)  # type: ignore[arg-type]
 
         if custom_llm_provider and video_obj.id:
+            model_id = self._model_id_from_request_url(raw_response)
             video_obj.id = encode_video_id_with_provider(
-                video_obj.id, custom_llm_provider, None
+                video_obj.id, custom_llm_provider, model_id
             )
 
         return video_obj
+
+    @staticmethod
+    def _model_id_from_request_url(raw_response: httpx.Response) -> Optional[str]:
+        request = getattr(raw_response, "request", None)
+        if request is None:
+            return None
+        path = request.url.path
+        head = path.split("/requests/", 1)[0].strip("/")
+        return head or None
 
     def transform_video_content_request(
         self,
@@ -277,19 +288,17 @@ class FalAIVideoConfig(BaseVideoConfig):
         headers: dict,
         variant: Optional[str] = None,
     ) -> Tuple[str, Dict]:
-        original_id, model_id, _, response_url, _ = self._extract_request_and_model_id(
-            video_id
-        )
-        if response_url:
-            return response_url, {}
+        original_id, model_id = self._extract_request_and_model_id(video_id)
         encoded = encode_url_path_segment(original_id, field_name="video_id")
-        return f"{api_base}/{model_id}/requests/{encoded}", {}
+        namespace = self._queue_request_namespace(model_id)
+        return f"{api_base}/{namespace}/requests/{encoded}", {}
 
     def transform_video_content_response(
         self,
         raw_response: httpx.Response,
         logging_obj: LiteLLMLoggingObj,
     ) -> bytes:
+        self._raise_for_status(raw_response)
         video_url = self._extract_video_url(raw_response.json())
         httpx_client: HTTPHandler = _get_httpx_client()
         video_response = httpx_client.get(video_url)
@@ -301,6 +310,7 @@ class FalAIVideoConfig(BaseVideoConfig):
         raw_response: httpx.Response,
         logging_obj: LiteLLMLoggingObj,
     ) -> bytes:
+        self._raise_for_status(raw_response)
         video_url = self._extract_video_url(raw_response.json())
         async_client: AsyncHTTPHandler = get_async_httpx_client(
             llm_provider=litellm.LlmProviders.FAL_AI,
@@ -311,6 +321,10 @@ class FalAIVideoConfig(BaseVideoConfig):
 
     @staticmethod
     def _extract_video_url(response_data: Dict[str, Any]) -> str:
+        error_payload = response_data.get("error")
+        if error_payload:
+            raise ValueError(f"fal.ai video generation failed: {error_payload}")
+
         video = response_data.get("video")
         if isinstance(video, dict):
             url = video.get("url")
@@ -326,16 +340,22 @@ class FalAIVideoConfig(BaseVideoConfig):
         )
 
     @staticmethod
-    def _extract_request_and_model_id(
-        video_id: str,
-    ) -> Tuple[str, str, Optional[str], Optional[str], Optional[str]]:
-        # fal.ai queue URLs embed the model id, so we need it back at lookup time.
+    def _queue_request_namespace(model_id: str) -> str:
+        # Queue submits accept full model subpaths (fal-ai/kling-video/v3/pro/
+        # image-to-video), but request status/result routes only exist under the
+        # owner/app prefix; deeper paths answer 405 Method Not Allowed.
+        segments = [segment for segment in model_id.split("/") if segment]
+        return "/".join(segments[:2])
+
+    @staticmethod
+    def _extract_request_and_model_id(video_id: str) -> Tuple[str, str]:
+        # Queue URLs are always rebuilt from api_base + model_id + request id, never
+        # taken from the (caller-supplied, only base64-encoded) video_id. Trusting an
+        # embedded URL would let a forged id redirect fal-authenticated requests to an
+        # arbitrary host and leak the API key.
         decoded = decode_video_id_with_provider(video_id)
         original_id = decoded.get("video_id") or extract_original_video_id(video_id)
         model_id = decoded.get("model_id")
-        status_url = decoded.get("status_url")
-        response_url = decoded.get("response_url")
-        cancel_url = decoded.get("cancel_url")
 
         if not model_id:
             raise ValueError(
@@ -343,7 +363,7 @@ class FalAIVideoConfig(BaseVideoConfig):
                 "in the video_id. Use the id returned by video creation."
             )
 
-        return original_id, model_id, status_url, response_url, cancel_url
+        return original_id, model_id
 
     def transform_video_remix_request(
         self,
@@ -399,30 +419,19 @@ class FalAIVideoConfig(BaseVideoConfig):
         litellm_params: GenericLiteLLMParams,
         headers: dict,
     ) -> Tuple[str, Dict]:
-        original_id, model_id, _, _, cancel_url = self._extract_request_and_model_id(
-            video_id
+        # fal cancels jobs via PUT /requests/{id}/cancel, not the DELETE the shared handler issues.
+        raise NotImplementedError(
+            "Video delete/cancel is not supported by the fal.ai queue API via LiteLLM"
         )
-        if cancel_url:
-            return cancel_url, {}
-        encoded = encode_url_path_segment(original_id, field_name="video_id")
-        return f"{api_base}/{model_id}/requests/{encoded}/cancel", {}
 
     def transform_video_delete_response(
         self,
         raw_response: httpx.Response,
         logging_obj: LiteLLMLoggingObj,
     ) -> VideoObject:
-        response_data: Dict[str, Any] = {}
-        try:
-            response_data = raw_response.json()
-        except Exception:
-            pass
-
-        return VideoObject(
-            id=response_data.get("request_id", ""),
-            object="video",
-            status="cancelled",
-        )  # type: ignore[arg-type]
+        raise NotImplementedError(
+            "Video delete/cancel is not supported by the fal.ai queue API via LiteLLM"
+        )
 
     def get_error_class(
         self, error_message: str, status_code: int, headers: Union[dict, httpx.Headers]
@@ -431,4 +440,13 @@ class FalAIVideoConfig(BaseVideoConfig):
             status_code=status_code,
             message=error_message,
             headers=headers,
+        )
+
+    def _raise_for_status(self, raw_response: httpx.Response) -> None:
+        if raw_response.is_success:
+            return
+        raise self.get_error_class(
+            error_message=raw_response.text,
+            status_code=raw_response.status_code,
+            headers=raw_response.headers,
         )
