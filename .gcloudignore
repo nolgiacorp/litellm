@@ -1,0 +1,11 @@
+# Without this file, gcloud builds submit derives excludes from .gitignore,
+# which lists tracked files the Docker build needs (ui/litellm-dashboard/package.json).
+.git
+.gcloudignore
+.venv
+.venv_policy_test
+**/node_modules
+**/__pycache__
+ui/litellm-dashboard/.next
+ui/litellm-dashboard/out
+litellm/proxy/_experimental/out
