@@ -34,6 +34,19 @@ else:
     BaseLLMException = Any
 
 
+def fetch_image_as_base64(image_url: str) -> tuple[str, str]:
+    """
+    Download an image URL and return (base64_data, mime_type).
+
+    Used for image-to-video: callers pass a signed URL, while the Gemini
+    APIs want inline base64 bytes.
+    """
+    response = litellm.module_level_client.get(url=image_url)
+    response.raise_for_status()
+    content_type = response.headers.get("content-type", "").split(";")[0].strip() or "image/jpeg"
+    return base64.b64encode(response.content).decode("utf-8"), content_type
+
+
 def _convert_image_to_gemini_format(image_file) -> Dict[str, str]:
     """
     Convert image file to Gemini format with base64 encoding and MIME type.
@@ -280,6 +293,12 @@ class GeminiVideoConfig(BaseVideoConfig):
                     image_data = _convert_image_to_gemini_format(image)
                 instance["image"] = image_data
 
+        if "image_url" in params_copy:
+            image_url = params_copy.pop("image_url")
+            if image_url and "image" not in instance:
+                base64_data, mime_type = fetch_image_as_base64(image_url)
+                instance["image"] = {"bytesBase64Encoded": base64_data, "mimeType": mime_type}
+
         parameters = GeminiVideoGenerationParameters(**params_copy)
 
         request_body_obj = GeminiVideoGenerationRequest(instances=[instance], parameters=parameters)
@@ -418,9 +437,7 @@ class GeminiVideoConfig(BaseVideoConfig):
         error_data = operation_response.error
         if is_done and error_data is None:
             generate_video_response = (
-                operation_response.response.generateVideoResponse
-                if operation_response.response
-                else None
+                operation_response.response.generateVideoResponse if operation_response.response else None
             )
             if generate_video_response is not None:
                 if (
@@ -486,9 +503,7 @@ class GeminiVideoConfig(BaseVideoConfig):
         generated_samples = generate_video_response.generatedSamples
         if not generated_samples:
             reasons = generate_video_response.raiMediaFilteredReasons or []
-            raise ValueError(
-                "No generated samples in completed operation. " + " ".join(reasons)
-            )
+            raise ValueError("No generated samples in completed operation. " + " ".join(reasons))
         download_url = generated_samples[0].video.uri
 
         params: Dict[str, Any] = {}

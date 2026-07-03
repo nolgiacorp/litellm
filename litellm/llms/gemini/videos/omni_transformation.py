@@ -17,6 +17,8 @@ from litellm.types.videos.utils import (
     extract_original_video_id,
 )
 
+from .transformation import fetch_image_as_base64
+
 if TYPE_CHECKING:
     from litellm.litellm_core_utils.litellm_logging import Logging as _LiteLLMLoggingObj
 
@@ -154,12 +156,14 @@ class GeminiOmniVideoConfig(BaseVideoConfig):
         seconds = params.get("seconds") or params.get("duration_seconds")
         negative_prompt = params.get("negative_prompt")
         aspect_ratio = params.get("aspect_ratio")
+        image_url = params.get("image_url")
 
         prompt_parts: list[str] = [prompt]
         if seconds:
             prompt_parts.append(f"The video must be exactly {seconds} seconds long.")
         if negative_prompt:
             prompt_parts.append(f"Do not include: {negative_prompt}.")
+        full_prompt = " ".join(prompt_parts)
 
         response_format: dict[str, Any] = {"type": "video"}
         if aspect_ratio in _SUPPORTED_ASPECT_RATIOS:
@@ -167,10 +171,18 @@ class GeminiOmniVideoConfig(BaseVideoConfig):
 
         request_data: dict[str, Any] = {
             "model": model.replace("gemini/", ""),
-            "input": " ".join(prompt_parts),
+            "input": full_prompt,
             "response_format": response_format,
             "background": True,
         }
+
+        if image_url:
+            base64_data, mime_type = fetch_image_as_base64(image_url)
+            request_data["input"] = [
+                {"type": "image", "data": base64_data, "mime_type": mime_type},
+                {"type": "text", "text": full_prompt},
+            ]
+            request_data["generation_config"] = {"video_config": {"task": "image_to_video"}}
 
         return request_data, [], api_base
 

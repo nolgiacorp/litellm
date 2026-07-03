@@ -129,6 +129,34 @@ class TestGeminiOmniVideoConfig:
             "A cat playing with yarn. The video must be exactly 6 seconds long. Do not include: captions."
         )
 
+    def test_transform_video_create_request_with_image_url(self, monkeypatch):
+        image_bytes = b"png-bytes"
+        download_response = Mock()
+        download_response.content = image_bytes
+        download_response.headers = {"content-type": "image/png"}
+        download_response.raise_for_status = Mock()
+        mock_client = Mock()
+        mock_client.get.return_value = download_response
+
+        import litellm
+
+        monkeypatch.setattr(litellm, "module_level_client", mock_client)
+
+        request_data, _, _ = self.config.transform_video_create_request(
+            model=MODEL,
+            prompt="Animate this drawing.",
+            api_base=f"{API_BASE}/v1beta/interactions",
+            video_create_optional_request_params={"image_url": "https://storage.example/signed.png"},
+            litellm_params=GenericLiteLLMParams(),
+            headers={},
+        )
+        assert request_data["input"] == [
+            {"type": "image", "data": base64.b64encode(image_bytes).decode(), "mime_type": "image/png"},
+            {"type": "text", "text": "Animate this drawing."},
+        ]
+        assert request_data["generation_config"] == {"video_config": {"task": "image_to_video"}}
+        mock_client.get.assert_called_once_with(url="https://storage.example/signed.png")
+
     def test_transform_video_create_request_ignores_unsupported_aspect_ratio(self):
         request_data, _, _ = self.config.transform_video_create_request(
             model=MODEL,

@@ -158,6 +158,41 @@ class TestGeminiVideoConfig:
         assert data["parameters"]["aspectRatio"] == "16:9"
         assert data["parameters"]["durationSeconds"] == 4
 
+    def test_transform_video_create_request_image_url_downloaded_to_instance(self, monkeypatch):
+        """image_url gets downloaded and inlined as base64 in instances[0]['image']."""
+        import base64 as b64
+        from unittest.mock import Mock
+
+        import litellm
+
+        image_bytes = b"jpeg-bytes"
+        download_response = Mock()
+        download_response.content = image_bytes
+        download_response.headers = {"content-type": "image/jpeg"}
+        download_response.raise_for_status = Mock()
+        mock_client = Mock()
+        mock_client.get.return_value = download_response
+        monkeypatch.setattr(litellm, "module_level_client", mock_client)
+
+        data, _, _ = self.config.transform_video_create_request(
+            model="veo-3.1-generate-preview",
+            prompt="Animate this still",
+            api_base="https://generativelanguage.googleapis.com/v1beta/models/veo-3.1-generate-preview:predictLongRunning",
+            video_create_optional_request_params={
+                "image_url": "https://storage.example/signed.jpg",
+                "aspectRatio": "16:9",
+            },
+            litellm_params=GenericLiteLLMParams(),
+            headers={},
+        )
+
+        assert data["instances"][0]["image"] == {
+            "bytesBase64Encoded": b64.b64encode(image_bytes).decode(),
+            "mimeType": "image/jpeg",
+        }
+        assert "image_url" not in data.get("parameters", {})
+        mock_client.get.assert_called_once_with(url="https://storage.example/signed.jpg")
+
     def test_transform_video_create_request_image_filelike_goes_to_instance(self):
         """File-like image (BytesIO) gets base64-encoded into instances[0]['image']."""
         prompt = "Animate this still"
