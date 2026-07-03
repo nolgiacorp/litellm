@@ -8613,6 +8613,12 @@ class ProviderConfigManager:
 
             return AzureVideoConfig()
         elif LlmProviders.GEMINI == provider:
+            if model is not None and "omni" in model:
+                from litellm.llms.gemini.videos.omni_transformation import (
+                    GeminiOmniVideoConfig,
+                )
+
+                return GeminiOmniVideoConfig()
             from litellm.llms.gemini.videos.transformation import GeminiVideoConfig
 
             return GeminiVideoConfig()

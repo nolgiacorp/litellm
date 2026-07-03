@@ -98,3 +98,25 @@ Before implementing:
 - If you write 200 lines and it could be 50, rewrite it
 
 Ask yourself: "Would a senior engineer say this is overcomplicated?" If yes, simplify
+
+---
+
+## Nolgia fork notes (nolgiacorp/litellm)
+
+- Default branch is `litellm_internal_staging`; the deployed Cloud Run
+  image must be built from a commit ON this branch (a feature branch once
+  ran in prod undetected — don't repeat that).
+- Our additions live in `litellm/llms/fal_ai/` (videos, audio, image
+  generation) exposed via `/v1/videos` and `/v1/audio/speech`. fal is a
+  queue API: submit to the full model path, but poll status/content on
+  the 2-segment owner/app namespace (`_queue_request_namespace`) — full
+  paths 405.
+- `FalAIVideoConfig.map_openai_params` forwards params it doesn't
+  recognize verbatim to fal — that's how nolgia-api's `generate_audio`,
+  `duration_seconds`, `aspect_ratio`, `seed`, etc. flow through with no
+  fork changes. Don't "clean up" that passthrough; the platform depends
+  on it.
+- Kling v3 image-to-video wants `start_image_url`; Seedance wants
+  `image_url` (`_image_url_field_for_model`).
+- The deployed config lives in GCP Secret Manager, NOT in the infra repo
+  YAML alone — see infra/CLAUDE.md for the drift trap.
