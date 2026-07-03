@@ -111,6 +111,7 @@ class TestGeminiOmniVideoConfig:
         assert request_data["input"] == "A marble rolling on a track."
         assert request_data["response_format"] == {"type": "video", "aspect_ratio": "9:16"}
         assert request_data["background"] is True
+        assert request_data["store"] is True
         assert files == []
 
     def test_transform_video_create_request_folds_duration_and_negative_prompt(self):

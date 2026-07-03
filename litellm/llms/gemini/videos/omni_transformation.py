@@ -174,6 +174,7 @@ class GeminiOmniVideoConfig(BaseVideoConfig):
             "input": full_prompt,
             "response_format": response_format,
             "background": True,
+            "store": True,
         }
 
         if image_url:
