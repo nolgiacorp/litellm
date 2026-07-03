@@ -25443,6 +25443,8 @@ export interface components {
             ocr_cost_per_page?: number | null;
             /** Organization */
             organization?: string | null;
+            /** Output Cost Per Audio */
+            output_cost_per_audio?: number | null;
             /** Output Cost Per Audio Per Second */
             output_cost_per_audio_per_second?: number | null;
             /** Output Cost Per Audio Token */
@@ -33191,6 +33193,8 @@ export interface components {
             ocr_cost_per_page?: number | null;
             /** Organization */
             organization?: string | null;
+            /** Output Cost Per Audio */
+            output_cost_per_audio?: number | null;
             /** Output Cost Per Audio Per Second */
             output_cost_per_audio_per_second?: number | null;
             /** Output Cost Per Audio Token */
