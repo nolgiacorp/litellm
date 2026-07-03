@@ -321,8 +321,9 @@ def video_content(
         _is_async = kwargs.pop("async_call", False) is True
 
         # Try to decode provider from video_id if not explicitly provided
+        decoded = decode_video_id_with_provider(video_id)
+        decoded_video_model = decoded.get("model_id")
         if custom_llm_provider is None:
-            decoded = decode_video_id_with_provider(video_id)
             custom_llm_provider = decoded.get("custom_llm_provider") or "openai"
 
         # get llm provider logic
@@ -330,7 +331,7 @@ def video_content(
 
         # get provider config
         video_provider_config: Optional[BaseVideoConfig] = ProviderConfigManager.get_provider_video_config(
-            model=None,
+            model=decoded_video_model,
             provider=litellm.LlmProviders(custom_llm_provider),
         )
 
@@ -593,8 +594,9 @@ def video_remix(
             return response
 
         # Try to decode provider from video_id if not explicitly provided
+        decoded = decode_video_id_with_provider(video_id)
+        decoded_video_model = decoded.get("model_id")
         if custom_llm_provider is None:
-            decoded = decode_video_id_with_provider(video_id)
             custom_llm_provider = decoded.get("custom_llm_provider") or "openai"
 
         # get llm provider logic
@@ -602,7 +604,7 @@ def video_remix(
 
         # get provider config
         video_remix_provider_config: Optional[BaseVideoConfig] = ProviderConfigManager.get_provider_video_config(
-            model=None,
+            model=decoded_video_model,
             provider=litellm.LlmProviders(custom_llm_provider),
         )
 
@@ -1032,8 +1034,9 @@ def video_status(
             return response
 
         # Try to decode provider from video_id if not explicitly provided
+        decoded = decode_video_id_with_provider(video_id)
+        decoded_video_model = decoded.get("model_id")
         if custom_llm_provider is None:
-            decoded = decode_video_id_with_provider(video_id)
             custom_llm_provider = decoded.get("custom_llm_provider") or "openai"
 
         # get llm provider logic
@@ -1041,7 +1044,7 @@ def video_status(
 
         # get provider config
         video_status_provider_config: Optional[BaseVideoConfig] = ProviderConfigManager.get_provider_video_config(
-            model=None,
+            model=decoded_video_model,
             provider=litellm.LlmProviders(custom_llm_provider),
         )
 
@@ -1428,14 +1431,15 @@ def video_edit(
                 mock_response = json.loads(mock_response)
             return VideoObject(**mock_response)
 
+        decoded = decode_video_id_with_provider(video_id)
+        decoded_video_model = decoded.get("model_id")
         if custom_llm_provider is None:
-            decoded = decode_video_id_with_provider(video_id)
             custom_llm_provider = decoded.get("custom_llm_provider") or "openai"
 
         litellm_params = GenericLiteLLMParams(**kwargs)
 
         provider_config: Optional[BaseVideoConfig] = ProviderConfigManager.get_provider_video_config(
-            model=None,
+            model=decoded_video_model,
             provider=litellm.LlmProviders(custom_llm_provider),
         )
 
@@ -1561,14 +1565,15 @@ def video_extension(
                 mock_response = json.loads(mock_response)
             return VideoObject(**mock_response)
 
+        decoded = decode_video_id_with_provider(video_id)
+        decoded_video_model = decoded.get("model_id")
         if custom_llm_provider is None:
-            decoded = decode_video_id_with_provider(video_id)
             custom_llm_provider = decoded.get("custom_llm_provider") or "openai"
 
         litellm_params = GenericLiteLLMParams(**kwargs)
 
         provider_config: Optional[BaseVideoConfig] = ProviderConfigManager.get_provider_video_config(
-            model=None,
+            model=decoded_video_model,
             provider=litellm.LlmProviders(custom_llm_provider),
         )
 

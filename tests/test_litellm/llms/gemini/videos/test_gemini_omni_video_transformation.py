@@ -310,6 +310,22 @@ class TestGeminiOmniVideoConfig:
         _, kwargs = mock_client.get.call_args
         assert kwargs["headers"]["x-goog-api-key"] == "test-key"
 
+    def test_video_status_and_content_dispatch_to_omni_config_from_encoded_id(self):
+        from unittest.mock import MagicMock, patch
+
+        from litellm.videos import main as videos_main
+
+        handler = MagicMock()
+        video_id = encode_video_id_with_provider("v1_abc123", "gemini", MODEL)
+        with patch.object(videos_main, "base_llm_http_handler", handler):
+            videos_main.video_status(video_id=video_id)
+            videos_main.video_content(video_id=video_id)
+
+        status_config = handler.video_status_handler.call_args.kwargs["video_status_provider_config"]
+        assert isinstance(status_config, GeminiOmniVideoConfig)
+        content_config = handler.video_content_handler.call_args.kwargs["video_content_provider_config"]
+        assert isinstance(content_config, GeminiOmniVideoConfig)
+
     def test_video_remix_not_supported(self):
         with pytest.raises(NotImplementedError):
             self.config.transform_video_remix_request(
