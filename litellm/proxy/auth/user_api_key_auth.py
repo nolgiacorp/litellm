@@ -1007,10 +1007,16 @@ async def _user_api_key_auth_builder(
         # if user wants to pass LiteLLM_Master_Key as a custom header, example pass litellm keys as X-LiteLLM-Key: Bearer sk-1234
         custom_litellm_key_header_name = general_settings.get("litellm_key_header_name")
         if custom_litellm_key_header_name is not None:
-            api_key = get_api_key_from_custom_header(
+            custom_header_api_key = get_api_key_from_custom_header(
                 request=request,
                 custom_litellm_key_header_name=custom_litellm_key_header_name,
             )
+            # Only clients that cannot control the Authorization header (e.g.
+            # behind a gateway that overwrites it) send the custom header; when
+            # it is absent, keep the key already resolved from the standard
+            # headers so both auth styles work side by side.
+            if custom_header_api_key:
+                api_key = custom_header_api_key
 
         if open_telemetry_logger is not None:
             # Reuse the span created by user_api_key_auth (before body parse)
@@ -2574,8 +2580,9 @@ def get_api_key_from_custom_header(request: Request, custom_litellm_key_header_n
             )
         )
     else:
-        verbose_proxy_logger.exception(
-            f"No LiteLLM Virtual Key pass. Please set header={custom_litellm_key_header_name}: Bearer <api_key>"
+        verbose_proxy_logger.debug(
+            "No LiteLLM Virtual Key passed in header=%s; falling back to standard auth headers",
+            custom_litellm_key_header_name,
         )
     return api_key
 
