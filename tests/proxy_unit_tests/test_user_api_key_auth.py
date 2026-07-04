@@ -1215,6 +1215,67 @@ async def test_x_litellm_api_key():
 
 
 @pytest.mark.asyncio
+async def test_litellm_key_header_name_falls_back_to_authorization():
+    """
+    With ``general_settings.litellm_key_header_name`` configured, a request
+    that carries the key only in the standard Authorization header must still
+    authenticate; the custom header supersedes Authorization only when it is
+    actually present. Regression test for clients that cannot send the custom
+    header (e.g. plain OpenAI SDK clients holding a virtual key).
+    """
+    from fastapi import Request
+    from starlette.datastructures import URL
+
+    from litellm.constants import LITELLM_PROXY_MASTER_KEY_ALIAS
+    from litellm.proxy.auth.user_api_key_auth import user_api_key_auth
+    from litellm.proxy.proxy_server import user_api_key_cache
+
+    master_key = "sk-1234"
+
+    setattr(litellm.proxy.proxy_server, "user_api_key_cache", user_api_key_cache)
+    setattr(litellm.proxy.proxy_server, "master_key", master_key)
+    setattr(litellm.proxy.proxy_server, "prisma_client", "hello-world")
+    original_general_settings = litellm.proxy.proxy_server.general_settings
+    setattr(
+        litellm.proxy.proxy_server,
+        "general_settings",
+        {"litellm_key_header_name": "X-Litellm-Key"},
+    )
+
+    try:
+        # Custom header absent: Authorization must be used.
+        request = Request(scope={"type": "http", "headers": []})
+        request._url = URL(url="/chat/completions")
+        valid_token = await user_api_key_auth(
+            request=request, api_key="Bearer " + master_key
+        )
+        assert valid_token.token == LITELLM_PROXY_MASTER_KEY_ALIAS
+
+        # Custom header present: it supersedes a bogus Authorization header.
+        request = Request(
+            scope={
+                "type": "http",
+                "headers": [(b"x-litellm-key", b"Bearer " + master_key.encode())],
+            }
+        )
+        request._url = URL(url="/chat/completions")
+        valid_token = await user_api_key_auth(
+            request=request, api_key="Bearer garbage-key"
+        )
+        assert valid_token.token == LITELLM_PROXY_MASTER_KEY_ALIAS
+
+        # Neither header carries a valid key: still rejected.
+        request = Request(scope={"type": "http", "headers": []})
+        request._url = URL(url="/chat/completions")
+        with pytest.raises(Exception):
+            await user_api_key_auth(request=request, api_key="Bearer garbage-key")
+    finally:
+        setattr(
+            litellm.proxy.proxy_server, "general_settings", original_general_settings
+        )
+
+
+@pytest.mark.asyncio
 async def test_user_api_key_from_query_param():
     """Ensure user_api_key_auth reads API key from `key` query parameter."""
     from fastapi import Request

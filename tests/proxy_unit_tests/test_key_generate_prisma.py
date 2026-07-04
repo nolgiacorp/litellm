@@ -3083,7 +3083,7 @@ async def test_custom_api_key_header_name(prisma_client):
     # this should pass because we pass the master key as X-Litellm-Key and litellm_key_header_name="X-Litellm-Key" in general settings
     result = await user_api_key_auth(request=request, api_key="Bearer invalid-key")
 
-    # this should fail because X-Litellm-Key is invalid
+    # without the custom header, auth falls back to the Authorization header
     request = Request(
         {
             "type": "http",
@@ -3092,17 +3092,14 @@ async def test_custom_api_key_header_name(prisma_client):
             "headers": [],
         }
     )
+    result = await user_api_key_auth(request=request, api_key="Bearer sk-1234")
+
+    # this should fail because neither header carries a valid key
     try:
-        result = await user_api_key_auth(request=request, api_key="Bearer sk-1234")
+        result = await user_api_key_auth(request=request, api_key="Bearer invalid-key")
         pytest.fail(f"This should have failed!. invalid Auth on this request")
     except Exception as e:
         print("failed with error", e)
-        assert (
-            "Malformed API Key passed in. Ensure Key has `Bearer ` prefix" in e.message
-        )
-        pass
-
-    # this should pass because X-Litellm-Key is valid
 
 
 @pytest.mark.asyncio()
