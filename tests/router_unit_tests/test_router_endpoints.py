@@ -288,6 +288,31 @@ async def test_aspeech_sets_deployment_metadata():
     assert metadata["model_info"]["id"] is not None
 
 
+@pytest.mark.asyncio
+async def test_aspeech_without_voice():
+    router = Router(
+        model_list=[
+            {
+                "model_name": "music-gen",
+                "litellm_params": {
+                    "model": "fal_ai/fal-ai/stable-audio-25/text-to-audio",
+                    "api_key": "fake-key",
+                },
+            },
+        ]
+    )
+
+    mock_response = MagicMock()
+    with patch("litellm.aspeech", return_value=mock_response) as mock_aspeech:
+        response = await router.aspeech(
+            model="music-gen",
+            input="ambient synth pads over a slow drum groove",
+        )
+
+    assert response is mock_response
+    assert mock_aspeech.call_args.kwargs["voice"] is None
+
+
 @pytest.mark.asyncio()
 async def test_rerank_endpoint(model_list):
     from litellm.types.utils import RerankResponse
