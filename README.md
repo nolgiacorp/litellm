@@ -1,6 +1,11 @@
 <h1 align="center">
         🚅 LiteLLM
     </h1>
+
+> **Nolgia fork boundary:** This repository (`nolgiainc/litellm`) is Nolgia's embedded LiteLLM fork. The upstream PyPI package, GHCR images, deploy buttons, documentation, and support links in this README are upstream-owned and do not contain fork-only behavior. Fork developers should read [`AGENTS.md`](AGENTS.md) and the [Nolgia fork notes in `CLAUDE.md`](CLAUDE.md#nolgia-fork-notes-nolgiacorplitellm) before changing this tree.
+>
+> The durable additions maintained here are the fal.ai video and audio providers under [`litellm/llms/fal_ai/`](litellm/llms/fal_ai/). The remotely queried default branch is `litellm_internal_staging`; build and deploy only commits on that branch, never feature branches.
+
     <p align="center">
         <p align="center">LiteLLM AI Gateway
         </p>
@@ -633,9 +638,9 @@ For detailed contributing guidelines, see [CONTRIBUTING.md](CONTRIBUTING.md).
 LiteLLM follows the [Google Python Style Guide](https://google.github.io/styleguide/pyguide.html).
 
 Our automated checks include:
-- **Black** for code formatting
+- **Ruff formatter** for code formatting
 - **Ruff** for linting and code quality
-- **MyPy** for type checking
+- **basedpyright** for type checking
 - **Circular import detection**
 - **Import safety checks**
 
