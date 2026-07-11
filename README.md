@@ -64,7 +64,7 @@ Managing LLM calls across providers gets complicated fast — different SDKs, au
 - **Unified API** — one interface for 100+ LLMs, no provider-specific SDK juggling
 - **Drop-in OpenAI compatibility** — swap providers without rewriting your code
 - **Production-ready gateway** — virtual keys, spend tracking, guardrails, load balancing, and an admin dashboard out of the box
-- **8ms P95 latency** at 1k RPS ([benchmarks](https://docs.litellm.ai/docs/benchmarks))
+- **8ms P95 latency** at 1k RPS; [benchmarks](https://docs.litellm.ai/docs/benchmarks)
 
 ### OSS Adopters
 
@@ -159,7 +159,7 @@ request = SendMessageRequest(
 response = await client.send_message(request)
 ```
 
-### AI Gateway (Proxy Server)
+### AI Gateway (Proxy Server) - A2A Agents
 
 **Step 1.** [Add your Agent to the AI Gateway](https://docs.litellm.ai/docs/a2a#adding-your-agent) — set `protocolVersion` to `1.0` or `0.3` per agent
 
@@ -271,7 +271,7 @@ curl -X POST 'http://0.0.0.0:4000/v1/chat/completions' \
 
 </details>
 
-### Supported Providers ([Website Supported Models](https://models.litellm.ai/) | [Docs](https://docs.litellm.ai/docs/providers))
+### Supported Providers: [Website Supported Models](https://models.litellm.ai/) | [Docs](https://docs.litellm.ai/docs/providers)
 
 | Provider                                                                            | `/chat/completions` | `/messages` | `/responses` | `/embeddings` | `/image/generations` | `/audio/transcriptions` | `/audio/speech` | `/moderations` | `/batches` | `/rerank` |
 |-------------------------------------------------------------------------------------|---------------------|-------------|--------------|---------------|----------------------|-------------------------|-----------------|----------------|-----------|-----------|
