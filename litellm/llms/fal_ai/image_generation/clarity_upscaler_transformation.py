@@ -1,4 +1,4 @@
-from typing import Any, List, Optional
+from typing import TYPE_CHECKING
 
 import httpx
 
@@ -6,7 +6,12 @@ from litellm.secret_managers.main import get_secret_str
 from litellm.types.llms.openai import OpenAIImageGenerationOptionalParams
 from litellm.types.utils import ImageObject, ImageResponse
 
-from .transformation import FalAIBaseConfig, LiteLLMLoggingObj
+from .transformation import FalAIBaseConfig
+
+if TYPE_CHECKING:
+    from litellm.litellm_core_utils.litellm_logging import Logging as LiteLLMLoggingObj
+else:
+    LiteLLMLoggingObj = object
 
 
 class FalAIClarityUpscalerConfig(FalAIBaseConfig):
@@ -25,18 +30,18 @@ class FalAIClarityUpscalerConfig(FalAIBaseConfig):
 
     def get_complete_url(
         self,
-        api_base: Optional[str],
-        api_key: Optional[str],
+        api_base: "str | None",
+        api_key: "str | None",
         model: str,
         optional_params: dict,
         litellm_params: dict,
-        stream: Optional[bool] = None,
+        stream: "bool | None" = None,
     ) -> str:
         base_url = (api_base or get_secret_str("FAL_AI_API_BASE") or self.DEFAULT_BASE_URL).rstrip("/")
         endpoint = model if model.startswith("fal-ai/") else f"fal-ai/{model}"
         return f"{base_url}/{endpoint}"
 
-    def get_supported_openai_params(self, model: str) -> List[OpenAIImageGenerationOptionalParams]:
+    def get_supported_openai_params(self, model: str) -> "list[OpenAIImageGenerationOptionalParams]":
         return ["response_format", "n", "size"]
 
     def map_openai_params(
@@ -77,13 +82,13 @@ class FalAIClarityUpscalerConfig(FalAIBaseConfig):
         request_data: dict,
         optional_params: dict,
         litellm_params: dict,
-        encoding: Any,
-        api_key: Optional[str] = None,
-        json_mode: Optional[bool] = None,
+        encoding: object,
+        api_key: "str | None" = None,
+        json_mode: "bool | None" = None,
     ) -> ImageResponse:
         try:
             response_data = raw_response.json()
-        except Exception as e:
+        except ValueError as e:
             raise self.get_error_class(
                 error_message=f"Error transforming image generation response: {e}",
                 status_code=raw_response.status_code,
