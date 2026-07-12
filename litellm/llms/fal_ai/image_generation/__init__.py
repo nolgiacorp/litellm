@@ -3,6 +3,7 @@ from litellm.llms.base_llm.image_generation.transformation import (
 )
 
 from .bria_transformation import FalAIBriaConfig
+from .clarity_upscaler_transformation import FalAIClarityUpscalerConfig
 from .flux_pro_v11_transformation import FalAIFluxProV11Config
 from .flux_pro_v11_ultra_transformation import FalAIFluxProV11UltraConfig
 from .flux_schnell_transformation import FalAIFluxSchnellConfig
@@ -21,6 +22,7 @@ __all__ = [
     "FalAIBaseConfig",
     "FalAIImageGenerationConfig",
     "FalAIImagen4Config",
+    "FalAIClarityUpscalerConfig",
     "FalAINanoBananaConfig",
     "FalAIRecraftV3Config",
     "FalAIBriaConfig",
@@ -47,7 +49,9 @@ def get_fal_ai_image_generation_config(model: str) -> BaseImageGenerationConfig:
     model_lower = model.lower()
 
     # Map model names to their corresponding configuration classes
-    if "nano-banana" in model_lower or "gemini-25-flash-image" in model_lower:
+    if "clarity-upscaler" in model_lower or "clarity_upscaler" in model_lower:
+        return FalAIClarityUpscalerConfig()
+    elif "nano-banana" in model_lower or "gemini-25-flash-image" in model_lower:
         return FalAINanoBananaConfig()
     elif "imagen4" in model_lower or "imagen-4" in model_lower:
         return FalAIImagen4Config()
