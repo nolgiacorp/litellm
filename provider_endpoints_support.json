@@ -936,6 +936,23 @@
         "interactions": true
       }
     },
+    "kling": {
+      "display_name": "Kling (`kling`)",
+      "url": "https://docs.litellm.ai/docs/providers/kling",
+      "endpoints": {
+        "chat_completions": false,
+        "messages": false,
+        "responses": false,
+        "embeddings": false,
+        "image_generations": true,
+        "audio_transcriptions": false,
+        "audio_speech": false,
+        "moderations": false,
+        "batches": false,
+        "rerank": false,
+        "video_generations": true
+      }
+    },
     "featherless_ai": {
       "display_name": "Featherless AI (`featherless_ai`)",
       "url": "https://docs.litellm.ai/docs/providers/featherless_ai",

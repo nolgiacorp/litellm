@@ -30,6 +30,17 @@ EXCLUDED_ROLLOUT_FLAGS = {
     "LITELLM_USE_RUST_OCR",
 }
 
+# Fork-specific provider constants. This test validates against the upstream public
+# docs (BerriAI/litellm-docs is checked out into docs/my-website at CI time), which
+# does not carry this fork's private provider settings, so there is nowhere here to
+# document them.
+EXCLUDED_FORK_PRIVATE_VARS = {
+    "FAL_AI_DEFAULT_API_BASE",
+    "FAL_AI_POLLING_TIMEOUT",
+    "KLING_DEFAULT_API_BASE",
+    "KLING_POLLING_TIMEOUT",
+}
+
 EXCLUDED_TERMINAL_VARS = {
     "TERM",
     "TERM_PROGRAM",
@@ -78,6 +89,7 @@ for root, dirs, files in os.walk(repo_base):
                     if match not in EXCLUDED_TERMINAL_VARS
                     and match not in EXCLUDED_GUARD_ONLY_VARS
                     and match not in EXCLUDED_ROLLOUT_FLAGS
+                    and match not in EXCLUDED_FORK_PRIVATE_VARS
                 )  # Extract only the key part, excluding terminal vars
 
                 # Find all keys using litellm.get_secret()
