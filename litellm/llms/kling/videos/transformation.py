@@ -1,0 +1,418 @@
+from json import JSONDecodeError
+from typing import TYPE_CHECKING, Any
+
+import httpx
+from httpx._types import RequestFiles
+
+import litellm
+from litellm.litellm_core_utils.url_utils import encode_url_path_segment
+from litellm.llms.base_llm.chat.transformation import BaseLLMException
+from litellm.llms.base_llm.videos.transformation import BaseVideoConfig
+from litellm.llms.custom_httpx.http_handler import (
+    AsyncHTTPHandler,
+    HTTPHandler,
+    _get_httpx_client,
+    get_async_httpx_client,
+)
+from litellm.llms.kling.auth import kling_auth_headers
+from litellm.llms.kling.common_utils import (
+    KLING_TASK_STATUS_MAP,
+    resolve_kling_api_base,
+    strip_kling_prefix,
+)
+from litellm.types.router import GenericLiteLLMParams
+from litellm.types.videos.main import VideoCreateOptionalRequestParams, VideoObject
+from litellm.types.videos.utils import (
+    decode_video_id_with_provider,
+    encode_video_id_with_provider,
+    extract_original_video_id,
+)
+
+if TYPE_CHECKING:
+    from litellm.litellm_core_utils.litellm_logging import Logging as _LiteLLMLoggingObj
+
+    LiteLLMLoggingObj = _LiteLLMLoggingObj
+else:
+    LiteLLMLoggingObj = Any
+
+_TEXT_TO_VIDEO = "text2video"
+_IMAGE_TO_VIDEO = "image2video"
+
+_SIZE_TO_ASPECT_RATIO = {
+    "1280x720": "16:9",
+    "1920x1080": "16:9",
+    "3840x2160": "16:9",
+    "720x1280": "9:16",
+    "1080x1920": "9:16",
+    "2160x3840": "9:16",
+    "1024x1024": "1:1",
+    "1080x1080": "1:1",
+}
+
+
+class KlingVideoConfig(BaseVideoConfig):
+    """
+    Kling's classic /v1 API is a task API: POST to /v1/videos/text2video (or
+    /v1/videos/image2video), then poll GET /v1/videos/{kind}/{task_id}. The poll
+    response carries data.task_status (submitted|processing|succeed|failed) and, on
+    success, data.task_result.videos[].url.
+
+    The provider's public resolution knob (720p/1080p/4k) is translated to the
+    classic API's mode field (std/pro/4k). A newer path-based Kling-3.0 API
+    (POST /text-to-video/kling-3.0) accepts settings.resolution directly, but it
+    rejects AccessKey:SecretKey credentials (requires a new-style single API key),
+    so it is a future upgrade path rather than what we call today.
+    """
+
+    RESOLUTION_TO_MODE = {"720p": "std", "1080p": "pro", "4k": "4k"}
+    DEFAULT_RESOLUTION = "1080p"
+
+    def get_supported_openai_params(self, model: str) -> list:
+        return [
+            "model",
+            "prompt",
+            "input_reference",
+            "seconds",
+            "size",
+            "user",
+            "extra_headers",
+            "extra_body",
+        ]
+
+    @classmethod
+    def _resolution_to_mode(cls, resolution: Any) -> str:
+        key = str(resolution).strip().lower()
+        mode = cls.RESOLUTION_TO_MODE.get(key)
+        if mode is None:
+            raise ValueError(
+                f"Unsupported Kling video resolution '{resolution}'. "
+                f"Supported values are {sorted(cls.RESOLUTION_TO_MODE)}."
+            )
+        return mode
+
+    def map_openai_params(
+        self,
+        video_create_optional_params: VideoCreateOptionalRequestParams,
+        model: str,
+        drop_params: bool,
+    ) -> dict:
+        params: dict[str, Any] = dict(video_create_optional_params)
+        extra_body = params.pop("extra_body", None)
+        if isinstance(extra_body, dict):
+            params = {**params, **extra_body}
+
+        mapped: dict[str, Any] = {}
+
+        seconds = params.get("seconds")
+        if seconds is not None:
+            mapped["duration"] = str(seconds)
+
+        size = params.get("size")
+        if isinstance(size, str):
+            aspect = _SIZE_TO_ASPECT_RATIO.get(size)
+            if aspect is not None:
+                mapped["aspect_ratio"] = aspect
+            elif "x" in size:
+                mapped["aspect_ratio"] = size.replace("x", ":")
+
+        resolution = params.get("resolution")
+        if resolution is not None:
+            mapped["mode"] = self._resolution_to_mode(resolution)
+
+        input_reference = params.get("input_reference")
+        if isinstance(input_reference, str) and input_reference:
+            mapped["image"] = input_reference
+
+        supported = self.get_supported_openai_params(model)
+        handled = {"resolution"}
+        for key, value in params.items():
+            if key not in supported and key not in handled and key not in mapped:
+                mapped[key] = value
+
+        return mapped
+
+    def validate_environment(
+        self,
+        headers: dict,
+        model: str,
+        api_key: str | None = None,
+        litellm_params: GenericLiteLLMParams | None = None,
+    ) -> dict:
+        if litellm_params and litellm_params.api_key:
+            api_key = api_key or litellm_params.api_key
+        return {**headers, **kling_auth_headers(api_key)}
+
+    def get_complete_url(
+        self,
+        model: str,
+        api_base: str | None,
+        litellm_params: dict,
+    ) -> str:
+        return resolve_kling_api_base(api_base)
+
+    def transform_video_create_request(
+        self,
+        model: str,
+        prompt: str,
+        api_base: str,
+        video_create_optional_request_params: dict,
+        litellm_params: GenericLiteLLMParams,
+        headers: dict,
+    ) -> tuple[dict, RequestFiles, str]:
+        mapped: dict[str, Any] = dict(video_create_optional_request_params)
+        mapped.pop("model", None)
+        kind = _IMAGE_TO_VIDEO if mapped.get("image") else _TEXT_TO_VIDEO
+        mapped.setdefault("mode", self._resolution_to_mode(self.DEFAULT_RESOLUTION))
+
+        request_data = {
+            key: value
+            for key, value in {
+                "model_name": strip_kling_prefix(model),
+                "prompt": prompt,
+                **mapped,
+            }.items()
+            if value is not None
+        }
+        return request_data, [], f"{api_base}/videos/{kind}"
+
+    def transform_video_create_response(
+        self,
+        model: str,
+        raw_response: httpx.Response,
+        logging_obj: LiteLLMLoggingObj,
+        custom_llm_provider: str | None = None,
+        request_data: dict | None = None,
+    ) -> VideoObject:
+        response_data = raw_response.json()
+        self._raise_for_kling_error(response_data)
+
+        data = response_data.get("data") or {}
+        task_id = data.get("task_id")
+        if not task_id:
+            raise ValueError(f"Kling video submit response is missing data.task_id: {response_data}")
+
+        status = KLING_TASK_STATUS_MAP.get(data.get("task_status", "submitted"), "queued")
+        kind = _IMAGE_TO_VIDEO if request_data and request_data.get("image") else _TEXT_TO_VIDEO
+
+        seconds: str | None = None
+        size: str | None = None
+        if request_data:
+            if request_data.get("duration") is not None:
+                seconds = str(request_data["duration"])
+            if request_data.get("aspect_ratio") is not None:
+                size = str(request_data["aspect_ratio"]).replace(":", "x")
+
+        usage: dict[str, Any] = {}
+        if seconds is not None:
+            try:
+                usage["duration_seconds"] = float(seconds)
+            except (ValueError, TypeError):
+                pass
+
+        video_obj = VideoObject(
+            id=task_id,
+            object="video",
+            status=status,
+            model=model,
+            seconds=seconds,
+            size=size,
+            usage=usage,
+        )
+
+        if custom_llm_provider:
+            video_obj.id = encode_video_id_with_provider(video_obj.id, custom_llm_provider, kind)
+        return video_obj
+
+    def transform_video_status_retrieve_request(
+        self,
+        video_id: str,
+        api_base: str,
+        litellm_params: GenericLiteLLMParams,
+        headers: dict,
+    ) -> tuple[str, dict]:
+        return self._build_task_url(video_id, api_base), {}
+
+    def transform_video_status_retrieve_response(
+        self,
+        raw_response: httpx.Response,
+        logging_obj: LiteLLMLoggingObj,
+        custom_llm_provider: str | None = None,
+    ) -> VideoObject:
+        self._raise_for_status(raw_response)
+        try:
+            response_data = raw_response.json()
+        except (ValueError, JSONDecodeError):
+            return VideoObject(id="", object="video", status="in_progress")
+
+        data = response_data.get("data") or {}
+        task_id = data.get("task_id", "")
+        status = KLING_TASK_STATUS_MAP.get(data.get("task_status", "submitted"), "queued")
+
+        error: dict[str, Any] | None = None
+        if status == "failed":
+            message = data.get("task_status_msg") or response_data.get("message") or "Video generation failed"
+            error = {"code": "failed", "message": str(message)}
+
+        video_obj = VideoObject(id=task_id, object="video", status=status, error=error)
+
+        if custom_llm_provider and video_obj.id:
+            kind = self._kind_from_request_url(raw_response)
+            video_obj.id = encode_video_id_with_provider(video_obj.id, custom_llm_provider, kind)
+        return video_obj
+
+    def transform_video_content_request(
+        self,
+        video_id: str,
+        api_base: str,
+        litellm_params: GenericLiteLLMParams,
+        headers: dict,
+        variant: str | None = None,
+    ) -> tuple[str, dict]:
+        return self._build_task_url(video_id, api_base), {}
+
+    def transform_video_content_response(
+        self,
+        raw_response: httpx.Response,
+        logging_obj: LiteLLMLoggingObj,
+    ) -> bytes:
+        self._raise_for_status(raw_response)
+        video_url = self._extract_video_url(raw_response.json())
+        httpx_client: HTTPHandler = _get_httpx_client()
+        video_response = httpx_client.get(video_url)
+        video_response.raise_for_status()
+        return video_response.content
+
+    async def async_transform_video_content_response(
+        self,
+        raw_response: httpx.Response,
+        logging_obj: LiteLLMLoggingObj,
+    ) -> bytes:
+        self._raise_for_status(raw_response)
+        video_url = self._extract_video_url(raw_response.json())
+        async_client: AsyncHTTPHandler = get_async_httpx_client(
+            llm_provider=litellm.LlmProviders.KLING,
+        )
+        video_response = await async_client.get(video_url)
+        video_response.raise_for_status()
+        return video_response.content
+
+    def _build_task_url(self, video_id: str, api_base: str) -> str:
+        task_id, kind = self._extract_task_and_kind(video_id)
+        encoded = encode_url_path_segment(task_id, field_name="video_id")
+        return f"{api_base}/videos/{kind}/{encoded}"
+
+    @staticmethod
+    def _extract_task_and_kind(video_id: str) -> tuple[str, str]:
+        decoded = decode_video_id_with_provider(video_id)
+        task_id = decoded.get("video_id") or extract_original_video_id(video_id)
+        kind = decoded.get("model_id")
+        if kind not in (_TEXT_TO_VIDEO, _IMAGE_TO_VIDEO):
+            raise ValueError(
+                "Kling video status/content lookup requires the text2video/image2video "
+                "kind encoded in the video_id. Use the id returned by video creation."
+            )
+        return task_id, kind
+
+    @staticmethod
+    def _kind_from_request_url(raw_response: httpx.Response) -> str | None:
+        request = getattr(raw_response, "request", None)
+        if request is None:
+            return None
+        path = request.url.path
+        for kind in (_IMAGE_TO_VIDEO, _TEXT_TO_VIDEO):
+            if f"/videos/{kind}/" in path or path.endswith(f"/videos/{kind}"):
+                return kind
+        return None
+
+    @staticmethod
+    def _extract_video_url(response_data: dict[str, Any]) -> str:
+        data = response_data.get("data") or {}
+        if data.get("task_status") == "failed":
+            message = data.get("task_status_msg") or response_data.get("message")
+            raise ValueError(f"Kling video generation failed: {message}")
+
+        task_result = data.get("task_result") or {}
+        videos = task_result.get("videos") or []
+        if isinstance(videos, list) and videos and isinstance(videos[0], dict):
+            url = videos[0].get("url")
+            if isinstance(url, str) and url:
+                return url
+
+        raise ValueError("Video URL not found in Kling response. The job may still be processing.")
+
+    def transform_video_remix_request(
+        self,
+        video_id: str,
+        prompt: str,
+        api_base: str,
+        litellm_params: GenericLiteLLMParams,
+        headers: dict,
+        extra_body: dict[str, Any] | None = None,
+    ) -> tuple[str, dict]:
+        raise NotImplementedError("Video remix is not supported by the Kling API")
+
+    def transform_video_remix_response(
+        self,
+        raw_response: httpx.Response,
+        logging_obj: LiteLLMLoggingObj,
+        custom_llm_provider: str | None = None,
+    ) -> VideoObject:
+        raise NotImplementedError("Video remix is not supported by the Kling API")
+
+    def transform_video_list_request(
+        self,
+        api_base: str,
+        litellm_params: GenericLiteLLMParams,
+        headers: dict,
+        after: str | None = None,
+        limit: int | None = None,
+        order: str | None = None,
+        extra_query: dict[str, Any] | None = None,
+    ) -> tuple[str, dict]:
+        raise NotImplementedError("Video listing is not supported by the Kling API")
+
+    def transform_video_list_response(
+        self,
+        raw_response: httpx.Response,
+        logging_obj: LiteLLMLoggingObj,
+        custom_llm_provider: str | None = None,
+    ) -> dict[str, str]:
+        raise NotImplementedError("Video listing is not supported by the Kling API")
+
+    def transform_video_delete_request(
+        self,
+        video_id: str,
+        api_base: str,
+        litellm_params: GenericLiteLLMParams,
+        headers: dict,
+    ) -> tuple[str, dict]:
+        raise NotImplementedError("Video delete/cancel is not supported by the Kling API")
+
+    def transform_video_delete_response(
+        self,
+        raw_response: httpx.Response,
+        logging_obj: LiteLLMLoggingObj,
+    ) -> VideoObject:
+        raise NotImplementedError("Video delete/cancel is not supported by the Kling API")
+
+    def get_error_class(self, error_message: str, status_code: int, headers: dict | httpx.Headers) -> BaseLLMException:
+        raise BaseLLMException(
+            status_code=status_code,
+            message=error_message,
+            headers=headers,
+        )
+
+    def _raise_for_kling_error(self, response_data: dict[str, Any]) -> None:
+        code = response_data.get("code")
+        if code is not None and code != 0:
+            message = response_data.get("message") or "Kling API returned an error"
+            raise self.get_error_class(error_message=str(message), status_code=400, headers={})
+
+    def _raise_for_status(self, raw_response: httpx.Response) -> None:
+        if raw_response.is_success:
+            return
+        raise self.get_error_class(
+            error_message=raw_response.text,
+            status_code=raw_response.status_code,
+            headers=raw_response.headers,
+        )
