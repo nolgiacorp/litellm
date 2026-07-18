@@ -1156,6 +1156,15 @@ class CostCalculatorUtils:
                 model=model,
                 image_response=completion_response,
             )
+        elif custom_llm_provider == litellm.LlmProviders.KLING.value:
+            from litellm.llms.kling.cost_calculator import (
+                cost_calculator as kling_image_cost_calculator,
+            )
+
+            return kling_image_cost_calculator(
+                model=model,
+                image_response=completion_response,
+            )
         elif custom_llm_provider == litellm.LlmProviders.RUNWAYML.value:
             from litellm.llms.runwayml.cost_calculator import (
                 cost_calculator as runwayml_image_cost_calculator,

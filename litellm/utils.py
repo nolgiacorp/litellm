@@ -8555,6 +8555,12 @@ class ProviderConfigManager:
             )
 
             return get_fal_ai_image_generation_config(model)
+        elif LlmProviders.KLING == provider:
+            from litellm.llms.kling.image_generation import (
+                get_kling_image_generation_config,
+            )
+
+            return get_kling_image_generation_config(model)
         elif LlmProviders.STABILITY == provider:
             from litellm.llms.stability.image_generation import (
                 get_stability_image_generation_config,
@@ -8634,6 +8640,10 @@ class ProviderConfigManager:
             from litellm.llms.fal_ai.videos.transformation import FalAIVideoConfig
 
             return FalAIVideoConfig()
+        elif LlmProviders.KLING == provider:
+            from litellm.llms.kling.videos.transformation import KlingVideoConfig
+
+            return KlingVideoConfig()
         return None
 
     @staticmethod
