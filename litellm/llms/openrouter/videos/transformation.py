@@ -8,12 +8,6 @@ import litellm
 from litellm.litellm_core_utils.url_utils import encode_url_path_segment
 from litellm.llms.base_llm.chat.transformation import BaseLLMException
 from litellm.llms.base_llm.videos.transformation import BaseVideoConfig
-from litellm.llms.custom_httpx.http_handler import (
-    AsyncHTTPHandler,
-    HTTPHandler,
-    _get_httpx_client,
-    get_async_httpx_client,
-)
 from litellm.secret_managers.main import get_secret_str
 from litellm.types.router import GenericLiteLLMParams
 from litellm.types.videos.main import VideoCreateOptionalRequestParams, VideoObject
@@ -321,33 +315,20 @@ class OpenRouterVideoConfig(BaseVideoConfig):
         headers: dict,
         variant: str | None = None,
     ) -> tuple[str, dict]:
-        return self._build_job_url(video_id, api_base), {}
+        return f"{self._build_job_url(video_id, api_base)}/content?index=0", {}
 
     def transform_video_content_response(
         self,
         raw_response: httpx.Response,
         logging_obj: LiteLLMLoggingObj,
     ) -> bytes:
+        # OpenRouter's /videos/{id}/content endpoint returns the MP4 bytes directly,
+        # bearer-authenticated by the handler. unsigned_urls from the poll body are
+        # NOT publicly fetchable (they 401 without a session), so this dedicated
+        # content route is the only reliable download path. The base async fallback
+        # reuses this method, so no separate download hop is needed.
         self._raise_for_status(raw_response)
-        video_url = self._extract_video_url(raw_response.json())
-        httpx_client: HTTPHandler = _get_httpx_client()
-        video_response = httpx_client.get(video_url)
-        video_response.raise_for_status()
-        return video_response.content
-
-    async def async_transform_video_content_response(
-        self,
-        raw_response: httpx.Response,
-        logging_obj: LiteLLMLoggingObj,
-    ) -> bytes:
-        self._raise_for_status(raw_response)
-        video_url = self._extract_video_url(raw_response.json())
-        async_client: AsyncHTTPHandler = get_async_httpx_client(
-            llm_provider=litellm.LlmProviders.OPENROUTER,
-        )
-        video_response = await async_client.get(video_url)
-        video_response.raise_for_status()
-        return video_response.content
+        return raw_response.content
 
     @staticmethod
     def _build_job_url(video_id: str, api_base: str) -> str:
@@ -358,18 +339,6 @@ class OpenRouterVideoConfig(BaseVideoConfig):
         job_id = decoded.get("video_id") or extract_original_video_id(video_id)
         encoded = encode_url_path_segment(job_id, field_name="video_id")
         return f"{api_base}/videos/{encoded}"
-
-    @staticmethod
-    def _extract_video_url(response_data: dict[str, Any]) -> str:
-        status = str(response_data.get("status", "")).lower()
-        if status == "failed":
-            raise ValueError(f"OpenRouter video generation failed: {response_data.get('error')}")
-
-        urls = response_data.get("unsigned_urls")
-        if isinstance(urls, list) and urls and isinstance(urls[0], str) and urls[0]:
-            return urls[0]
-
-        raise ValueError("Video URL not found in OpenRouter response. The job may still be processing.")
 
     def transform_video_remix_request(
         self,

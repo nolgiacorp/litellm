@@ -212,26 +212,23 @@ def test_status_map(raw, expected):
     assert _config().transform_video_status_retrieve_response(resp, None, "openrouter").status == expected
 
 
-def test_extract_video_url_returns_first_unsigned_url():
-    url = OpenRouterVideoConfig._extract_video_url(
-        {"status": "completed", "unsigned_urls": ["https://cdn/out.mp4", "https://cdn/thumb.png"]}
-    )
-    assert url == "https://cdn/out.mp4"
+def test_content_request_targets_authenticated_content_endpoint():
+    # Download must go through the bearer-authenticated /content route rebuilt from
+    # the decoded job id, not the unsigned poll URLs (which 401 without a session).
+    video_id = encode_video_id_with_provider("job_abc", "openrouter", "bytedance/seedance-2.0")
+    url, params = _config().transform_video_content_request(video_id, _API_BASE, GenericLiteLLMParams(), {})
+    assert url == f"{_API_BASE}/videos/job_abc/content?index=0"
+    assert params == {}
 
 
-def test_extract_video_url_failed_status_raises():
-    with pytest.raises(ValueError, match="failed"):
-        OpenRouterVideoConfig._extract_video_url({"status": "failed", "error": "nsfw"})
+def test_content_response_returns_raw_bytes():
+    resp = httpx.Response(200, content=b"\x00\x01MP4BYTES", request=httpx.Request("GET", _API_BASE))
+    assert _config().transform_video_content_response(resp, None) == b"\x00\x01MP4BYTES"
 
 
-def test_extract_video_url_missing_urls_raises_still_processing():
-    with pytest.raises(ValueError, match="still be processing"):
-        OpenRouterVideoConfig._extract_video_url({"status": "in_progress"})
-
-
-def test_content_response_failed_status_raises_before_download():
-    resp = _response(200, json_body={"status": "failed", "error": "boom"})
-    with pytest.raises(ValueError, match="failed"):
+def test_content_response_http_error_raises_llm_exception():
+    resp = _response(401, text="No cookie auth credentials found")
+    with pytest.raises(BaseLLMException):
         _config().transform_video_content_response(resp, None)
 
 
