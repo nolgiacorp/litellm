@@ -57,16 +57,16 @@ class OpenRouterVideoConfig(BaseVideoConfig):
     """
     OpenRouter exposes an async video API distinct from its chat surface: POST
     /api/v1/videos returns {"id", "polling_url", "status"}, then GET
-    /api/v1/videos/{id} reports {"status", "unsigned_urls", "usage", "error"}
-    until status == "completed". The finished MP4 is downloaded from
-    unsigned_urls[0] (a public URL), mirroring the fal/Kling poll-then-fetch flow.
+    /api/v1/videos/{id} reports {"status", "usage", "error"} until status ==
+    "completed". The finished MP4 is downloaded from the bearer-authenticated
+    /api/v1/videos/{id}/content endpoint, mirroring the fal/Kling poll flow.
 
     A single normalized schema covers every OpenRouter video model. Seedance
     character consistency is driven by input_references[] (reference-to-video);
     start/end stills go through frame_images[] with frame_type first_frame /
-    last_frame. Incoming requests use the same OpenAI-shaped params NOLGIA already
-    sends to the fal provider (seconds, size, input_reference, extra_body), which
-    map_openai_params translates into OpenRouter's typed request body.
+    last_frame. map_openai_params accepts both the canonical OpenAI-shaped params
+    and the fal-shaped names nolgia-api already sends (image_url / end_image_url /
+    image_urls), so swapping Seedance from fal to OpenRouter needs no client change.
     """
 
     def get_supported_openai_params(self, model: str) -> list:
@@ -117,24 +117,25 @@ class OpenRouterVideoConfig(BaseVideoConfig):
 
     @classmethod
     def _collect_frame_images(cls, params: dict[str, Any]) -> list[dict[str, Any]]:
-        # input_reference is the single-image i2v start still (same semantics the
-        # fal provider gives it); frame_images is the explicit list nolgia-api
-        # sends when it also wants an end frame.
-        return [
-            frame
-            for frame in (
-                cls._normalize_frame(params.get("input_reference"), "first_frame"),
-                *[cls._normalize_frame(entry, "first_frame") for entry in cls._as_list(params.get("frame_images"))],
-            )
-            if frame is not None
+        # Start/end stills for i2v. nolgia-api sends the fal-shaped image_url /
+        # end_image_url; input_reference / frame_images are the canonical
+        # OpenAI-shaped equivalents. image_url and input_reference are the same
+        # start slot, so prefer whichever is set.
+        start = params.get("input_reference") or params.get("image_url")
+        candidates = [
+            cls._normalize_frame(start, "first_frame"),
+            cls._normalize_frame(params.get("end_image_url"), "last_frame"),
+            *[cls._normalize_frame(entry, "first_frame") for entry in cls._as_list(params.get("frame_images"))],
         ]
+        return [frame for frame in candidates if frame is not None]
 
     @classmethod
     def _collect_input_references(cls, params: dict[str, Any]) -> list[dict[str, Any]]:
+        # Reference-to-video character images. nolgia-api sends them as the
+        # fal-shaped image_urls; input_references is the canonical equivalent.
+        entries = cls._as_list(params.get("input_references")) + cls._as_list(params.get("image_urls"))
         return [
-            reference
-            for reference in (cls._normalize_reference(entry) for entry in cls._as_list(params.get("input_references")))
-            if reference is not None
+            reference for reference in (cls._normalize_reference(entry) for entry in entries) if reference is not None
         ]
 
     def map_openai_params(
