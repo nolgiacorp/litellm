@@ -95,6 +95,33 @@ def test_already_typed_reference_is_passed_through_unchanged():
     assert mapped["input_references"] == [typed]
 
 
+def test_nolgia_api_i2v_shape_image_url_and_end_image_url():
+    # nolgia-api sends fal-shaped image_url (start) + end_image_url (end) for i2v;
+    # the swap must stay transparent without a nolgia-api change.
+    mapped = _config().map_openai_params(
+        {"image_url": "https://cdn/start.png", "end_image_url": "https://cdn/end.png"},
+        "bytedance/seedance-2.0",
+        True,
+    )
+    assert mapped["frame_images"] == [
+        {"type": "image_url", "image_url": {"url": "https://cdn/start.png"}, "frame_type": "first_frame"},
+        {"type": "image_url", "image_url": {"url": "https://cdn/end.png"}, "frame_type": "last_frame"},
+    ]
+
+
+def test_nolgia_api_r2v_shape_image_urls_become_input_references():
+    # nolgia-api sends fal-shaped image_urls for reference-to-video character refs.
+    mapped = _config().map_openai_params(
+        {"image_urls": ["https://cdn/lou.png", "https://cdn/remy.png"]},
+        "bytedance/seedance-2.0",
+        True,
+    )
+    assert mapped["input_references"] == [
+        {"type": "image_url", "image_url": {"url": "https://cdn/lou.png"}},
+        {"type": "image_url", "image_url": {"url": "https://cdn/remy.png"}},
+    ]
+
+
 def test_empty_reference_lists_are_omitted():
     mapped = _config().map_openai_params({"seconds": 5}, "bytedance/seedance-2.0", True)
     assert "frame_images" not in mapped
