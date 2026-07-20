@@ -273,3 +273,52 @@ def test_unsupported_operations_raise_not_implemented():
         cfg.transform_video_list_request(_API_BASE, GenericLiteLLMParams(), {})
     with pytest.raises(NotImplementedError):
         cfg.transform_video_delete_request("v", _API_BASE, GenericLiteLLMParams(), {})
+
+
+def test_create_response_records_video_resolution_for_cost_tiering():
+    resp = _response(200, json_body={"id": "job_res", "status": "pending"}, method="POST", url=f"{_API_BASE}/videos")
+    video = _config().transform_video_create_response(
+        "openrouter/bytedance/seedance-2.0",
+        resp,
+        None,
+        "openrouter",
+        {"duration": 5, "resolution": "1080P "},
+    )
+    assert video.usage == {"duration_seconds": 5.0, "video_resolution": "1080p"}
+
+
+def test_create_response_without_resolution_omits_video_resolution():
+    resp = _response(200, json_body={"id": "job_nores", "status": "pending"}, method="POST", url=f"{_API_BASE}/videos")
+    video = _config().transform_video_create_response(
+        "openrouter/bytedance/seedance-2.0",
+        resp,
+        None,
+        "openrouter",
+        {"duration": 5},
+    )
+    assert video.usage == {"duration_seconds": 5.0}
+
+
+@pytest.mark.parametrize(
+    "resolution,expected_cost",
+    [("720p", 0.756), ("1080p", 1.701), ("4k", 6.804), (None, 0.756)],
+)
+def test_seedance_create_video_cost_from_price_map(resolution, expected_cost, monkeypatch):
+    from litellm.cost_calculator import completion_cost
+    from litellm.types.videos.main import VideoObject
+
+    monkeypatch.setenv("LITELLM_LOCAL_MODEL_COST_MAP", "True")
+    monkeypatch.setattr(litellm, "model_cost", litellm.get_model_cost_map(url=""))
+
+    usage = {"duration_seconds": 5.0}
+    if resolution is not None:
+        usage["video_resolution"] = resolution
+    video = VideoObject(id="job_cost", object="video", status="queued", usage=usage)
+
+    cost = completion_cost(
+        completion_response=video,
+        model="bytedance/seedance-2.0",
+        call_type="create_video",
+        custom_llm_provider="openrouter",
+    )
+    assert cost == pytest.approx(expected_cost)

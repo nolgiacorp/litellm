@@ -254,6 +254,9 @@ class OpenRouterVideoConfig(BaseVideoConfig):
                 usage["duration_seconds"] = float(seconds)
             except (ValueError, TypeError):
                 pass
+        resolution = request_data.get("resolution") if request_data else None
+        if isinstance(resolution, str) and resolution.strip():
+            usage["video_resolution"] = resolution.strip().lower()
 
         video_obj = VideoObject(
             id=job_id,
