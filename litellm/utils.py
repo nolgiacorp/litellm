@@ -8644,6 +8644,12 @@ class ProviderConfigManager:
             from litellm.llms.kling.videos.transformation import KlingVideoConfig
 
             return KlingVideoConfig()
+        elif LlmProviders.OPENROUTER == provider:
+            from litellm.llms.openrouter.videos.transformation import (
+                OpenRouterVideoConfig,
+            )
+
+            return OpenRouterVideoConfig()
         return None
 
     @staticmethod
