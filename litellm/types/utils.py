@@ -242,6 +242,8 @@ class ModelInfoBase(ProviderSpecificModelInfo, total=False):
     output_cost_per_second_1080p: Optional[
         float
     ]  # video_generation tier: key output_cost_per_second_<resolution> (e.g. 1080p, 720p)
+    output_cost_per_second_720p: Optional[float]
+    output_cost_per_second_4k: Optional[float]
     ocr_cost_per_page: Optional[float]  # for OCR models
     ocr_cost_per_credit: Optional[float]  # for OCR models priced by credit
     annotation_cost_per_page: Optional[float]  # for OCR models
@@ -2981,6 +2983,8 @@ class CustomPricingLiteLLMParams(BaseModel):
     input_cost_per_second: Optional[float] = None
     output_cost_per_second: Optional[float] = None
     output_cost_per_second_1080p: Optional[float] = None
+    output_cost_per_second_720p: Optional[float] = None
+    output_cost_per_second_4k: Optional[float] = None
     input_cost_per_pixel: Optional[float] = None
     output_cost_per_pixel: Optional[float] = None
 
