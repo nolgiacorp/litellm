@@ -193,6 +193,85 @@ class TestGeminiVideoConfig:
         assert "image_url" not in data.get("parameters", {})
         mock_client.get.assert_called_once_with(url="https://storage.example/signed.jpg")
 
+    def test_map_openai_params_normalizes_snake_case_gemini_params(self):
+        """aspect_ratio/negative_prompt (platform snake_case) become the camelCase
+        fields Veo reads; un-normalized they were silently dropped by the
+        pydantic parameters model and every t2v render came out 16:9."""
+        mapped = self.config.map_openai_params(
+            {"seconds": "4", "aspect_ratio": "9:16", "negative_prompt": "no text overlays"},
+            "veo-3.1-generate-preview",
+            drop_params=False,
+        )
+        assert mapped["aspectRatio"] == "9:16"
+        assert mapped["negativePrompt"] == "no text overlays"
+        assert "aspect_ratio" not in mapped
+        assert "negative_prompt" not in mapped
+
+    def test_map_openai_params_snake_case_never_overrides_explicit_camel(self):
+        mapped = self.config.map_openai_params(
+            {"aspect_ratio": "9:16", "aspectRatio": "16:9"},
+            "veo-3.1-generate-preview",
+            drop_params=False,
+        )
+        assert mapped["aspectRatio"] == "16:9"
+
+    def test_transform_video_create_request_aspect_ratio_reaches_parameters(self, monkeypatch):
+        """End-to-end: a snake_case aspect_ratio must survive into the request
+        parameters block (regression: 9:16 requests rendered 16:9)."""
+        mapped = self.config.map_openai_params({"aspect_ratio": "9:16", "seconds": "4"}, "veo-3.1-fast-generate-preview", drop_params=False)
+        data, _, _ = self.config.transform_video_create_request(
+            model="veo-3.1-fast-generate-preview",
+            prompt="A skateboarder in a neon alley",
+            api_base="https://generativelanguage.googleapis.com/v1beta/models/veo-3.1-fast-generate-preview:predictLongRunning",
+            video_create_optional_request_params=mapped,
+            litellm_params=GenericLiteLLMParams(),
+            headers={},
+        )
+        assert data["parameters"]["aspectRatio"] == "9:16"
+        assert data["parameters"]["durationSeconds"] == 4
+
+    def test_transform_video_create_request_image_urls_become_reference_images(self, monkeypatch):
+        """image_urls (fal-shaped reference images: Veo 3.1 'ingredients') are
+        downloaded, capped at three, and land ON THE INSTANCE as
+        referenceImages with referenceType=asset — not in parameters."""
+        import base64 as b64
+        from unittest.mock import Mock
+
+        import litellm
+
+        download_response = Mock()
+        download_response.content = b"ref-bytes"
+        download_response.headers = {"content-type": "image/png"}
+        download_response.raise_for_status = Mock()
+        mock_client = Mock()
+        mock_client.get.return_value = download_response
+        monkeypatch.setattr(litellm, "module_level_client", mock_client)
+
+        data, _, _ = self.config.transform_video_create_request(
+            model="veo-3.1-generate-preview",
+            prompt="@Image1 walks through the office",
+            api_base="https://generativelanguage.googleapis.com/v1beta/models/veo-3.1-generate-preview:predictLongRunning",
+            video_create_optional_request_params={
+                "image_urls": [
+                    "https://storage.example/a.png",
+                    "https://storage.example/b.png",
+                    "https://storage.example/c.png",
+                    "https://storage.example/d.png",
+                ],
+                "durationSeconds": 8,
+            },
+            litellm_params=GenericLiteLLMParams(),
+            headers={},
+        )
+
+        refs = data["instances"][0]["referenceImages"]
+        assert len(refs) == 3
+        assert all(ref["referenceType"] == "asset" for ref in refs)
+        assert refs[0]["image"] == {"bytesBase64Encoded": b64.b64encode(b"ref-bytes").decode(), "mimeType": "image/png"}
+        assert "referenceImages" not in data.get("parameters", {})
+        assert "image_urls" not in data.get("parameters", {})
+        assert mock_client.get.call_count == 3
+
     def test_transform_video_create_request_image_filelike_goes_to_instance(self):
         """File-like image (BytesIO) gets base64-encoded into instances[0]['image']."""
         prompt = "Animate this still"

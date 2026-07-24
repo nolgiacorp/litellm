@@ -236,6 +236,8 @@ class GeminiVideoGenerationInstance(TypedDict, total=False):
 
     prompt: Required[str]
     image: Dict[str, Any]
+    referenceImages: List[Dict[str, Any]]
+    """Up to three {"image": {...}, "referenceType": "asset"} entries (Veo 3.1)."""
 
 
 class GeminiVideoGenerationParameters(BaseModel):
