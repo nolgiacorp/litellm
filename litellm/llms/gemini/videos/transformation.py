@@ -34,6 +34,9 @@ else:
     BaseLLMException = Any
 
 
+_MAX_REFERENCE_IMAGES = 3
+
+
 def fetch_image_as_base64(image_url: str) -> tuple[str, str]:
     """
     Download an image URL and return (base64_data, mime_type).
@@ -161,6 +164,17 @@ class GeminiVideoConfig(BaseVideoConfig):
         for key, value in video_create_optional_params.items():
             if key not in openai_params_to_map and key not in mapped_params:
                 mapped_params[key] = value
+
+        # Normalize snake_case aliases onto the camelCase fields Veo expects.
+        # GeminiVideoGenerationParameters silently ignores undeclared keys
+        # (pydantic extra="ignore"), so an un-normalized aspect_ratio was
+        # dropped on the floor and every text-to-video render came out 16:9
+        # regardless of the requested ratio.
+        for snake, camel in (("aspect_ratio", "aspectRatio"), ("negative_prompt", "negativePrompt")):
+            if snake in mapped_params:
+                value = mapped_params.pop(snake)
+                if value is not None and camel not in mapped_params:
+                    mapped_params[camel] = value
 
         return mapped_params
 
@@ -298,6 +312,24 @@ class GeminiVideoConfig(BaseVideoConfig):
             if image_url and "image" not in instance:
                 base64_data, mime_type = fetch_image_as_base64(image_url)
                 instance["image"] = {"bytesBase64Encoded": base64_data, "mimeType": mime_type}
+
+        # Veo 3.1 reference images ("ingredients", subject/character
+        # consistency): callers send fal-shaped image_urls; Veo wants up to
+        # three inline-base64 referenceImages ON THE INSTANCE (mirroring the
+        # image/lastFrame placement — NOT the parameters block).
+        if "image_urls" in params_copy:
+            image_urls = params_copy.pop("image_urls")
+            if image_urls:
+                reference_images = []
+                for reference_url in list(image_urls)[:_MAX_REFERENCE_IMAGES]:
+                    if not reference_url:
+                        continue
+                    base64_data, mime_type = fetch_image_as_base64(reference_url)
+                    reference_images.append(
+                        {"image": {"bytesBase64Encoded": base64_data, "mimeType": mime_type}, "referenceType": "asset"}
+                    )
+                if reference_images:
+                    instance["referenceImages"] = reference_images
 
         parameters = GeminiVideoGenerationParameters(**params_copy)
 
