@@ -32403,6 +32403,60 @@
             "/v1/ocr"
         ]
     },
+    "recraft/recraftv4_1": {
+        "litellm_provider": "recraft",
+        "mode": "image_generation",
+        "output_cost_per_image": 0.035,
+        "source": "https://www.recraft.ai/docs/api-reference/pricing.md",
+        "supported_endpoints": [
+            "/v1/images/generations"
+        ]
+    },
+    "recraft/recraftv4_1_pro": {
+        "litellm_provider": "recraft",
+        "mode": "image_generation",
+        "output_cost_per_image": 0.21,
+        "source": "https://www.recraft.ai/docs/api-reference/pricing.md",
+        "supported_endpoints": [
+            "/v1/images/generations"
+        ]
+    },
+    "recraft/recraftv4_1_utility": {
+        "litellm_provider": "recraft",
+        "mode": "image_generation",
+        "output_cost_per_image": 0.035,
+        "source": "https://www.recraft.ai/docs/api-reference/pricing.md",
+        "supported_endpoints": [
+            "/v1/images/generations"
+        ]
+    },
+    "recraft/recraftv4_1_utility_pro": {
+        "litellm_provider": "recraft",
+        "mode": "image_generation",
+        "output_cost_per_image": 0.21,
+        "source": "https://www.recraft.ai/docs/api-reference/pricing.md",
+        "supported_endpoints": [
+            "/v1/images/generations"
+        ]
+    },
+    "recraft/recraftv4": {
+        "litellm_provider": "recraft",
+        "mode": "image_generation",
+        "output_cost_per_image": 0.04,
+        "source": "https://www.recraft.ai/docs/api-reference/pricing.md",
+        "supported_endpoints": [
+            "/v1/images/generations"
+        ]
+    },
+    "recraft/recraftv4_pro": {
+        "litellm_provider": "recraft",
+        "mode": "image_generation",
+        "output_cost_per_image": 0.25,
+        "source": "https://www.recraft.ai/docs/api-reference/pricing.md",
+        "supported_endpoints": [
+            "/v1/images/generations"
+        ]
+    },
     "recraft/recraftv2": {
         "litellm_provider": "recraft",
         "mode": "image_generation",
