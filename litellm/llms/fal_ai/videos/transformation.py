@@ -124,12 +124,7 @@ class FalAIVideoConfig(BaseVideoConfig):
         if litellm_params and litellm_params.api_key:
             api_key = api_key or litellm_params.api_key
 
-        resolved_key = (
-            api_key
-            or litellm.api_key
-            or get_secret_str("FAL_AI_API_KEY")
-            or get_secret_str("FAL_KEY")
-        )
+        resolved_key = api_key or litellm.api_key or get_secret_str("FAL_AI_API_KEY") or get_secret_str("FAL_KEY")
 
         if not resolved_key:
             raise ValueError(
@@ -185,9 +180,7 @@ class FalAIVideoConfig(BaseVideoConfig):
         video_data: Dict[str, Any] = {
             "id": response_data.get("request_id", ""),
             "object": "video",
-            "status": _FAL_AI_STATUS_MAP.get(
-                response_data.get("status", "IN_QUEUE").upper(), "queued"
-            ),
+            "status": _FAL_AI_STATUS_MAP.get(response_data.get("status", "IN_QUEUE").upper(), "queued"),
             "model": model,
         }
 
@@ -265,9 +258,7 @@ class FalAIVideoConfig(BaseVideoConfig):
 
         if custom_llm_provider and video_obj.id:
             model_id = self._model_id_from_request_url(raw_response)
-            video_obj.id = encode_video_id_with_provider(
-                video_obj.id, custom_llm_provider, model_id
-            )
+            video_obj.id = encode_video_id_with_provider(video_obj.id, custom_llm_provider, model_id)
 
         return video_obj
 
@@ -335,9 +326,7 @@ class FalAIVideoConfig(BaseVideoConfig):
         if isinstance(top_level, str) and top_level:
             return top_level
 
-        raise ValueError(
-            "Video URL not found in fal.ai response. The job may still be processing."
-        )
+        raise ValueError("Video URL not found in fal.ai response. The job may still be processing.")
 
     @staticmethod
     def _queue_request_namespace(model_id: str) -> str:
@@ -374,9 +363,7 @@ class FalAIVideoConfig(BaseVideoConfig):
         headers: dict,
         extra_body: Dict[str, Any] | None = None,
     ) -> Tuple[str, Dict]:
-        raise NotImplementedError(
-            "Video remix is not supported by the fal.ai queue API"
-        )
+        raise NotImplementedError("Video remix is not supported by the fal.ai queue API")
 
     def transform_video_remix_response(
         self,
@@ -384,9 +371,7 @@ class FalAIVideoConfig(BaseVideoConfig):
         logging_obj: LiteLLMLoggingObj,
         custom_llm_provider: str | None = None,
     ) -> VideoObject:
-        raise NotImplementedError(
-            "Video remix is not supported by the fal.ai queue API"
-        )
+        raise NotImplementedError("Video remix is not supported by the fal.ai queue API")
 
     def transform_video_list_request(
         self,
@@ -398,9 +383,7 @@ class FalAIVideoConfig(BaseVideoConfig):
         order: str | None = None,
         extra_query: Dict[str, Any] | None = None,
     ) -> Tuple[str, Dict]:
-        raise NotImplementedError(
-            "Video listing is not supported by the fal.ai queue API"
-        )
+        raise NotImplementedError("Video listing is not supported by the fal.ai queue API")
 
     def transform_video_list_response(
         self,
@@ -408,9 +391,7 @@ class FalAIVideoConfig(BaseVideoConfig):
         logging_obj: LiteLLMLoggingObj,
         custom_llm_provider: str | None = None,
     ) -> Dict[str, str]:
-        raise NotImplementedError(
-            "Video listing is not supported by the fal.ai queue API"
-        )
+        raise NotImplementedError("Video listing is not supported by the fal.ai queue API")
 
     def transform_video_delete_request(
         self,
@@ -420,18 +401,14 @@ class FalAIVideoConfig(BaseVideoConfig):
         headers: dict,
     ) -> Tuple[str, Dict]:
         # fal cancels jobs via PUT /requests/{id}/cancel, not the DELETE the shared handler issues.
-        raise NotImplementedError(
-            "Video delete/cancel is not supported by the fal.ai queue API via LiteLLM"
-        )
+        raise NotImplementedError("Video delete/cancel is not supported by the fal.ai queue API via LiteLLM")
 
     def transform_video_delete_response(
         self,
         raw_response: httpx.Response,
         logging_obj: LiteLLMLoggingObj,
     ) -> VideoObject:
-        raise NotImplementedError(
-            "Video delete/cancel is not supported by the fal.ai queue API via LiteLLM"
-        )
+        raise NotImplementedError("Video delete/cancel is not supported by the fal.ai queue API via LiteLLM")
 
     def get_error_class(
         self, error_message: str, status_code: int, headers: Union[dict, httpx.Headers]

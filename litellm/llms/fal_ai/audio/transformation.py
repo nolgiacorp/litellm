@@ -71,12 +71,7 @@ class FalAIAudioConfig(BaseTextToSpeechConfig):
         api_key: str | None = None,
         api_base: str | None = None,
     ) -> dict:
-        resolved_key = (
-            api_key
-            or litellm.api_key
-            or get_secret_str("FAL_AI_API_KEY")
-            or get_secret_str("FAL_KEY")
-        )
+        resolved_key = api_key or litellm.api_key or get_secret_str("FAL_AI_API_KEY") or get_secret_str("FAL_KEY")
         if not resolved_key:
             raise ValueError(
                 "fal.ai API key is required. Set FAL_AI_API_KEY (or FAL_KEY) "
@@ -192,9 +187,7 @@ class FalAIAudioConfig(BaseTextToSpeechConfig):
         headers = self._poll_headers(raw_response)
         client = _get_httpx_client()
 
-        verbose_logger.debug(
-            "fal.ai audio polling: rid=%s", submit_payload.get("request_id")
-        )
+        verbose_logger.debug("fal.ai audio polling: rid=%s", submit_payload.get("request_id"))
         self._poll_until_complete_sync(
             status_url=status_url,
             headers=headers,
@@ -230,9 +223,7 @@ class FalAIAudioConfig(BaseTextToSpeechConfig):
         status_url = submit_payload.get("status_url")
         response_url = submit_payload.get("response_url")
         if not status_url or not response_url:
-            raise ValueError(
-                "fal.ai queue submit response missing status_url/response_url"
-            )
+            raise ValueError("fal.ai queue submit response missing status_url/response_url")
         return status_url, response_url
 
     @staticmethod
@@ -250,9 +241,7 @@ class FalAIAudioConfig(BaseTextToSpeechConfig):
         deadline = time.monotonic() + timeout_secs
         while True:
             if time.monotonic() > deadline:
-                raise TimeoutError(
-                    f"fal.ai audio job did not complete within {timeout_secs}s"
-                )
+                raise TimeoutError(f"fal.ai audio job did not complete within {timeout_secs}s")
             resp = client.get(url=status_url, headers=headers)
             resp.raise_for_status()
             status = (resp.json().get("status") or "").upper()
@@ -276,7 +265,4 @@ class FalAIAudioConfig(BaseTextToSpeechConfig):
         audio_file = result_payload.get("audio_file")
         if isinstance(audio_file, dict) and isinstance(audio_file.get("url"), str):
             return audio_file["url"]
-        raise ValueError(
-            "fal.ai audio result missing audio url; got keys: "
-            f"{list(result_payload.keys())}"
-        )
+        raise ValueError(f"fal.ai audio result missing audio url; got keys: {list(result_payload.keys())}")
