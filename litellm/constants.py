@@ -194,19 +194,11 @@ MAX_TOKEN_TRIMMING_ATTEMPTS = int(
 RUNWAYML_DEFAULT_API_VERSION = str(os.getenv("RUNWAYML_DEFAULT_API_VERSION", "2024-11-06"))
 RUNWAYML_POLLING_TIMEOUT = int(os.getenv("RUNWAYML_POLLING_TIMEOUT", 600))  # 10 minutes default for image generation
 
-FAL_AI_DEFAULT_API_BASE = str(
-    os.getenv("FAL_AI_DEFAULT_API_BASE", "https://queue.fal.run")
-)
-FAL_AI_POLLING_TIMEOUT = int(
-    os.getenv("FAL_AI_POLLING_TIMEOUT", 900)
-)  # 15 minutes default for video generation
+FAL_AI_DEFAULT_API_BASE = str(os.getenv("FAL_AI_DEFAULT_API_BASE", "https://queue.fal.run"))
+FAL_AI_POLLING_TIMEOUT = int(os.getenv("FAL_AI_POLLING_TIMEOUT", 900))  # 15 minutes default for video generation
 
-KLING_DEFAULT_API_BASE = str(
-    os.getenv("KLING_DEFAULT_API_BASE", "https://api-singapore.klingai.com/v1")
-)
-KLING_POLLING_TIMEOUT = int(
-    os.getenv("KLING_POLLING_TIMEOUT", 900)
-)
+KLING_DEFAULT_API_BASE = str(os.getenv("KLING_DEFAULT_API_BASE", "https://api-singapore.klingai.com/v1"))
+KLING_POLLING_TIMEOUT = int(os.getenv("KLING_POLLING_TIMEOUT", 900))
 
 ########## Networking constants ##############################################################
 _DEFAULT_TTL_FOR_HTTPX_CLIENTS = 3600  # 1 hour, re-use the same httpx client for 1 hour

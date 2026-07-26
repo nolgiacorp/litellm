@@ -4,6 +4,7 @@ Test suite for XAI cost calculation functionality.
 
 import math
 import os
+import pytest
 import sys
 
 import litellm
@@ -471,3 +472,41 @@ class TestXAICostCalculator:
 
         assert math.isclose(prompt_cost, expected_prompt_cost, rel_tol=1e-10)
         assert math.isclose(completion_cost, expected_completion_cost, rel_tol=1e-10)
+
+
+class TestXAIImageCostCalculator:
+    @pytest.fixture(autouse=True)
+    def _local_model_cost_map(self, monkeypatch):
+        monkeypatch.setenv("LITELLM_LOCAL_MODEL_COST_MAP", "True")
+        litellm.model_cost = litellm.get_model_cost_map(url="")
+
+    def test_image_cost_uses_output_cost_per_image(self):
+        from litellm.llms.xai.cost_calculator import image_cost_calculator
+        from litellm.types.utils import ImageObject, ImageResponse
+
+        response = ImageResponse()
+        response.data = [ImageObject(url="https://img.x.ai/1.png"), ImageObject(url="https://img.x.ai/2.png")]
+        cost = image_cost_calculator(model="grok-imagine-image", image_response=response)
+        assert math.isclose(cost, 2 * 0.02, rel_tol=1e-10)
+
+    def test_image_quality_cost(self):
+        from litellm.llms.xai.cost_calculator import image_cost_calculator
+        from litellm.types.utils import ImageObject, ImageResponse
+
+        response = ImageResponse()
+        response.data = [ImageObject(url="https://img.x.ai/1.png")]
+        cost = image_cost_calculator(model="grok-imagine-image-quality", image_response=response)
+        assert math.isclose(cost, 0.05, rel_tol=1e-10)
+
+    def test_image_cost_rejects_non_image_response(self):
+        from litellm.llms.xai.cost_calculator import image_cost_calculator
+
+        with pytest.raises(ValueError, match="ImageResponse"):
+            image_cost_calculator(model="grok-imagine-image", image_response={"data": []})
+
+    def test_video_models_have_per_second_pricing(self):
+        import litellm
+
+        for model, expected in (("grok-imagine-video", 0.05), ("grok-imagine-video-1.5", 0.08)):
+            info = litellm.get_model_info(model=model, custom_llm_provider="xai")
+            assert math.isclose(info.get("output_cost_per_video_per_second", 0), expected, rel_tol=1e-10)

@@ -8616,6 +8616,10 @@ class ProviderConfigManager:
             )
 
             return get_kling_image_generation_config(model)
+        elif LlmProviders.XAI == provider:
+            from litellm.llms.xai.image_generation import XAIImageGenerationConfig
+
+            return XAIImageGenerationConfig()
         elif LlmProviders.STABILITY == provider:
             from litellm.llms.stability.image_generation import (
                 get_stability_image_generation_config,
@@ -8699,6 +8703,10 @@ class ProviderConfigManager:
             from litellm.llms.kling.videos.transformation import KlingVideoConfig
 
             return KlingVideoConfig()
+        elif LlmProviders.XAI == provider:
+            from litellm.llms.xai.videos.transformation import XAIVideoConfig
+
+            return XAIVideoConfig()
         elif LlmProviders.OPENROUTER == provider:
             from litellm.llms.openrouter.videos.transformation import (
                 OpenRouterVideoConfig,
