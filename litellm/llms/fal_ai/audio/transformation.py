@@ -1,5 +1,5 @@
 import time
-from typing import TYPE_CHECKING, Any, Coroutine, Dict, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Any, Coroutine, Dict, Tuple, Union
 
 import httpx
 
@@ -58,18 +58,18 @@ class FalAIAudioConfig(BaseTextToSpeechConfig):
         self,
         model: str,
         optional_params: Dict,
-        voice: Optional[Union[str, Dict]] = None,
+        voice: Union[str, Dict] | None = None,
         drop_params: bool = False,
         kwargs: Dict = {},
-    ) -> Tuple[Optional[str], Dict]:
+    ) -> Tuple[str | None, Dict]:
         return (voice if isinstance(voice, str) else None), dict(optional_params)
 
     def validate_environment(
         self,
         headers: dict,
         model: str,
-        api_key: Optional[str] = None,
-        api_base: Optional[str] = None,
+        api_key: str | None = None,
+        api_base: str | None = None,
     ) -> dict:
         resolved_key = (
             api_key
@@ -93,7 +93,7 @@ class FalAIAudioConfig(BaseTextToSpeechConfig):
     def get_complete_url(
         self,
         model: str,
-        api_base: Optional[str],
+        api_base: str | None,
         litellm_params: dict,
     ) -> str:
         base = api_base or get_secret_str("FAL_AI_API_BASE") or FAL_AI_DEFAULT_API_BASE
@@ -104,7 +104,7 @@ class FalAIAudioConfig(BaseTextToSpeechConfig):
         self,
         model: str,
         input: str,
-        voice: Optional[str],
+        voice: str | None,
         optional_params: Dict,
         litellm_params: Dict,
         headers: dict,
@@ -125,16 +125,16 @@ class FalAIAudioConfig(BaseTextToSpeechConfig):
         self,
         model: str,
         input: str,
-        voice: Optional[Union[str, Dict]],
+        voice: Union[str, Dict] | None,
         optional_params: Dict,
         litellm_params_dict: Dict,
         logging_obj: "LiteLLMLoggingObj",
         timeout: Union[float, httpx.Timeout],
-        extra_headers: Optional[Dict[str, Any]],
+        extra_headers: Dict[str, Any] | None,
         base_llm_http_handler: Any,
         aspeech: bool,
-        api_base: Optional[str],
-        api_key: Optional[str],
+        api_base: str | None,
+        api_key: str | None,
         **kwargs: Any,
     ) -> Union[
         "HttpxBinaryResponseContent",
