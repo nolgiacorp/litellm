@@ -13257,7 +13257,7 @@ async def login(request: Request):
     import jwt
 
     jwt_token = jwt.encode(
-        cast(dict, returned_ui_token_object),
+        dict(returned_ui_token_object),
         cast(str, master_key),
         algorithm="HS256",
     )
@@ -13303,7 +13303,7 @@ async def login_v2(request: Request):
         import jwt
 
         jwt_token = jwt.encode(
-            cast(dict, returned_ui_token_object),
+            dict(returned_ui_token_object),
             cast(str, master_key),
             algorithm="HS256",
         )
@@ -13382,7 +13382,7 @@ async def login_v3(request: Request):
         import jwt
 
         jwt_token = jwt.encode(
-            cast(dict, returned_ui_token_object),
+            dict(returned_ui_token_object),
             cast(str, master_key),
             algorithm="HS256",
         )
@@ -13573,7 +13573,7 @@ async def onboarding(invite_link: str, request: Request):
         server_root_path=get_server_root_path(),
     )
     jwt_token = jwt.encode(  # type: ignore
-        cast(dict, returned_ui_token_object),
+        dict(returned_ui_token_object),
         master_key,
         algorithm="HS256",
     )
@@ -13683,7 +13683,7 @@ async def _generate_onboarding_ui_session_token(user_obj: Any) -> str:
     )
     assert master_key is not None
     return jwt.encode(  # type: ignore
-        cast(dict, returned_ui_token_object),
+        dict(returned_ui_token_object),
         master_key,
         algorithm="HS256",
     )

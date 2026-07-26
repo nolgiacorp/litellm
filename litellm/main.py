@@ -8201,14 +8201,10 @@ def speech(
     elif custom_llm_provider == "fal_ai":
         from litellm.llms.fal_ai.audio.transformation import FalAIAudioConfig
 
-        if text_to_speech_provider_config is None:
+        if not isinstance(text_to_speech_provider_config, FalAIAudioConfig):
             text_to_speech_provider_config = FalAIAudioConfig()
 
-        fal_ai_audio_config = cast(
-            FalAIAudioConfig, text_to_speech_provider_config
-        )
-
-        response = fal_ai_audio_config.dispatch_text_to_speech(
+        response = text_to_speech_provider_config.dispatch_text_to_speech(
             model=model,
             input=input,
             voice=voice,

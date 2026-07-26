@@ -366,9 +366,11 @@ async def _extract_user_id_from_request(request: Request) -> Optional[str]:
     if not token:
         return None
     try:
-        from litellm.proxy._types import hash_token  # noqa: PLC0415
-        from litellm.proxy.auth.auth_checks import get_key_object  # noqa: PLC0415
-        from litellm.proxy.proxy_server import (  # noqa: PLC0415
+        from litellm.proxy._types import hash_token  # noqa: PLC0415  # deferred to avoid circular import at module load
+        from litellm.proxy.auth.auth_checks import (
+            get_key_object,  # noqa: PLC0415  # deferred to avoid circular import at module load
+        )
+        from litellm.proxy.proxy_server import (  # noqa: PLC0415  # deferred to avoid circular import with proxy_server
             prisma_client,
             user_api_key_cache,
         )
@@ -399,11 +401,13 @@ async def _store_per_user_token_server_side(
     Errors are logged but NOT re-raised — the token is always returned to the
     client even when server-side storage fails.
     """
-    from litellm.proxy._experimental.mcp_server.oauth2_token_cache import (  # noqa: PLC0415
+    from litellm.proxy._experimental.mcp_server.oauth2_token_cache import (  # noqa: PLC0415  # deferred to avoid circular import at module load
         _compute_per_user_token_ttl,
         mcp_per_user_token_cache,
     )
-    from litellm.proxy.utils import get_prisma_client_or_throw  # noqa: PLC0415
+    from litellm.proxy.utils import (
+        get_prisma_client_or_throw,  # noqa: PLC0415  # deferred to avoid circular import at module load
+    )
 
     access_token: Optional[str] = token_response.get("access_token")
     if not access_token:

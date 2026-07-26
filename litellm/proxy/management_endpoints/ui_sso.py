@@ -3196,7 +3196,7 @@ class SSOAuthenticationHandler:
         )
 
         jwt_token = jwt.encode(
-            cast(dict, returned_ui_token_object),
+            dict(returned_ui_token_object),
             master_key or "",
             algorithm="HS256",
         )
