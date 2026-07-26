@@ -10,6 +10,8 @@ off-domain and non-HTTPS URLs.
 import pytest
 
 from litellm.llms.black_forest_labs.common_utils import (
+    IMAGE_EDIT_MODELS,
+    IMAGE_GENERATION_MODELS,
     BlackForestLabsError,
     assert_bfl_polling_url,
 )
@@ -65,3 +67,25 @@ class TestAssertBflPollingUrl:
     def test_rejects_javascript_scheme(self):
         with pytest.raises(BlackForestLabsError, match="scheme must be https"):
             assert_bfl_polling_url("javascript://api.bfl.ai/alert(1)")
+
+
+class TestFlux2ModelMaps:
+    @pytest.mark.parametrize(
+        "model",
+        ["flux-2-pro", "flux-2-max", "flux-2-flex", "flux-2-klein-9b", "flux-2-klein-4b"],
+    )
+    def test_flux2_models_registered_for_generation_and_edit(self, model):
+        assert IMAGE_GENERATION_MODELS[model] == f"/v1/{model}"
+        assert IMAGE_EDIT_MODELS[model] == f"/v1/{model}"
+
+    @pytest.mark.parametrize(
+        "model",
+        ["flux-2-pro", "flux-2-max", "flux-2-flex", "flux-2-klein-9b", "flux-2-klein-4b"],
+    )
+    def test_flux2_models_have_published_pricing(self, model, monkeypatch):
+        import litellm
+
+        monkeypatch.setenv("LITELLM_LOCAL_MODEL_COST_MAP", "True")
+        litellm.model_cost = litellm.get_model_cost_map(url="")
+        info = litellm.get_model_info(model=model, custom_llm_provider="black_forest_labs")
+        assert info.get("output_cost_per_image", 0) > 0

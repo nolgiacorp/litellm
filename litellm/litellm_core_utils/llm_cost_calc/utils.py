@@ -1165,6 +1165,15 @@ class CostCalculatorUtils:
                 model=model,
                 image_response=completion_response,
             )
+        elif custom_llm_provider == litellm.LlmProviders.XAI.value:
+            from litellm.llms.xai.cost_calculator import (
+                image_cost_calculator as xai_image_cost_calculator,
+            )
+
+            return xai_image_cost_calculator(
+                model=model,
+                image_response=completion_response,
+            )
         elif custom_llm_provider == litellm.LlmProviders.RUNWAYML.value:
             from litellm.llms.runwayml.cost_calculator import (
                 cost_calculator as runwayml_image_cost_calculator,

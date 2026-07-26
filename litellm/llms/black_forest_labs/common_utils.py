@@ -63,6 +63,11 @@ IMAGE_EDIT_MODELS: Dict[str, str] = {
     "flux-kontext-max": "/v1/flux-kontext-max",
     "flux-pro-1.0-fill": "/v1/flux-pro-1.0-fill",
     "flux-pro-1.0-expand": "/v1/flux-pro-1.0-expand",
+    "flux-2-pro": "/v1/flux-2-pro",
+    "flux-2-max": "/v1/flux-2-max",
+    "flux-2-flex": "/v1/flux-2-flex",
+    "flux-2-klein-9b": "/v1/flux-2-klein-9b",
+    "flux-2-klein-4b": "/v1/flux-2-klein-4b",
 }
 
 # Model to endpoint mapping for image generation
@@ -74,4 +79,9 @@ IMAGE_GENERATION_MODELS: Dict[str, str] = {
     # Kontext models support both text-to-image and image editing
     "flux-kontext-pro": "/v1/flux-kontext-pro",
     "flux-kontext-max": "/v1/flux-kontext-max",
+    "flux-2-pro": "/v1/flux-2-pro",
+    "flux-2-max": "/v1/flux-2-max",
+    "flux-2-flex": "/v1/flux-2-flex",
+    "flux-2-klein-9b": "/v1/flux-2-klein-9b",
+    "flux-2-klein-4b": "/v1/flux-2-klein-4b",
 }
