@@ -1,6 +1,6 @@
 import base64
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any
 
 import httpx
 from httpx._types import RequestFiles
@@ -44,7 +44,7 @@ _SUPPORTED_ASPECT_RATIOS = frozenset({"16:9", "9:16"})
 _TERMINAL_FAILURE_STATUSES = frozenset({"failed", "cancelled", "incomplete", "budget_exceeded"})
 
 
-def _map_interaction_status(status: Optional[str]) -> str:
+def _map_interaction_status(status: str | None) -> str:
     if status == "completed":
         return "completed"
     if status in _TERMINAL_FAILURE_STATUSES:
@@ -52,7 +52,7 @@ def _map_interaction_status(status: Optional[str]) -> str:
     return "processing"
 
 
-def _find_video_part(interaction: InteractionsAPIResponse) -> Optional[dict[str, Any]]:
+def _find_video_part(interaction: InteractionsAPIResponse) -> dict[str, Any] | None:
     steps = interaction.steps or interaction.outputs or []
     for step in reversed(steps):
         if step.get("type") != "model_output":
@@ -105,8 +105,8 @@ class GeminiOmniVideoConfig(BaseVideoConfig):
         self,
         headers: dict,
         model: str,
-        api_key: Optional[str] = None,
-        litellm_params: Optional[GenericLiteLLMParams] = None,
+        api_key: str | None = None,
+        litellm_params: GenericLiteLLMParams | None = None,
     ) -> dict:
         if litellm_params and litellm_params.api_key:
             api_key = api_key or litellm_params.api_key
@@ -131,7 +131,7 @@ class GeminiOmniVideoConfig(BaseVideoConfig):
     def get_complete_url(
         self,
         model: str,
-        api_base: Optional[str],
+        api_base: str | None,
         litellm_params: dict,
     ) -> str:
         if api_base is None:
@@ -192,8 +192,8 @@ class GeminiOmniVideoConfig(BaseVideoConfig):
         model: str,
         raw_response: httpx.Response,
         logging_obj: LiteLLMLoggingObj,
-        custom_llm_provider: Optional[str] = None,
-        request_data: Optional[dict] = None,
+        custom_llm_provider: str | None = None,
+        request_data: dict | None = None,
     ) -> VideoObject:
         try:
             raw_json = raw_response.json()
@@ -237,7 +237,7 @@ class GeminiOmniVideoConfig(BaseVideoConfig):
         self,
         raw_response: httpx.Response,
         logging_obj: LiteLLMLoggingObj,
-        custom_llm_provider: Optional[str] = None,
+        custom_llm_provider: str | None = None,
     ) -> VideoObject:
         response_json = raw_response.json()
         interaction = InteractionsAPIResponse(**response_json)
@@ -250,7 +250,7 @@ class GeminiOmniVideoConfig(BaseVideoConfig):
 
         status = _map_interaction_status(interaction.status)
 
-        error_data: Optional[dict[str, Any]] = None
+        error_data: dict[str, Any] | None = None
         if status == "failed":
             error_data = response_json.get("error") or {
                 "code": "interaction_" + (interaction.status or "failed"),
@@ -270,7 +270,7 @@ class GeminiOmniVideoConfig(BaseVideoConfig):
         api_base: str,
         litellm_params: GenericLiteLLMParams,
         headers: dict,
-        variant: Optional[str] = None,
+        variant: str | None = None,
     ) -> tuple[str, dict]:
         interaction_id = extract_original_video_id(video_id)
         url = f"{api_base.rstrip('/')}/v1beta/interactions/{interaction_id}"
@@ -318,7 +318,7 @@ class GeminiOmniVideoConfig(BaseVideoConfig):
         api_base: str,
         litellm_params: GenericLiteLLMParams,
         headers: dict,
-        extra_body: Optional[dict[str, Any]] = None,
+        extra_body: dict[str, Any] | None = None,
     ) -> tuple[str, dict]:
         raise NotImplementedError("Video remix is not supported for Gemini Omni via the videos API.")
 
@@ -326,7 +326,7 @@ class GeminiOmniVideoConfig(BaseVideoConfig):
         self,
         raw_response: httpx.Response,
         logging_obj: LiteLLMLoggingObj,
-        custom_llm_provider: Optional[str] = None,
+        custom_llm_provider: str | None = None,
     ) -> VideoObject:
         raise NotImplementedError("Video remix is not supported for Gemini Omni via the videos API.")
 
@@ -335,10 +335,10 @@ class GeminiOmniVideoConfig(BaseVideoConfig):
         api_base: str,
         litellm_params: GenericLiteLLMParams,
         headers: dict,
-        after: Optional[str] = None,
-        limit: Optional[int] = None,
-        order: Optional[str] = None,
-        extra_query: Optional[dict[str, Any]] = None,
+        after: str | None = None,
+        limit: int | None = None,
+        order: str | None = None,
+        extra_query: dict[str, Any] | None = None,
     ) -> tuple[str, dict]:
         raise NotImplementedError("Video list is not supported for Gemini Omni.")
 
@@ -346,7 +346,7 @@ class GeminiOmniVideoConfig(BaseVideoConfig):
         self,
         raw_response: httpx.Response,
         logging_obj: LiteLLMLoggingObj,
-        custom_llm_provider: Optional[str] = None,
+        custom_llm_provider: str | None = None,
     ) -> dict[str, str]:
         raise NotImplementedError("Video list is not supported for Gemini Omni.")
 
