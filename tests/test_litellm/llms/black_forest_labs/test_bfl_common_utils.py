@@ -89,3 +89,45 @@ class TestFlux2ModelMaps:
         litellm.model_cost = litellm.get_model_cost_map(url="")
         info = litellm.get_model_info(model=model, custom_llm_provider="black_forest_labs")
         assert info.get("output_cost_per_image", 0) > 0
+
+
+class TestBflImageCostCalculator:
+    @pytest.mark.parametrize(
+        "model,expected",
+        [("flux-2-klein-4b", 0.014), ("flux-pro-1.1", 0.04), ("flux-2-max", 0.07)],
+    )
+    def test_image_cost_uses_output_cost_per_image(self, model, expected, monkeypatch):
+        import math
+
+        import litellm
+        from litellm.llms.black_forest_labs.cost_calculator import image_cost_calculator
+        from litellm.types.utils import ImageObject, ImageResponse
+
+        monkeypatch.setenv("LITELLM_LOCAL_MODEL_COST_MAP", "True")
+        litellm.model_cost = litellm.get_model_cost_map(url="")
+        response = ImageResponse()
+        response.data = [ImageObject(url="https://delivery.us2.bfl.ai/x.png")]
+        assert math.isclose(image_cost_calculator(model=model, image_response=response), expected, rel_tol=1e-10)
+
+    def test_dispatch_routes_bfl_image_cost(self, monkeypatch):
+        import math
+
+        import litellm
+        from litellm.litellm_core_utils.llm_cost_calc.utils import CostCalculatorUtils
+        from litellm.types.utils import ImageObject, ImageResponse
+
+        monkeypatch.setenv("LITELLM_LOCAL_MODEL_COST_MAP", "True")
+        litellm.model_cost = litellm.get_model_cost_map(url="")
+        response = ImageResponse()
+        response.data = [ImageObject(url="https://delivery.us2.bfl.ai/x.png")]
+        cost = CostCalculatorUtils.route_image_generation_cost_calculator(
+            model="flux-2-klein-4b",
+            custom_llm_provider="black_forest_labs",
+            completion_response=response,
+            quality=None,
+            n=None,
+            size=None,
+            optional_params={},
+            call_type="aimage_generation",
+        )
+        assert math.isclose(cost, 0.014, rel_tol=1e-10)
