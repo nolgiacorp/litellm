@@ -15436,10 +15436,10 @@
         ]
     },
     "elevenlabs/eleven_v3": {
-        "input_cost_per_character": 0.00018,
+        "input_cost_per_character": 0.0001,
         "litellm_provider": "elevenlabs",
         "metadata": {
-            "calculation": "$0.18/1000 characters (Scale plan pricing, 1 credit per character)",
+            "calculation": "$0.10/1000 characters (May 2026 self-serve API rate)",
             "notes": "ElevenLabs Eleven v3 - most expressive TTS model with 70+ languages and audio tags support"
         },
         "mode": "audio_speech",
@@ -15448,11 +15448,35 @@
             "/v1/audio/speech"
         ]
     },
-    "elevenlabs/eleven_multilingual_v2": {
-        "input_cost_per_character": 0.00018,
+    "elevenlabs/eleven_turbo_v2_5": {
+        "input_cost_per_character": 5e-05,
         "litellm_provider": "elevenlabs",
         "metadata": {
-            "calculation": "$0.18/1000 characters (Scale plan pricing, 1 credit per character)",
+            "notes": "ElevenLabs Turbo v2.5 - Flash-tier API rate ($0.05/1k characters, May 2026 API pricing)"
+        },
+        "mode": "audio_speech",
+        "source": "https://elevenlabs.io/pricing/api",
+        "supported_endpoints": [
+            "/v1/audio/speech"
+        ]
+    },
+    "elevenlabs/eleven_flash_v2_5": {
+        "input_cost_per_character": 5e-05,
+        "litellm_provider": "elevenlabs",
+        "metadata": {
+            "notes": "ElevenLabs Flash v2.5 - Flash-tier API rate ($0.05/1k characters, May 2026 API pricing)"
+        },
+        "mode": "audio_speech",
+        "source": "https://elevenlabs.io/pricing/api",
+        "supported_endpoints": [
+            "/v1/audio/speech"
+        ]
+    },
+    "elevenlabs/eleven_multilingual_v2": {
+        "input_cost_per_character": 0.0001,
+        "litellm_provider": "elevenlabs",
+        "metadata": {
+            "calculation": "$0.10/1000 characters (May 2026 self-serve API rate)",
             "notes": "ElevenLabs Eleven Multilingual v2 - default TTS model with 29 languages support"
         },
         "mode": "audio_speech",
