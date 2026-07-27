@@ -48,8 +48,6 @@ _SIZE_TO_ASPECT_RATIO = {
     "768x1024": "3:4",
 }
 
-_PASSTHROUGH_PARAMS = frozenset({"resolution", "reference_images", "aspect_ratio", "duration"})
-
 
 def _resolve_xai_video_api_base(api_base: str | None) -> str:
     base = (XAIModelInfo.get_api_base(api_base) or "https://api.x.ai").rstrip("/")
@@ -75,40 +73,49 @@ class XAIVideoConfig(BaseVideoConfig):
         model: str,
         drop_params: bool,
     ) -> dict:
-        params: dict[str, Any] = dict(video_create_optional_params)
-        extra_body = params.pop("extra_body", None)
-        if isinstance(extra_body, dict):
-            params = {**params, **extra_body}
-
-        mapped: dict[str, Any] = {}
-
-        seconds = params.get("seconds")
-        if seconds is not None:
-            try:
-                mapped["duration"] = int(float(seconds))
-            except (TypeError, ValueError):
-                raise ValueError(f"Unsupported xAI video duration '{seconds}'; expected a number of seconds.")
-
+        extra_body = video_create_optional_params.get("extra_body")
+        params: dict[str, Any] = {
+            **{key: value for key, value in video_create_optional_params.items() if key != "extra_body"},
+            **(extra_body if isinstance(extra_body, dict) else {}),
+        }
+        raw_duration = params.get("seconds") if params.get("seconds") is not None else params.get("duration")
+        try:
+            duration = int(float(raw_duration)) if raw_duration is not None else None
+        except (TypeError, ValueError):
+            raise ValueError(f"Unsupported xAI video duration '{raw_duration}'; expected a number of seconds.")
         size = params.get("size")
-        if isinstance(size, str):
-            aspect = _SIZE_TO_ASPECT_RATIO.get(size)
-            if aspect is not None:
-                mapped["aspect_ratio"] = aspect
-            elif "x" in size:
-                mapped["aspect_ratio"] = size.replace("x", ":")
-
+        aspect_ratio = (
+            _SIZE_TO_ASPECT_RATIO.get(size) or (size.replace("x", ":") if "x" in size else None)
+            if isinstance(size, str) and size
+            else params.get("aspect_ratio")
+        )
         input_reference = params.get("input_reference")
-        if isinstance(input_reference, str) and input_reference:
-            mapped["image"] = input_reference
+        image_url = params.get("image_url")
+        image = (
+            input_reference
+            if isinstance(input_reference, str) and input_reference
+            else image_url
+            if isinstance(image_url, str) and image_url
+            else None
+        )
+        raw_reference_images = params.get("reference_images") or params.get("image_urls")
+        reference_images = (
+            [raw_reference_images]
+            if isinstance(raw_reference_images, str) and raw_reference_images
+            else [url for url in raw_reference_images if isinstance(url, str) and url]
+            if isinstance(raw_reference_images, list)
+            else []
+        )
+        resolution = params.get("resolution")
 
-        supported = self.get_supported_openai_params(model)
-        for key, value in params.items():
-            if key in _PASSTHROUGH_PARAMS and key not in mapped:
-                mapped[key] = value
-            elif key not in supported and key not in mapped:
-                mapped[key] = value
-
-        return mapped
+        return {
+            **({"duration": duration} if duration is not None else {}),
+            **({"aspect_ratio": aspect_ratio} if aspect_ratio else {}),
+            **({"resolution": resolution} if resolution else {}),
+            # xAI requires image and reference_images to be mutually exclusive.
+            **({"image": image} if image and not reference_images else {}),
+            **({"reference_images": reference_images} if reference_images else {}),
+        }
 
     def validate_environment(
         self,
