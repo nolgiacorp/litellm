@@ -1,6 +1,11 @@
 <h1 align="center">
         🚅 LiteLLM
     </h1>
+
+> **Nolgia fork boundary:** This repository (`nolgiainc/litellm`) is Nolgia's embedded LiteLLM fork. The upstream PyPI package, GHCR images, deploy buttons, documentation, and support links in this README are upstream-owned and do not contain fork-only behavior. Fork developers should read [`AGENTS.md`](AGENTS.md) and the [Nolgia fork notes in `CLAUDE.md`](CLAUDE.md#nolgia-fork-notes-nolgiacorplitellm) before changing this tree.
+>
+> The durable additions maintained here are the fal.ai video and audio providers under [`litellm/llms/fal_ai/`](litellm/llms/fal_ai/). The remotely queried default branch is `litellm_internal_staging`; build and deploy only commits on that branch, never feature branches.
+
     <p align="center">
         <p align="center">LiteLLM AI Gateway
         </p>
@@ -59,7 +64,7 @@ Managing LLM calls across providers gets complicated fast — different SDKs, au
 - **Unified API** — one interface for 100+ LLMs, no provider-specific SDK juggling
 - **Drop-in OpenAI compatibility** — swap providers without rewriting your code
 - **Production-ready gateway** — virtual keys, spend tracking, guardrails, load balancing, and an admin dashboard out of the box
-- **8ms P95 latency** at 1k RPS ([benchmarks](https://docs.litellm.ai/docs/benchmarks))
+- **8ms P95 latency** at 1k RPS; [benchmarks](https://docs.litellm.ai/docs/benchmarks)
 
 ### OSS Adopters
 
@@ -154,7 +159,7 @@ request = SendMessageRequest(
 response = await client.send_message(request)
 ```
 
-### AI Gateway (Proxy Server)
+### AI Gateway (Proxy Server) - A2A Agents
 
 **Step 1.** [Add your Agent to the AI Gateway](https://docs.litellm.ai/docs/a2a#adding-your-agent) — set `protocolVersion` to `1.0` or `0.3` per agent
 
@@ -266,7 +271,7 @@ curl -X POST 'http://0.0.0.0:4000/v1/chat/completions' \
 
 </details>
 
-### Supported Providers ([Website Supported Models](https://models.litellm.ai/) | [Docs](https://docs.litellm.ai/docs/providers))
+### Supported Providers: [Website Supported Models](https://models.litellm.ai/) | [Docs](https://docs.litellm.ai/docs/providers)
 
 | Provider                                                                            | `/chat/completions` | `/messages` | `/responses` | `/embeddings` | `/image/generations` | `/audio/transcriptions` | `/audio/speech` | `/moderations` | `/batches` | `/rerank` |
 |-------------------------------------------------------------------------------------|---------------------|-------------|--------------|---------------|----------------------|-------------------------|-----------------|----------------|-----------|-----------|
@@ -633,9 +638,9 @@ For detailed contributing guidelines, see [CONTRIBUTING.md](CONTRIBUTING.md).
 LiteLLM follows the [Google Python Style Guide](https://google.github.io/styleguide/pyguide.html).
 
 Our automated checks include:
-- **Black** for code formatting
+- **Ruff formatter** for code formatting
 - **Ruff** for linting and code quality
-- **MyPy** for type checking
+- **basedpyright** for type checking
 - **Circular import detection**
 - **Import safety checks**
 
