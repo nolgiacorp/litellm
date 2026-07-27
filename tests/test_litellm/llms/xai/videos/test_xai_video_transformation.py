@@ -48,6 +48,7 @@ class TestXAIVideoTransformation:
             video_create_optional_params={
                 "seconds": "10",
                 "size": "720x1280",
+                "aspect_ratio": "16:9",
                 "input_reference": "https://img.example.com/start.png",
                 "extra_body": {"resolution": "720p", "reference_images": ["https://img.example.com/a.png"]},
             },
@@ -56,9 +57,95 @@ class TestXAIVideoTransformation:
         )
         assert mapped["duration"] == 10
         assert mapped["aspect_ratio"] == "9:16"
-        assert mapped["image"] == "https://img.example.com/start.png"
         assert mapped["resolution"] == "720p"
         assert mapped["reference_images"] == ["https://img.example.com/a.png"]
+        assert "image" not in mapped
+
+    def test_map_openai_params_prefers_input_reference_over_fal_image_url(self):
+        mapped = self.config.map_openai_params(
+            video_create_optional_params={
+                "input_reference": "https://img.example.com/canonical-start.png",
+                "image_url": "https://img.example.com/fal-start.png",
+            },
+            model=MODEL,
+            drop_params=False,
+        )
+        assert mapped == {"image": "https://img.example.com/canonical-start.png"}
+
+    def test_map_openai_params_maps_fal_image_url(self):
+        mapped = self.config.map_openai_params(
+            video_create_optional_params={"image_url": "https://img.example.com/start.png"},
+            model=MODEL,
+            drop_params=False,
+        )
+        assert mapped == {"image": "https://img.example.com/start.png"}
+
+    def test_map_openai_params_maps_fal_image_urls(self):
+        mapped = self.config.map_openai_params(
+            video_create_optional_params={
+                "image_urls": [
+                    "https://img.example.com/character-a.png",
+                    "",
+                    "https://img.example.com/character-b.png",
+                ]
+            },
+            model=MODEL,
+            drop_params=False,
+        )
+        assert mapped["reference_images"] == [
+            "https://img.example.com/character-a.png",
+            "https://img.example.com/character-b.png",
+        ]
+        assert "image" not in mapped
+        assert "image_urls" not in mapped
+
+    def test_map_openai_params_prefers_reference_images_over_fal_image_url(self):
+        mapped = self.config.map_openai_params(
+            video_create_optional_params={
+                "image_url": "https://img.example.com/start.png",
+                "image_urls": ["https://img.example.com/character.png"],
+            },
+            model=MODEL,
+            drop_params=False,
+        )
+        assert mapped == {"reference_images": ["https://img.example.com/character.png"]}
+
+    def test_map_openai_params_drops_fal_only_params(self):
+        mapped = self.config.map_openai_params(
+            video_create_optional_params={
+                "seconds": 8,
+                "duration": "12.9",
+                "duration_seconds": 5,
+                "seed": 1,
+                "negative_prompt": "x",
+                "generate_audio": True,
+                "end_image_url": "https://img.example.com/end.png",
+                "video_urls": ["https://video.example.com/reference.mp4"],
+                "audio_urls": ["https://audio.example.com/reference.mp3"],
+                "bitrate_mode": "high",
+            },
+            model=MODEL,
+            drop_params=False,
+        )
+        assert mapped == {"duration": 8}
+
+    def test_map_openai_params_normalizes_explicit_xai_fields(self):
+        mapped = self.config.map_openai_params(
+            video_create_optional_params={
+                "duration": "8.9",
+                "aspect_ratio": "16:9",
+                "resolution": "1080p",
+                "reference_images": "https://img.example.com/character.png",
+            },
+            model=MODEL,
+            drop_params=False,
+        )
+        assert mapped == {
+            "duration": 8,
+            "aspect_ratio": "16:9",
+            "resolution": "1080p",
+            "reference_images": ["https://img.example.com/character.png"],
+        }
 
     def test_map_openai_params_rejects_bad_duration(self):
         with pytest.raises(ValueError, match="duration"):
@@ -125,7 +212,11 @@ class TestXAIVideoTransformation:
     def test_status_done_carries_actual_duration(self):
         video = self.config.transform_video_status_retrieve_response(
             raw_response=_response(
-                {"request_id": "req-1", "status": "done", "video": {"url": "https://vidgen.x.ai/v.mp4", "duration": 9.5}}
+                {
+                    "request_id": "req-1",
+                    "status": "done",
+                    "video": {"url": "https://vidgen.x.ai/v.mp4", "duration": 9.5},
+                }
             ),
             logging_obj=self.logging_obj,
         )
@@ -170,7 +261,5 @@ class TestXAIVideoTransformation:
         import litellm
         from litellm.utils import ProviderConfigManager
 
-        config = ProviderConfigManager.get_provider_video_config(
-            model=MODEL, provider=litellm.LlmProviders.XAI
-        )
+        config = ProviderConfigManager.get_provider_video_config(model=MODEL, provider=litellm.LlmProviders.XAI)
         assert isinstance(config, XAIVideoConfig)
