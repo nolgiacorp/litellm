@@ -131,6 +131,51 @@ class TestKlingVideoTransformation:
         assert url == f"{API_BASE}/videos/image2video"
         assert data["image"] == "https://img/x.png"
 
+    @pytest.mark.parametrize(
+        "i2v_model",
+        [
+            "kling/kling-video/v3/image-to-video",
+            "kling/kling-video/v3/pro/image-to-video",
+            "kling/kling-v3/image2video",
+        ],
+    )
+    def test_create_request_i2v_model_without_image_raises(self, i2v_model):
+        import litellm
+
+        with pytest.raises(litellm.BadRequestError, match="image-to-video variant but no start image"):
+            self.config.transform_video_create_request(
+                model=i2v_model,
+                prompt="animate",
+                api_base=API_BASE,
+                video_create_optional_request_params={},
+                litellm_params=GenericLiteLLMParams(),
+                headers={},
+            )
+
+    def test_create_request_i2v_model_with_image_still_routes_image2video(self):
+        data, _, url = self.config.transform_video_create_request(
+            model="kling/kling-video/v3/image-to-video",
+            prompt="animate",
+            api_base=API_BASE,
+            video_create_optional_request_params={"image": "https://img/x.png"},
+            litellm_params=GenericLiteLLMParams(),
+            headers={},
+        )
+        assert url == f"{API_BASE}/videos/image2video"
+        assert data["image"] == "https://img/x.png"
+
+    def test_create_request_t2v_model_without_image_still_text2video(self):
+        data, _, url = self.config.transform_video_create_request(
+            model="kling/kling-video/v3/text-to-video",
+            prompt="a cat playing piano",
+            api_base=API_BASE,
+            video_create_optional_request_params={},
+            litellm_params=GenericLiteLLMParams(),
+            headers={},
+        )
+        assert url == f"{API_BASE}/videos/text2video"
+        assert "image" not in data
+
     def test_create_response_encodes_kind_and_task_id(self):
         response = Mock(spec=httpx.Response)
         response.json.return_value = {

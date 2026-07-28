@@ -150,6 +150,11 @@ class KlingVideoConfig(BaseVideoConfig):
     ) -> str:
         return resolve_kling_api_base(api_base)
 
+    @staticmethod
+    def _is_image_to_video_model(model: str) -> bool:
+        normalized = model.lower()
+        return "image-to-video" in normalized or "image2video" in normalized
+
     def transform_video_create_request(
         self,
         model: str,
@@ -161,7 +166,18 @@ class KlingVideoConfig(BaseVideoConfig):
     ) -> tuple[dict, RequestFiles, str]:
         mapped: dict[str, Any] = dict(video_create_optional_request_params)
         mapped.pop("model", None)
-        kind = _IMAGE_TO_VIDEO if mapped.get("image") else _TEXT_TO_VIDEO
+        has_image = bool(mapped.get("image"))
+        if self._is_image_to_video_model(model) and not has_image:
+            raise litellm.BadRequestError(
+                message=(
+                    f"Kling model '{model}' is an image-to-video variant but no start image was provided. "
+                    "Pass the start frame as input_reference; refusing to silently fall back to text-to-video, "
+                    "which would ignore the requested image conditioning and return unrelated output."
+                ),
+                model=model,
+                llm_provider=litellm.LlmProviders.KLING.value,
+            )
+        kind = _IMAGE_TO_VIDEO if has_image else _TEXT_TO_VIDEO
         mapped.setdefault("mode", self._resolution_to_mode(self.DEFAULT_RESOLUTION))
 
         request_data = {
