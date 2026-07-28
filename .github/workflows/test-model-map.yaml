@@ -22,3 +22,13 @@ jobs:
       - name: Validate model_prices_and_context_window.json
         run: |
           jq empty model_prices_and_context_window.json
+          jq empty litellm/model_prices_and_context_window_backup.json
+
+      # jq empty (and json.load) accept a repeated key and silently keep the LAST
+      # occurrence, so a duplicated model entry parses clean while the entry a
+      # reader finds first is dead text. Upstream has handed us two of these
+      # (gemini-omni-flash-preview, jp.anthropic.claude-sonnet-4-6); this catches
+      # the next one at the sync PR instead of in production pricing.
+      - name: Check for duplicate keys in the price maps
+        run: |
+          python3 scripts/check_model_prices_duplicate_keys.py
