@@ -108,22 +108,28 @@ jobs:
       - name: Setup Node for Playwright
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
-          node-version: "24.16.0"
+          # Node 24.16.0 regressed stream destruction (nodejs/node#63487), which
+          # deadlocks the yauzl-based extractor `playwright install` uses: the
+          # browser zip downloads to 100% and extraction then hangs forever
+          # (microsoft/playwright#41000). Playwright only worked around it in
+          # 1.60.0 and tests/e2e/ui pins 1.58.1, so stay on the 22 LTS line. Do
+          # not move this to 24 or 26 without first bumping @playwright/test to
+          # >= 1.60.0
+          node-version: "22"
           cache: "npm"
           # npm ci below runs in tests/e2e/ui, so key the cache off that
           # lockfile; the dashboard lockfile it used to point at is a different
           # dependency set and never produced a hit.
           cache-dependency-path: tests/e2e/ui/package-lock.json
 
-      # Browser install is split from apt and bounded per attempt. Since
-      # 2026-07-04 `playwright install` has hung indefinitely right after the
-      # Chrome-for-Testing zip reaches 100%: the bytes arrive (the CDN object is
-      # intact), then the post-download handoff never completes. The retry
-      # wrapper from #32406 cannot recover from a hang because no attempt ever
-      # returns, so the job burned its full 30m cap on every run. `timeout`
-      # bounds each attempt so a retry can take over, the step cap bounds the
-      # worst case, and DEBUG=pw:install makes the next failure say where it
-      # stopped instead of going silent.
+      # Browser install is split from apt and bounded per attempt. The hang
+      # this guards against is fixed above by the Node pin, but the guards stay:
+      # a wedged `playwright install` otherwise burns the whole 30m job cap and
+      # reports nothing, since the retry wrapper from #32406 cannot recover from
+      # a hang (no attempt ever returns). `timeout` bounds each attempt so a
+      # retry can take over, the step cap bounds the worst case, and
+      # DEBUG=pw:install makes any recurrence name the step it stopped on.
+      # 4 attempts x 75s plus backoff stays inside the 8m step cap.
       - name: Install e2e deps and Chromium
         working-directory: tests/e2e/ui
         timeout-minutes: 8
