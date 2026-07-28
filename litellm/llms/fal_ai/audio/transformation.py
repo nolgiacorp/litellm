@@ -1,5 +1,6 @@
 import time
-from typing import TYPE_CHECKING, Any, Coroutine, Dict, Tuple, Union
+from collections.abc import Coroutine
+from typing import TYPE_CHECKING, Any, Union
 
 import httpx
 
@@ -57,11 +58,11 @@ class FalAIAudioConfig(BaseTextToSpeechConfig):
     def map_openai_params(
         self,
         model: str,
-        optional_params: Dict,
-        voice: Union[str, Dict] | None = None,
+        optional_params: dict,
+        voice: str | dict | None = None,
         drop_params: bool = False,
-        kwargs: Dict = {},
-    ) -> Tuple[str | None, Dict]:
+        kwargs: dict = {},
+    ) -> tuple[str | None, dict]:
         return (voice if isinstance(voice, str) else None), dict(optional_params)
 
     def validate_environment(
@@ -100,11 +101,11 @@ class FalAIAudioConfig(BaseTextToSpeechConfig):
         model: str,
         input: str,
         voice: str | None,
-        optional_params: Dict,
-        litellm_params: Dict,
+        optional_params: dict,
+        litellm_params: dict,
         headers: dict,
     ) -> TextToSpeechRequestData:
-        body: Dict[str, Any] = {"text": input, "prompt": input}
+        body: dict[str, Any] = {"text": input, "prompt": input}
         if voice is not None:
             body["voice"] = voice
         for key, value in optional_params.items():
@@ -120,12 +121,12 @@ class FalAIAudioConfig(BaseTextToSpeechConfig):
         self,
         model: str,
         input: str,
-        voice: Union[str, Dict] | None,
-        optional_params: Dict,
-        litellm_params_dict: Dict,
+        voice: str | dict | None,
+        optional_params: dict,
+        litellm_params_dict: dict,
         logging_obj: "LiteLLMLoggingObj",
-        timeout: Union[float, httpx.Timeout],
-        extra_headers: Dict[str, Any] | None,
+        timeout: float | httpx.Timeout,
+        extra_headers: dict[str, Any] | None,
         base_llm_http_handler: Any,
         aspeech: bool,
         api_base: str | None,
@@ -208,7 +209,7 @@ class FalAIAudioConfig(BaseTextToSpeechConfig):
         return result
 
     @staticmethod
-    def _resolve_polling_timeout(timeout: Union[float, httpx.Timeout]) -> float:
+    def _resolve_polling_timeout(timeout: float | httpx.Timeout) -> float:
         candidate: Any = timeout
         if isinstance(timeout, httpx.Timeout):
             candidate = timeout.read or timeout.connect
@@ -219,7 +220,7 @@ class FalAIAudioConfig(BaseTextToSpeechConfig):
         return value if value > 0 else float(FAL_AI_POLLING_TIMEOUT)
 
     @staticmethod
-    def _queue_urls(submit_payload: Dict[str, Any]) -> Tuple[str, str]:
+    def _queue_urls(submit_payload: dict[str, Any]) -> tuple[str, str]:
         status_url = submit_payload.get("status_url")
         response_url = submit_payload.get("response_url")
         if not status_url or not response_url:
@@ -227,14 +228,14 @@ class FalAIAudioConfig(BaseTextToSpeechConfig):
         return status_url, response_url
 
     @staticmethod
-    def _poll_headers(raw_response: httpx.Response) -> Dict[str, str]:
+    def _poll_headers(raw_response: httpx.Response) -> dict[str, str]:
         authorization = raw_response.request.headers.get("Authorization", "")
         return {"Authorization": authorization} if authorization else {}
 
     def _poll_until_complete_sync(
         self,
         status_url: str,
-        headers: Dict[str, str],
+        headers: dict[str, str],
         client: HTTPHandler,
         timeout_secs: float,
     ) -> None:
@@ -252,7 +253,7 @@ class FalAIAudioConfig(BaseTextToSpeechConfig):
             time.sleep(_POLL_INTERVAL_SECS)
 
     @staticmethod
-    def _extract_audio_url(result_payload: Dict[str, Any]) -> str:
+    def _extract_audio_url(result_payload: dict[str, Any]) -> str:
         error_payload = result_payload.get("error")
         if error_payload:
             raise ValueError(f"fal.ai audio generation failed: {error_payload}")

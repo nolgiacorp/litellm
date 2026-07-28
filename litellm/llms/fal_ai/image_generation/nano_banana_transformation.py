@@ -1,5 +1,3 @@
-from typing import List
-
 from litellm.secret_managers.main import get_secret_str
 from litellm.types.llms.openai import OpenAIImageGenerationOptionalParams
 
@@ -18,7 +16,7 @@ class FalAINanoBananaConfig(FalAIBaseConfig):
     Documentation: https://fal.ai/models/fal-ai/nano-banana
     """
 
-    SUPPORTED_ASPECT_RATIOS: List[str] = [
+    SUPPORTED_ASPECT_RATIOS: list[str] = [
         "21:9",
         "16:9",
         "3:2",
@@ -44,7 +42,7 @@ class FalAINanoBananaConfig(FalAIBaseConfig):
         endpoint = model if model.startswith("fal-ai/") else f"fal-ai/{model}"
         return f"{base_url}/{endpoint}"
 
-    def get_supported_openai_params(self, model: str) -> List[OpenAIImageGenerationOptionalParams]:
+    def get_supported_openai_params(self, model: str) -> list[OpenAIImageGenerationOptionalParams]:
         return ["n", "response_format", "size"]
 
     def map_openai_params(
