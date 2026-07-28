@@ -3,6 +3,9 @@ from unittest.mock import Mock
 import httpx
 import pytest
 
+import litellm
+from litellm.litellm_core_utils.exception_mapping_utils import exception_type
+from litellm.llms.base_llm.chat.transformation import BaseLLMException
 from litellm.llms.fal_ai.videos.transformation import FalAIVideoConfig
 from litellm.types.router import GenericLiteLLMParams
 from litellm.types.videos.main import VideoObject
@@ -16,6 +19,12 @@ KLING_MODEL = "fal_ai/fal-ai/kling-video/v2.5-turbo/pro/text-to-video"
 KLING_MODEL_ID = "fal-ai/kling-video/v2.5-turbo/pro/text-to-video"
 KLING_QUEUE_NAMESPACE = "fal-ai/kling-video"
 FAL_API_BASE = "https://queue.fal.run"
+FAL_CONTENT_POLICY_BODY = (
+    '{"detail":[{"loc":["body","image_urls"],"type":"content_policy_violation",'
+    '"ctx":{"extra_info":{"reason":"partner_validation_failed"}},'
+    '"msg":"The images or videos provided may contain likenesses of real people or other private information '
+    'that cannot be processed."}]}'
+)
 
 
 def _fal_status_response(payload, request_id="abc-123", status_code=200):
@@ -29,6 +38,51 @@ class TestFalAIVideoTransformation:
     def setup_method(self):
         self.config = FalAIVideoConfig()
         self.mock_logging_obj = Mock()
+
+    def test_get_error_class_raises_content_policy_violation(self) -> None:
+        with pytest.raises(litellm.ContentPolicyViolationError) as exc_info:
+            self.config.get_error_class(
+                error_message=FAL_CONTENT_POLICY_BODY,
+                status_code=422,
+                headers=httpx.Headers(),
+            )
+
+        assert exc_info.value.status_code == 400
+        assert FAL_CONTENT_POLICY_BODY in exc_info.value.message
+        assert "likenesses of real people" in str(exc_info.value)
+
+    def test_content_policy_violation_remains_terminal_after_exception_mapping(self) -> None:
+        with pytest.raises(litellm.ContentPolicyViolationError) as exc_info:
+            self.config.get_error_class(
+                error_message=FAL_CONTENT_POLICY_BODY,
+                status_code=422,
+                headers=httpx.Headers(),
+            )
+
+        mapped_exception = exception_type(
+            model="fal_ai/bytedance/seedance-2.0/reference-to-video",
+            original_exception=exc_info.value,
+            custom_llm_provider="fal_ai",
+        )
+
+        assert isinstance(mapped_exception, litellm.ContentPolicyViolationError)
+        assert mapped_exception.status_code == 400
+        assert litellm._should_retry(400) is False
+
+    def test_get_error_class_keeps_generic_errors_as_base_llm_exception(self) -> None:
+        with pytest.raises(BaseLLMException) as exc_info:
+            self.config.get_error_class(
+                error_message="internal server error",
+                status_code=500,
+                headers=httpx.Headers(),
+            )
+
+        assert type(exc_info.value) is BaseLLMException
+        assert exc_info.value.status_code == 500
+        assert not isinstance(exc_info.value, litellm.ContentPolicyViolationError)
+
+    def test_content_policy_detection_supports_partner_validation_signature(self) -> None:
+        assert self.config._is_content_policy_rejection("partner_validation_failed")
 
     def test_validate_environment_uses_fal_ai_api_key(self, monkeypatch):
         monkeypatch.setenv("FAL_AI_API_KEY", "test-key-123")
