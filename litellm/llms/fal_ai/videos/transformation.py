@@ -413,11 +413,22 @@ class FalAIVideoConfig(BaseVideoConfig):
     def get_error_class(
         self, error_message: str, status_code: int, headers: Union[dict, httpx.Headers]
     ) -> BaseLLMException:
+        if self._is_content_policy_rejection(error_message):
+            raise litellm.ContentPolicyViolationError(
+                message=error_message,
+                model="",
+                llm_provider=litellm.LlmProviders.FAL_AI.value,
+            )
         raise BaseLLMException(
             status_code=status_code,
             message=error_message,
             headers=headers,
         )
+
+    @staticmethod
+    def _is_content_policy_rejection(error_message: str) -> bool:
+        normalized_message = error_message.lower()
+        return "content_policy_violation" in normalized_message or "partner_validation_failed" in normalized_message
 
     def _raise_for_status(self, raw_response: httpx.Response) -> None:
         if raw_response.is_success:
