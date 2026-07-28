@@ -91,21 +91,23 @@ class XAIVideoConfig(BaseVideoConfig):
         )
         input_reference = params.get("input_reference")
         image_url = params.get("image_url")
-        image = (
+        image_source = (
             input_reference
             if isinstance(input_reference, str) and input_reference
             else image_url
             if isinstance(image_url, str) and image_url
             else None
         )
+        image = {"url": image_source} if image_source else None
         raw_reference_images = params.get("reference_images") or params.get("image_urls")
-        reference_images = (
+        reference_image_urls = (
             [raw_reference_images]
             if isinstance(raw_reference_images, str) and raw_reference_images
             else [url for url in raw_reference_images if isinstance(url, str) and url]
             if isinstance(raw_reference_images, list)
             else []
         )
+        reference_images = [{"url": url} for url in reference_image_urls]
         resolution = params.get("resolution")
 
         return {

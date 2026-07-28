@@ -58,7 +58,7 @@ class TestXAIVideoTransformation:
         assert mapped["duration"] == 10
         assert mapped["aspect_ratio"] == "9:16"
         assert mapped["resolution"] == "720p"
-        assert mapped["reference_images"] == ["https://img.example.com/a.png"]
+        assert mapped["reference_images"] == [{"url": "https://img.example.com/a.png"}]
         assert "image" not in mapped
 
     def test_map_openai_params_prefers_input_reference_over_fal_image_url(self):
@@ -70,7 +70,7 @@ class TestXAIVideoTransformation:
             model=MODEL,
             drop_params=False,
         )
-        assert mapped == {"image": "https://img.example.com/canonical-start.png"}
+        assert mapped == {"image": {"url": "https://img.example.com/canonical-start.png"}}
 
     def test_map_openai_params_maps_fal_image_url(self):
         mapped = self.config.map_openai_params(
@@ -78,7 +78,7 @@ class TestXAIVideoTransformation:
             model=MODEL,
             drop_params=False,
         )
-        assert mapped == {"image": "https://img.example.com/start.png"}
+        assert mapped == {"image": {"url": "https://img.example.com/start.png"}}
 
     def test_map_openai_params_maps_fal_image_urls(self):
         mapped = self.config.map_openai_params(
@@ -93,8 +93,8 @@ class TestXAIVideoTransformation:
             drop_params=False,
         )
         assert mapped["reference_images"] == [
-            "https://img.example.com/character-a.png",
-            "https://img.example.com/character-b.png",
+            {"url": "https://img.example.com/character-a.png"},
+            {"url": "https://img.example.com/character-b.png"},
         ]
         assert "image" not in mapped
         assert "image_urls" not in mapped
@@ -108,7 +108,7 @@ class TestXAIVideoTransformation:
             model=MODEL,
             drop_params=False,
         )
-        assert mapped == {"reference_images": ["https://img.example.com/character.png"]}
+        assert mapped == {"reference_images": [{"url": "https://img.example.com/character.png"}]}
 
     def test_map_openai_params_drops_fal_only_params(self):
         mapped = self.config.map_openai_params(
@@ -144,8 +144,48 @@ class TestXAIVideoTransformation:
             "duration": 8,
             "aspect_ratio": "16:9",
             "resolution": "1080p",
-            "reference_images": ["https://img.example.com/character.png"],
+            "reference_images": [{"url": "https://img.example.com/character.png"}],
         }
+
+    def test_map_openai_params_wraps_start_frame_image_as_image_url_struct(self):
+        mapped = self.config.map_openai_params(
+            video_create_optional_params={"image_url": "https://img.example.com/start.png"},
+            model=MODEL,
+            drop_params=False,
+        )
+        assert mapped["image"] == {"url": "https://img.example.com/start.png"}
+        assert not isinstance(mapped["image"], str)
+
+    def test_map_openai_params_wraps_every_reference_image_as_image_url_struct(self):
+        mapped = self.config.map_openai_params(
+            video_create_optional_params={
+                "image_urls": ["https://img.example.com/a.png", "https://img.example.com/b.png"]
+            },
+            model=MODEL,
+            drop_params=False,
+        )
+        assert mapped["reference_images"] == [
+            {"url": "https://img.example.com/a.png"},
+            {"url": "https://img.example.com/b.png"},
+        ]
+        assert all(isinstance(item, dict) and set(item) == {"url"} for item in mapped["reference_images"])
+
+    def test_transform_video_create_request_sends_image_url_structs_to_xai(self):
+        mapped = self.config.map_openai_params(
+            video_create_optional_params={"image_urls": ["https://img.example.com/character.png"]},
+            model=MODEL,
+            drop_params=False,
+        )
+        body, _files, url = self.config.transform_video_create_request(
+            model=MODEL,
+            prompt="@Image1 waves at the camera",
+            api_base=API_BASE,
+            video_create_optional_request_params=mapped,
+            litellm_params=GenericLiteLLMParams(),
+            headers={},
+        )
+        assert url == f"{API_BASE}/v1/videos/generations"
+        assert body["reference_images"] == [{"url": "https://img.example.com/character.png"}]
 
     def test_map_openai_params_rejects_bad_duration(self):
         with pytest.raises(ValueError, match="duration"):
