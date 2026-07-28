@@ -172,6 +172,7 @@ from litellm.types.utils import LLMResponseTypes, LoggedLiteLLMParams
 
 if TYPE_CHECKING:
     from opentelemetry.trace import Span as _Span
+    from prisma.client import TransactionManager
 
     from litellm.litellm_core_utils.litellm_logging import Logging as LiteLLMLoggingObj
 
@@ -835,7 +836,7 @@ class ProxyLogging:
     def get_combined_callback_list(self, dynamic_success_callbacks: Optional[List], global_callbacks: List) -> List:
         if dynamic_success_callbacks is None:
             return list(global_callbacks)
-        return list(set(dynamic_success_callbacks + global_callbacks))
+        return list(dict.fromkeys(dynamic_success_callbacks + global_callbacks))
 
     def _parse_pre_mcp_call_hook_response(
         self,
@@ -2585,35 +2586,30 @@ class ProxyLogging:
             logging_obj._deferred_stream_complete_args = None
             asyncio.create_task(_deferred_cb(*_args))
 
-    def _release_max_parallel_requests_on_disconnect(self, user_api_key_dict: UserAPIKeyAuth) -> None:
+    async def _arelease_max_parallel_requests_on_disconnect(
+        self,
+        user_api_key_dict: UserAPIKeyAuth,
+        request_data: dict | None = None,
+    ) -> None:
         """
         Release the api-key max_parallel_requests slot when a streaming
-        response is cancelled mid-flight (client disconnect). Neither the
-        success nor failure logging callback fires on the resulting
-        CancelledError / GeneratorExit, so the pre-call +1 would otherwise
-        leak.
+        response is cancelled mid-flight (client disconnect) and no logging
+        callback fired for it. Neither the success nor failure callback runs on
+        the resulting CancelledError / GeneratorExit, so the pre-call +1 would
+        otherwise leak.
 
-        Must be called from the outermost streaming generator (the one
-        Starlette drives and closes on disconnect). A nested iterator-hook
-        generator only receives GeneratorExit when it is garbage collected,
-        which is non-deterministic, so the refund cannot live there.
-
-        Scheduled fire-and-forget (no await) because awaiting is not
-        permitted while unwinding a GeneratorExit.
+        Awaited from the shielded streaming cleanup rather than scheduled
+        fire-and-forget, so the caller can make it the single owner of the
+        release: when a disconnect-time success event does fire (partial-spend
+        billing or a deferred-guardrail flush), that event's own limiter
+        callback releases the slot and this is not called at all. Two
+        concurrent releases of the same acquisition would otherwise race and
+        double-decrement under the limiter's in-memory fallback.
         """
         limiter = self.get_proxy_hook("parallel_request_limiter")
         if not isinstance(limiter, _PROXY_MaxParallelRequestsHandler_v3):
             return
-        try:
-            asyncio.create_task(limiter.async_release_max_parallel_requests_on_disconnect(user_api_key_dict))
-        except RuntimeError:
-            # No running event loop (e.g. interpreter/loop shutdown); the
-            # counter's window TTL will reclaim the slot.
-            verbose_proxy_logger.warning(
-                "parallel_request_limiter_v3: could not schedule "
-                "max_parallel_requests release on disconnect; no running "
-                "event loop. Slot will be reclaimed when its window TTL expires"
-            )
+        await limiter.async_release_max_parallel_requests_on_disconnect(user_api_key_dict, request_data)
 
     def _init_response_taking_too_long_task(self, data: Optional[dict] = None):
         """
@@ -2926,6 +2922,14 @@ class PrismaClient:
         if isinstance(self.db, RoutingPrismaWrapper):
             return self.db.writer
         return self.db
+
+    def tx(self) -> "TransactionManager":
+        """Open an interactive transaction on the writer.
+
+        Callers go through this instead of reaching into ``self.db`` so writer
+        selection and read-replica routing stay encapsulated in the wrapper.
+        """
+        return cast("TransactionManager", self.db.tx())  # cast-ok: wrappers delegate tx via __getattr__ (untyped)
 
     def get_request_status(self, payload: Union[dict, SpendLogsPayload]) -> Literal["success", "failure"]:
         """
@@ -3325,7 +3329,24 @@ class PrismaClient:
                 elif query_type == "find_all" and reset_at is not None:
                     response = await UserRepository(self).table.find_many(
                         where={  # type: ignore
-                            "budget_reset_at": {"lt": reset_at},
+                            # A user seeded from default_internal_user_params
+                            # (or created via /user/new without an explicit
+                            # budget_reset_at) has budget_duration set but
+                            # budget_reset_at = NULL. `{"lt": reset_at}` never
+                            # matches NULL, so such users would never be reset
+                            # and their spend would accumulate for the lifetime
+                            # of the row, silently exceeding max_budget. Treat a
+                            # NULL budget_reset_at with a non-NULL budget_duration
+                            # as due, matching the budget-table query below.
+                            "OR": [
+                                {
+                                    "AND": [
+                                        {"budget_reset_at": None},
+                                        {"NOT": {"budget_duration": None}},
+                                    ]
+                                },
+                                {"budget_reset_at": {"lt": reset_at}},
+                            ],
                         }
                     )
                 elif query_type == "find_all" and user_id_list is not None:
@@ -3411,7 +3432,18 @@ class PrismaClient:
                 elif query_type == "find_all" and reset_at is not None:
                     response = await TeamRepository(self).table.find_many(
                         where={  # type: ignore
-                            "budget_reset_at": {"lt": reset_at},
+                            # Same NULL budget_reset_at gap as the user query
+                            # above: a team with a budget_duration but no
+                            # initialized budget_reset_at would never be reset.
+                            "OR": [
+                                {
+                                    "AND": [
+                                        {"budget_reset_at": None},
+                                        {"NOT": {"budget_duration": None}},
+                                    ]
+                                },
+                                {"budget_reset_at": {"lt": reset_at}},
+                            ],
                         }
                     )
                 elif query_type == "find_all" and user_id is not None:
@@ -3594,7 +3626,10 @@ class PrismaClient:
         """
         start_time = time.time()
         try:
-            verbose_proxy_logger.debug("PrismaClient: insert_data: %s", data)
+            verbose_proxy_logger.debug(
+                "PrismaClient: insert_data: %s",
+                {**data, "token": self.hash_token(token=data["token"])} if data.get("token") is not None else data,
+            )
             if table_name == "key":
                 token = data["token"]
                 hashed_token = self.hash_token(token=token)
@@ -6133,6 +6168,9 @@ def create_model_info_response(
     if model_cost_info is not None:
         max_input_tokens = coerce_token_limit(model_cost_info.get("max_input_tokens"))
         max_output_tokens = coerce_token_limit(model_cost_info.get("max_output_tokens"))
+        mode = model_cost_info.get("mode")
+        if isinstance(mode, str):
+            base["mode"] = mode
 
     if llm_router is not None:
         configured_input, configured_output = llm_router.get_configured_token_limits(model_id)
