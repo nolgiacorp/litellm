@@ -1,4 +1,4 @@
-from typing import TYPE_CHECKING, Any, List
+from typing import TYPE_CHECKING, Any
 
 import httpx
 
@@ -38,7 +38,7 @@ class FalAIIdeogramV3Config(FalAIBaseConfig):
         "1024x1536": "portrait_16_9",
     }
 
-    def get_supported_openai_params(self, model: str) -> List[OpenAIImageGenerationOptionalParams]:
+    def get_supported_openai_params(self, model: str) -> list[OpenAIImageGenerationOptionalParams]:
         """
         Ideogram v3 accepts the core OpenAI image parameters.
         """
@@ -62,7 +62,7 @@ class FalAIIdeogramV3Config(FalAIBaseConfig):
 
         supported_params = self.get_supported_openai_params(model)
 
-        for k in non_default_params.keys():
+        for k in non_default_params:
             if k in optional_params:
                 continue
 

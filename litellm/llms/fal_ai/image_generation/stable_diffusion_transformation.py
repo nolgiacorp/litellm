@@ -1,4 +1,4 @@
-from typing import TYPE_CHECKING, Any, List
+from typing import TYPE_CHECKING, Any
 
 import httpx
 
@@ -63,7 +63,7 @@ class FalAIStableDiffusionConfig(FalAIBaseConfig):
         complete_url = f"{complete_url}/{endpoint}"
         return complete_url
 
-    def get_supported_openai_params(self, model: str) -> List[OpenAIImageGenerationOptionalParams]:
+    def get_supported_openai_params(self, model: str) -> list[OpenAIImageGenerationOptionalParams]:
         """
         Get supported OpenAI parameters for Stable Diffusion models.
         """
@@ -97,8 +97,8 @@ class FalAIStableDiffusionConfig(FalAIBaseConfig):
             "size": "image_size",
         }
 
-        for k in non_default_params.keys():
-            if k not in optional_params.keys():
+        for k in non_default_params:
+            if k not in optional_params:
                 if k in supported_params:
                     # Use mapped parameter name if exists
                     mapped_key = param_mapping.get(k, k)

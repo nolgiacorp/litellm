@@ -1,12 +1,10 @@
-from typing import Any
-
 import litellm
 from litellm.types.utils import ImageResponse
 
 
 def cost_calculator(
     model: str,
-    image_response: Any,
+    image_response: object,
 ) -> float:
     """
     fal.ai image generation cost calculator
