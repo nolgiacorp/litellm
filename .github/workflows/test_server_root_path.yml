@@ -13,6 +13,9 @@ on:
 jobs:
   test-server-root-path:
     runs-on: ubuntu-latest
+    # Backstop only. Every step that can stall carries its own cap below, so a
+    # failure names the step that timed out instead of showing up as a bare
+    # "cancelled" job 30 minutes later.
     timeout-minutes: 30
 
     strategy:
@@ -36,6 +39,7 @@ jobs:
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
 
       - name: Build Docker image
+        timeout-minutes: 12
         uses: docker/build-push-action@0adf9959216b96bec444f325f1e493d4aa344497 # v6.14.0
         with:
           context: .
@@ -102,14 +106,29 @@ jobs:
           exit 1
 
       - name: Setup Node for Playwright
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: "24.16.0"
           cache: "npm"
-          cache-dependency-path: ui/litellm-dashboard/package-lock.json
+          # npm ci below runs in tests/e2e/ui, so key the cache off that
+          # lockfile; the dashboard lockfile it used to point at is a different
+          # dependency set and never produced a hit.
+          cache-dependency-path: tests/e2e/ui/package-lock.json
 
+      # Browser install is split from apt and bounded per attempt. Since
+      # 2026-07-04 `playwright install` has hung indefinitely right after the
+      # Chrome-for-Testing zip reaches 100%: the bytes arrive (the CDN object is
+      # intact), then the post-download handoff never completes. The retry
+      # wrapper from #32406 cannot recover from a hang because no attempt ever
+      # returns, so the job burned its full 30m cap on every run. `timeout`
+      # bounds each attempt so a retry can take over, the step cap bounds the
+      # worst case, and DEBUG=pw:install makes the next failure say where it
+      # stopped instead of going silent.
       - name: Install e2e deps and Chromium
         working-directory: tests/e2e/ui
+        timeout-minutes: 8
+        env:
+          DEBUG: pw:install
         run: |
           retry() {
             local attempt=1
@@ -130,10 +149,16 @@ jobs:
           npm config set fetch-retry-maxtimeout 120000
 
           retry npm ci
-          retry npx playwright install --with-deps chromium
+
+          # install-deps is the apt half; keep it outside `timeout` so a SIGTERM
+          # can never leave a half-applied dpkg state behind.
+          retry npx playwright install-deps chromium
+          # 4 attempts x 75s + backoff fits inside the 8m step cap above.
+          retry timeout 75 npx playwright install chromium
 
       - name: Run SERVER_ROOT_PATH redirect e2e
         working-directory: tests/e2e/ui
+        timeout-minutes: 5
         env:
           SERVER_ROOT_PATH: ${{ matrix.root_path }}
         run: npx playwright test --config=serverRootPath.config.ts
