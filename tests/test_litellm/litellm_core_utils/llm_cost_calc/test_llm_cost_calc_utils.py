@@ -270,11 +270,24 @@ def test_image_tokens_fallback_to_base_cost():
     assert round(completion_cost, 12) == round(expected_completion_cost, 12)
 
 
-def test_video_output_tokens_gemini_omni_flash_preview():
+# Upstream wrote the two tests below against the live pricing entry for
+# "gemini/gemini-omni-flash-preview", which upstream registers as a chat model. This fork
+# intentionally registers that same model as mode "video_generation" (see
+# litellm/llms/gemini/videos/omni_transformation.py and the model_prices_and_context_window.json
+# entry), so it carries output_cost_per_second rather than per-token chat rates and reading chat
+# cost keys off it raises KeyError. The video-token billing behaviour upstream cares about is still
+# covered here by injecting the model info instead of depending on a chat pricing entry the fork
+# does not have; the fork's video_generation registration is asserted in
+# tests/test_litellm/llms/gemini/videos/test_gemini_omni_video_transformation.py.
+def test_video_output_tokens_billed_at_video_rate():
     """Video output tokens are billed at output_cost_per_video_token, not the text rate and not zero."""
-    model = "gemini-omni-flash-preview"
-    os.environ["LITELLM_LOCAL_MODEL_COST_MAP"] = "True"
-    litellm.model_cost = litellm.get_model_cost_map(url="")
+    from unittest.mock import patch
+
+    mock_model_info = {
+        "input_cost_per_token": 1.5e-06,
+        "output_cost_per_token": 9e-06,
+        "output_cost_per_video_token": 1.75e-05,
+    }
 
     text_tokens = 100
     video_tokens = 46336
@@ -288,33 +301,37 @@ def test_video_output_tokens_gemini_omni_flash_preview():
         ),
         prompt_tokens_details=PromptTokensDetailsWrapper(text_tokens=20),
     )
-    model_cost_map = litellm.model_cost[f"gemini/{model}"]
-    assert model_cost_map["input_cost_per_token"] == 1.5e-06
-    assert model_cost_map["output_cost_per_token"] == 9e-06
-    assert model_cost_map["output_cost_per_video_token"] == 1.75e-05
 
-    prompt_cost, completion_cost = generic_cost_per_token(
-        model=model,
-        usage=usage,
-        custom_llm_provider="gemini",
-    )
+    with patch(
+        "litellm.litellm_core_utils.llm_cost_calc.utils.get_model_info",
+        return_value=mock_model_info,
+    ):
+        prompt_cost, completion_cost = generic_cost_per_token(
+            model="test-model",
+            usage=usage,
+            custom_llm_provider="gemini",
+        )
 
     assert round(prompt_cost, 10) == round(
-        model_cost_map["input_cost_per_token"] * usage.prompt_tokens,
+        mock_model_info["input_cost_per_token"] * usage.prompt_tokens,
         10,
     )
     assert round(completion_cost, 10) == round(
-        (model_cost_map["output_cost_per_token"] * text_tokens)
-        + (model_cost_map["output_cost_per_video_token"] * video_tokens),
+        (mock_model_info["output_cost_per_token"] * text_tokens)
+        + (mock_model_info["output_cost_per_video_token"] * video_tokens),
         10,
     )
 
 
-def test_video_input_tokens_gemini_omni_flash_preview():
+def test_video_input_tokens_billed_at_input_rate():
     """Video input tokens are billed at the standard input rate instead of being dropped."""
-    model = "gemini-omni-flash-preview"
-    os.environ["LITELLM_LOCAL_MODEL_COST_MAP"] = "True"
-    litellm.model_cost = litellm.get_model_cost_map(url="")
+    from unittest.mock import patch
+
+    mock_model_info = {
+        "input_cost_per_token": 1.5e-06,
+        "output_cost_per_token": 9e-06,
+        "output_cost_per_video_token": 1.75e-05,
+    }
 
     usage = Usage(
         completion_tokens=10,
@@ -323,16 +340,19 @@ def test_video_input_tokens_gemini_omni_flash_preview():
         completion_tokens_details=CompletionTokensDetailsWrapper(text_tokens=10),
         prompt_tokens_details=PromptTokensDetailsWrapper(text_tokens=50, video_tokens=10000),
     )
-    model_cost_map = litellm.model_cost[f"gemini/{model}"]
 
-    prompt_cost, _ = generic_cost_per_token(
-        model=model,
-        usage=usage,
-        custom_llm_provider="gemini",
-    )
+    with patch(
+        "litellm.litellm_core_utils.llm_cost_calc.utils.get_model_info",
+        return_value=mock_model_info,
+    ):
+        prompt_cost, _ = generic_cost_per_token(
+            model="test-model",
+            usage=usage,
+            custom_llm_provider="gemini",
+        )
 
     assert round(prompt_cost, 10) == round(
-        model_cost_map["input_cost_per_token"] * usage.prompt_tokens,
+        mock_model_info["input_cost_per_token"] * usage.prompt_tokens,
         10,
     )
 
