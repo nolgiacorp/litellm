@@ -1,8 +1,11 @@
+import base64
+import io
 from unittest.mock import Mock
 
 import httpx
 import pytest
 
+import litellm
 from litellm.llms.kling.videos.transformation import KlingVideoConfig
 from litellm.types.router import GenericLiteLLMParams
 from litellm.types.videos.main import VideoObject
@@ -130,6 +133,100 @@ class TestKlingVideoTransformation:
         )
         assert url == f"{API_BASE}/videos/image2video"
         assert data["image"] == "https://img/x.png"
+
+    @pytest.mark.parametrize(
+        "i2v_model",
+        [
+            "kling-v3-i2v",
+            "kling-v3-pro-i2v",
+            "kling-v3-master-i2v",
+            "kling/kling-video/v3/image-to-video",
+        ],
+    )
+    def test_map_i2v_model_without_start_image_raises(self, i2v_model):
+        with pytest.raises(litellm.BadRequestError, match="image-to-video variant"):
+            self.config.map_openai_params(
+                video_create_optional_params={"seconds": 5},
+                model=i2v_model,
+                drop_params=False,
+            )
+
+    @pytest.mark.parametrize("t2v_model", ["kling-v3", "kling-v3-pro", "kling-v3-master", "kling/kling-v3"])
+    def test_map_t2v_model_without_image_does_not_raise(self, t2v_model):
+        mapped = self.config.map_openai_params(
+            video_create_optional_params={"seconds": 5},
+            model=t2v_model,
+            drop_params=False,
+        )
+        assert "image" not in mapped
+
+    def test_map_i2v_model_with_url_image_maps_and_does_not_raise(self):
+        mapped = self.config.map_openai_params(
+            video_create_optional_params={"input_reference": "https://img/x.png"},
+            model="kling-v3-i2v",
+            drop_params=False,
+        )
+        assert mapped["image"] == "https://img/x.png"
+
+    def test_map_i2v_model_with_multipart_image_base64_encodes_no_false_400(self):
+        raw = b"\x89PNG\r\n\x1a\nfake-start-frame"
+        mapped = self.config.map_openai_params(
+            video_create_optional_params={"input_reference": io.BytesIO(raw)},
+            model="kling-v3-i2v",
+            drop_params=False,
+        )
+        assert mapped["image"] == base64.b64encode(raw).decode("utf-8")
+
+    def test_map_i2v_model_with_filetype_tuple_image_base64_encodes(self):
+        raw = b"tuple-start-frame"
+        mapped = self.config.map_openai_params(
+            video_create_optional_params={"input_reference": ("start.png", raw, "image/png")},
+            model="kling-v3-i2v",
+            drop_params=False,
+        )
+        assert mapped["image"] == base64.b64encode(raw).decode("utf-8")
+
+    def test_i2v_multipart_image_routes_to_image2video_end_to_end(self):
+        raw = b"multipart-start-frame"
+        mapped = self.config.map_openai_params(
+            video_create_optional_params={"input_reference": io.BytesIO(raw)},
+            model="kling-v3-i2v",
+            drop_params=False,
+        )
+        data, _, url = self.config.transform_video_create_request(
+            model="kling/kling-v3-i2v",
+            prompt="animate",
+            api_base=API_BASE,
+            video_create_optional_request_params=mapped,
+            litellm_params=GenericLiteLLMParams(),
+            headers={},
+        )
+        assert url == f"{API_BASE}/videos/image2video"
+        assert data["image"] == base64.b64encode(raw).decode("utf-8")
+
+    def test_create_request_i2v_model_with_image_still_routes_image2video(self):
+        data, _, url = self.config.transform_video_create_request(
+            model="kling/kling-video/v3/image-to-video",
+            prompt="animate",
+            api_base=API_BASE,
+            video_create_optional_request_params={"image": "https://img/x.png"},
+            litellm_params=GenericLiteLLMParams(),
+            headers={},
+        )
+        assert url == f"{API_BASE}/videos/image2video"
+        assert data["image"] == "https://img/x.png"
+
+    def test_create_request_t2v_model_without_image_still_text2video(self):
+        data, _, url = self.config.transform_video_create_request(
+            model="kling/kling-video/v3/text-to-video",
+            prompt="a cat playing piano",
+            api_base=API_BASE,
+            video_create_optional_request_params={},
+            litellm_params=GenericLiteLLMParams(),
+            headers={},
+        )
+        assert url == f"{API_BASE}/videos/text2video"
+        assert "image" not in data
 
     def test_create_response_encodes_kind_and_task_id(self):
         response = Mock(spec=httpx.Response)
