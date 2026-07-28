@@ -1,3 +1,5 @@
+import base64
+import re
 from json import JSONDecodeError
 from typing import TYPE_CHECKING, Any
 
@@ -5,6 +7,7 @@ import httpx
 from httpx._types import RequestFiles
 
 import litellm
+from litellm.litellm_core_utils.prompt_templates.common_utils import extract_file_data
 from litellm.litellm_core_utils.url_utils import encode_url_path_segment
 from litellm.llms.base_llm.chat.transformation import BaseLLMException
 from litellm.llms.base_llm.videos.transformation import BaseVideoConfig
@@ -21,6 +24,7 @@ from litellm.llms.kling.common_utils import (
     strip_kling_prefix,
 )
 from litellm.types.router import GenericLiteLLMParams
+from litellm.types.utils import FileTypes
 from litellm.types.videos.main import VideoCreateOptionalRequestParams, VideoObject
 from litellm.types.videos.utils import (
     decode_video_id_with_provider,
@@ -37,6 +41,8 @@ else:
 
 _TEXT_TO_VIDEO = "text2video"
 _IMAGE_TO_VIDEO = "image2video"
+
+_I2V_MODEL_MARKERS = ("image-to-video", "image2video")
 
 _SIZE_TO_ASPECT_RATIO = {
     "1280x720": "16:9",
@@ -119,9 +125,9 @@ class KlingVideoConfig(BaseVideoConfig):
         if resolution is not None:
             mapped["mode"] = self._resolution_to_mode(resolution)
 
-        input_reference = params.get("input_reference")
-        if isinstance(input_reference, str) and input_reference:
-            mapped["image"] = input_reference
+        start_image = self._coerce_start_image(params.get("input_reference"))
+        if start_image:
+            mapped["image"] = start_image
 
         supported = self.get_supported_openai_params(model)
         handled = {"resolution"}
@@ -129,7 +135,36 @@ class KlingVideoConfig(BaseVideoConfig):
             if key not in supported and key not in handled and key not in mapped:
                 mapped[key] = value
 
+        if self._is_image_to_video_model(model) and not mapped.get("image"):
+            raise litellm.BadRequestError(
+                message=(
+                    f"Kling model '{model}' is an image-to-video variant, but no start image was provided. "
+                    "Pass the start frame via input_reference as an image URL, a base64 string, or an uploaded "
+                    "file; refusing to silently fall back to text-to-video, which would ignore the requested image "
+                    "conditioning and return unrelated output."
+                ),
+                model=model,
+                llm_provider=litellm.LlmProviders.KLING.value,
+            )
+
         return mapped
+
+    @staticmethod
+    def _is_image_to_video_model(model: str) -> bool:
+        normalized = model.lower()
+        if any(marker in normalized for marker in _I2V_MODEL_MARKERS):
+            return True
+        return "i2v" in re.split(r"[/\-_.]+", normalized)
+
+    @staticmethod
+    def _coerce_start_image(input_reference: FileTypes | None) -> str | None:
+        if input_reference is None:
+            return None
+        if isinstance(input_reference, str):
+            stripped = input_reference.strip()
+            return stripped or None
+        extracted = extract_file_data(input_reference)
+        return base64.b64encode(extracted["content"]).decode("utf-8")
 
     def validate_environment(
         self,
@@ -150,11 +185,6 @@ class KlingVideoConfig(BaseVideoConfig):
     ) -> str:
         return resolve_kling_api_base(api_base)
 
-    @staticmethod
-    def _is_image_to_video_model(model: str) -> bool:
-        normalized = model.lower()
-        return "image-to-video" in normalized or "image2video" in normalized
-
     def transform_video_create_request(
         self,
         model: str,
@@ -166,18 +196,7 @@ class KlingVideoConfig(BaseVideoConfig):
     ) -> tuple[dict, RequestFiles, str]:
         mapped: dict[str, Any] = dict(video_create_optional_request_params)
         mapped.pop("model", None)
-        has_image = bool(mapped.get("image"))
-        if self._is_image_to_video_model(model) and not has_image:
-            raise litellm.BadRequestError(
-                message=(
-                    f"Kling model '{model}' is an image-to-video variant but no start image was provided. "
-                    "Pass the start frame as input_reference; refusing to silently fall back to text-to-video, "
-                    "which would ignore the requested image conditioning and return unrelated output."
-                ),
-                model=model,
-                llm_provider=litellm.LlmProviders.KLING.value,
-            )
-        kind = _IMAGE_TO_VIDEO if has_image else _TEXT_TO_VIDEO
+        kind = _IMAGE_TO_VIDEO if mapped.get("image") else _TEXT_TO_VIDEO
         mapped.setdefault("mode", self._resolution_to_mode(self.DEFAULT_RESOLUTION))
 
         request_data = {
