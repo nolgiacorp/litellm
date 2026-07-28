@@ -1,0 +1,148 @@
+"""Regression + self-test for the duplicate-key guard on the model-price maps.
+
+Upstream has twice handed us a price map with the same model key written twice
+(`gemini-omni-flash-preview` in NOL-79, `jp.anthropic.claude-sonnet-4-6` in
+NOL-90). `json.load` keeps the LAST occurrence, so both parsed fine and both
+shipped an entry that did not match the one a reader would find first in the
+file. `jq empty` -- the only validation the price maps had -- accepts duplicates,
+so nothing caught either case.
+
+Two things are pinned here:
+
+1. the tracked price maps carry no duplicate keys, and
+2. the guard actually FAILS on a duplicate. A guard that has only ever been
+   observed passing is not a guard, so the negative cases are asserted too.
+"""
+
+import importlib.util
+import json
+from pathlib import Path
+
+import pytest
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+_MODULE_PATH = REPO_ROOT / "scripts" / "check_model_prices_duplicate_keys.py"
+_spec = importlib.util.spec_from_file_location(
+    "check_model_prices_duplicate_keys", _MODULE_PATH
+)
+guard = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(guard)
+
+
+PRICE_MAPS = [
+    "model_prices_and_context_window.json",
+    "litellm/model_prices_and_context_window_backup.json",
+]
+
+
+@pytest.mark.parametrize("relative_path", PRICE_MAPS)
+def test_price_map_has_no_duplicate_keys(relative_path):
+    """The shipped price maps must not repeat a key inside any object."""
+    path = REPO_ROOT / relative_path
+    duplicates = guard.find_duplicate_keys(path)
+    assert duplicates == [], (
+        f"{relative_path} repeats {[d.key for d in duplicates]}. "
+        "json.load keeps the last occurrence, so the earlier entry is dead text "
+        "that still reads as authoritative - delete the stale one."
+    )
+
+
+def test_jp_anthropic_claude_sonnet_4_6_matches_across_price_maps():
+    """NOL-90: the backup's winning entry had drifted from the canonical map.
+
+    The duplicate's second (winning) copy was an older shape missing the 1-hour
+    cache-write tier, so the backup map silently priced jp. 1hr cache writes at
+    the 5-minute rate while the root map had it right.
+    """
+    model = "jp.anthropic.claude-sonnet-4-6"
+    with open(REPO_ROOT / "model_prices_and_context_window.json") as f:
+        root = json.load(f)
+    with open(REPO_ROOT / "litellm" / "model_prices_and_context_window_backup.json") as f:
+        backup = json.load(f)
+
+    assert backup[model] == root[model], (
+        f"{model} differs between the price map and its backup copy"
+    )
+    assert backup[model]["cache_creation_input_token_cost_above_1hr"] == 6.6e-06
+
+
+def test_guard_detects_duplicate_top_level_key(tmp_path):
+    """The exact shape NOL-90 fixed: one model key written twice."""
+    path = tmp_path / "dup.json"
+    path.write_text(
+        '{\n'
+        '    "a-model": {"input_cost_per_token": 1e-06},\n'
+        '    "jp.anthropic.claude-sonnet-4-6": {"input_cost_per_token": 3.3e-06},\n'
+        '    "jp.anthropic.claude-sonnet-4-6": {"input_cost_per_token": 9.9e-06}\n'
+        '}\n'
+    )
+
+    # json.load is blind to this - that is the whole problem.
+    assert json.loads(path.read_text())["jp.anthropic.claude-sonnet-4-6"] == {
+        "input_cost_per_token": 9.9e-06
+    }
+
+    duplicates = guard.find_duplicate_keys(path)
+    assert [d.key for d in duplicates] == ["jp.anthropic.claude-sonnet-4-6"]
+    assert duplicates[0].count == 2
+    assert duplicates[0].lines == (3, 4)
+    assert guard.check(path) is False
+    assert guard.main([str(path)]) == 1
+
+
+def test_guard_detects_duplicate_nested_key(tmp_path):
+    """Duplicates below the top level count too (e.g. a repeated pricing field)."""
+    path = tmp_path / "nested.json"
+    path.write_text(
+        '{\n'
+        '    "a-model": {\n'
+        '        "mode": "chat",\n'
+        '        "mode": "video_generation"\n'
+        '    }\n'
+        '}\n'
+    )
+
+    duplicates = guard.find_duplicate_keys(path)
+    assert [d.key for d in duplicates] == ["mode"]
+    assert guard.main([str(path)]) == 1
+
+
+def test_guard_passes_on_clean_file(tmp_path):
+    path = tmp_path / "clean.json"
+    path.write_text(
+        '{\n'
+        '    "a-model": {"mode": "chat"},\n'
+        '    "b-model": {"mode": "video_generation"}\n'
+        '}\n'
+    )
+
+    assert guard.find_duplicate_keys(path) == []
+    assert guard.check(path) is True
+    assert guard.main([str(path)]) == 0
+
+
+def test_guard_reports_every_offending_file(tmp_path):
+    """A clean file must not mask a dirty one when several are passed."""
+    clean = tmp_path / "clean.json"
+    clean.write_text('{"a": 1}\n')
+    dirty = tmp_path / "dirty.json"
+    dirty.write_text('{"a": 1, "a": 2}\n')
+
+    assert guard.main([str(clean), str(dirty)]) == 1
+    assert guard.main([str(dirty), str(clean)]) == 1
+
+
+def test_guard_fails_on_invalid_json(tmp_path):
+    path = tmp_path / "broken.json"
+    path.write_text("{not json")
+    assert guard.main([str(path)]) == 1
+
+
+def test_guard_fails_on_missing_file(tmp_path):
+    assert guard.main([str(tmp_path / "nope.json")]) == 1
+
+
+def test_guard_default_targets_are_the_tracked_price_maps():
+    """Bare `python scripts/check_model_prices_duplicate_keys.py` must cover both."""
+    assert set(guard.DEFAULT_TARGETS) == set(PRICE_MAPS)
+    assert guard.main([]) == 0
