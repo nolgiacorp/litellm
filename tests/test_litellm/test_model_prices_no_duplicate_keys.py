@@ -66,6 +66,30 @@ def test_jp_anthropic_claude_sonnet_4_6_matches_across_price_maps():
     assert backup[model]["cache_creation_input_token_cost_above_1hr"] == 6.6e-06
 
 
+def test_grok_imagine_entries_match_across_price_maps():
+    """NOL-107: the canonical map shipped none of the four grok-imagine entries
+    while the backup carried all of them, so deployments resolving pricing from
+    the canonical map recorded $0 COGS for Grok Imagine generations. Pin that the
+    per-second video rates and per-image rates exist and are identical in both
+    maps so the two cannot drift back apart."""
+    with open(REPO_ROOT / "model_prices_and_context_window.json") as f:
+        root = json.load(f)
+    with open(REPO_ROOT / "litellm" / "model_prices_and_context_window_backup.json") as f:
+        backup = json.load(f)
+
+    expected_rates = {
+        "xai/grok-imagine-video": ("output_cost_per_video_per_second", 0.05),
+        "xai/grok-imagine-video-1.5": ("output_cost_per_video_per_second", 0.08),
+        "xai/grok-imagine-image": ("output_cost_per_image", 0.02),
+        "xai/grok-imagine-image-quality": ("output_cost_per_image", 0.05),
+    }
+    for model, (cost_key, rate) in expected_rates.items():
+        assert model in root, f"{model} missing from canonical price map"
+        assert model in backup, f"{model} missing from backup price map"
+        assert root[model] == backup[model], f"{model} differs between the price map and its backup copy"
+        assert root[model][cost_key] == rate, f"{model} {cost_key} is not {rate}"
+
+
 def test_guard_detects_duplicate_top_level_key(tmp_path):
     """The exact shape NOL-90 fixed: one model key written twice."""
     path = tmp_path / "dup.json"
