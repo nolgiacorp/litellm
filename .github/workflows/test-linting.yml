@@ -37,6 +37,9 @@ jobs:
         with:
           version: "0.10.9"
 
+      - name: Set up Rust toolchain
+        uses: ./.github/actions/setup-rust-toolchain
+
       - name: Clean Python cache
         run: |
           find . -type d -name "__pycache__" -exec rm -rf {} + || true
@@ -175,6 +178,9 @@ jobs:
         uses: ./.github/actions/setup-uv-with-retries
         with:
           version: "0.10.9"
+
+      - name: Set up Rust toolchain
+        uses: ./.github/actions/setup-rust-toolchain
 
       - name: Run secret scan test
         run: |

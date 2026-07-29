@@ -21,6 +21,8 @@ jobs:
         uses: ./.github/actions/setup-uv-with-retries
         with:
           version: "0.10.9"
+      - name: Set up Rust toolchain
+        uses: ./.github/actions/setup-rust-toolchain
       - name: Update JSON Data
         run: |
           uv run --frozen --with 'aiohttp==3.13.3' python ".github/workflows/auto_update_price_and_context_window_file.py"
