@@ -12,7 +12,7 @@ on:
 
 jobs:
   test-server-root-path:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     # Backstop only. Every step that can stall carries its own cap below, so a
     # failure names the step that timed out instead of showing up as a bare
     # "cancelled" job 30 minutes later.

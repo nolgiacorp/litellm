@@ -12,6 +12,7 @@ on:
       - "uv.lock"
       - ".github/workflows/codspeed.yml"
       - ".github/actions/setup-uv-with-retries/**"
+      - ".github/actions/setup-rust-toolchain/**"
   pull_request:
     branches:
       - main
@@ -23,6 +24,7 @@ on:
       - "uv.lock"
       - ".github/workflows/codspeed.yml"
       - ".github/actions/setup-uv-with-retries/**"
+      - ".github/actions/setup-rust-toolchain/**"
   # Allow CodSpeed to trigger backtest performance analysis
   # in order to generate initial data
   workflow_dispatch:
@@ -38,7 +40,7 @@ concurrency:
 jobs:
   benchmarks:
     if: github.repository == 'BerriAI/litellm'
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 60
 
     steps:
@@ -55,6 +57,9 @@ jobs:
         uses: ./.github/actions/setup-uv-with-retries
         with:
           version: "0.10.9"
+
+      - name: Set up Rust toolchain
+        uses: ./.github/actions/setup-rust-toolchain
 
       - name: Run benchmarks
         uses: CodSpeedHQ/action@1c8ae4843586d3ba879736b7f6b7b0c990757fab # v4.12.1
