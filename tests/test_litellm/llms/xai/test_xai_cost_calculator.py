@@ -514,10 +514,11 @@ class TestXAIImageCostCalculator:
 
 class TestXAIGrokImagineCanonicalMapCost:
     """Regression for NOL-107: the canonical price map shipped zero grok-imagine
-    entries while the backup carried all four, so any deployment that resolves
-    pricing from ``model_prices_and_context_window.json`` (remote fetch / OSS,
-    i.e. ``LITELLM_LOCAL_MODEL_COST_MAP`` unset) recorded $0 COGS for Grok
-    Imagine video and image generations while customers were billed normally.
+    entries while the backup carried all four, breaking the canonical==backup
+    invariant NOL-90 established. The deployed proxy loads the backup
+    (``LITELLM_LOCAL_MODEL_COST_MAP=True``), so live COGS was correct, but any
+    consumer of the canonical file resolves grok-imagine pricing to $0 and the
+    drift leaves the working backup entries one regeneration away from loss.
 
     These load the canonical map into ``litellm.model_cost`` and drive the real
     ``completion_cost`` / image cost paths so the entries have to exist in the

@@ -68,8 +68,9 @@ def test_jp_anthropic_claude_sonnet_4_6_matches_across_price_maps():
 
 def test_grok_imagine_entries_match_across_price_maps():
     """NOL-107: the canonical map shipped none of the four grok-imagine entries
-    while the backup carried all of them, so deployments resolving pricing from
-    the canonical map recorded $0 COGS for Grok Imagine generations. Pin that the
+    while the backup carried all of them, the same canonical/backup drift class
+    NOL-90 pinned. The runtime reads the backup in our deployments, so the drift
+    left live COGS resting on entries the canonical map disowned. Pin that the
     per-second video rates and per-image rates exist and are identical in both
     maps so the two cannot drift back apart."""
     with open(REPO_ROOT / "model_prices_and_context_window.json") as f:
