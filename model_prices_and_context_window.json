@@ -39774,6 +39774,42 @@
             "/v1/audio/transcriptions"
         ]
     },
+    "xai/grok-imagine-image": {
+        "litellm_provider": "xai",
+        "mode": "image_generation",
+        "output_cost_per_image": 0.02,
+        "source": "https://docs.x.ai/developers/pricing",
+        "supported_endpoints": [
+            "/v1/images/generations"
+        ]
+    },
+    "xai/grok-imagine-image-quality": {
+        "litellm_provider": "xai",
+        "mode": "image_generation",
+        "output_cost_per_image": 0.05,
+        "source": "https://docs.x.ai/developers/pricing",
+        "supported_endpoints": [
+            "/v1/images/generations"
+        ]
+    },
+    "xai/grok-imagine-video": {
+        "litellm_provider": "xai",
+        "mode": "video_generation",
+        "output_cost_per_video_per_second": 0.05,
+        "source": "https://docs.x.ai/developers/pricing",
+        "supported_endpoints": [
+            "/v1/videos"
+        ]
+    },
+    "xai/grok-imagine-video-1.5": {
+        "litellm_provider": "xai",
+        "mode": "video_generation",
+        "output_cost_per_video_per_second": 0.08,
+        "source": "https://docs.x.ai/developers/pricing",
+        "supported_endpoints": [
+            "/v1/videos"
+        ]
+    },
     "xai/grok-2": {
         "input_cost_per_token": 2e-06,
         "litellm_provider": "xai",

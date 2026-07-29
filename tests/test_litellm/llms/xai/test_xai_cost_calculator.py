@@ -510,3 +510,87 @@ class TestXAIImageCostCalculator:
         for model, expected in (("grok-imagine-video", 0.05), ("grok-imagine-video-1.5", 0.08)):
             info = litellm.get_model_info(model=model, custom_llm_provider="xai")
             assert math.isclose(info.get("output_cost_per_video_per_second", 0), expected, rel_tol=1e-10)
+
+
+class TestXAIGrokImagineCanonicalMapCost:
+    """Regression for NOL-107: the canonical price map shipped zero grok-imagine
+    entries while the backup carried all four, breaking the canonical==backup
+    invariant NOL-90 established. The deployed proxy loads the backup
+    (``LITELLM_LOCAL_MODEL_COST_MAP=True``), so live COGS was correct, but any
+    consumer of the canonical file resolves grok-imagine pricing to $0 and the
+    drift leaves the working backup entries one regeneration away from loss.
+
+    These load the canonical map into ``litellm.model_cost`` and drive the real
+    ``completion_cost`` / image cost paths so the entries have to exist in the
+    canonical file for the assertions to hold; they fail (get_model_info raises
+    "not mapped") on the pre-fix canonical map.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _canonical_model_cost_map(self, monkeypatch):
+        import json
+
+        with open("model_prices_and_context_window.json", "r") as f:
+            canonical = json.load(f)
+        monkeypatch.setattr(litellm, "model_cost", canonical)
+
+    @staticmethod
+    def _video_response(duration_seconds):
+        from unittest.mock import MagicMock
+
+        response = MagicMock()
+        response.usage = MagicMock()
+        response.usage.duration_seconds = duration_seconds
+        response.usage.video_resolution = None
+        type(response)._hidden_params = {}
+        return response
+
+    @pytest.mark.parametrize(
+        "model, duration_seconds, expected",
+        [
+            ("xai/grok-imagine-video", 5.0, 0.25),
+            ("xai/grok-imagine-video-1.5", 5.0, 0.40),
+        ],
+    )
+    def test_video_per_second_cost_from_canonical_map(self, model, duration_seconds, expected):
+        from litellm.cost_calculator import completion_cost
+        from litellm.types.utils import CallTypes
+
+        cost = completion_cost(
+            completion_response=self._video_response(duration_seconds),
+            model=model,
+            custom_llm_provider="xai",
+            call_type=CallTypes.acreate_video.value,
+        )
+        assert math.isclose(cost, expected, rel_tol=1e-10)
+
+    def test_video_cost_is_computed_once_not_doubled(self):
+        """NOL-107 double-count guard: a single 45s grok-imagine-video-1.5 job
+        must resolve to exactly 45 * $0.08 = $3.60, matching the live spend row,
+        and never stack to $7.20."""
+        from litellm.cost_calculator import completion_cost
+        from litellm.types.utils import CallTypes
+
+        cost = completion_cost(
+            completion_response=self._video_response(45.0),
+            model="xai/grok-imagine-video-1.5",
+            custom_llm_provider="xai",
+            call_type=CallTypes.acreate_video.value,
+        )
+        assert math.isclose(cost, 3.60, rel_tol=1e-10)
+
+    @pytest.mark.parametrize(
+        "model, num_images, expected",
+        [
+            ("grok-imagine-image", 2, 0.04),
+            ("grok-imagine-image-quality", 1, 0.05),
+        ],
+    )
+    def test_image_cost_from_canonical_map(self, model, num_images, expected):
+        from litellm.llms.xai.cost_calculator import image_cost_calculator
+        from litellm.types.utils import ImageObject, ImageResponse
+
+        response = ImageResponse()
+        response.data = [ImageObject(url="https://img.x.ai/%d.png" % i) for i in range(num_images)]
+        cost = image_cost_calculator(model=model, image_response=response)
+        assert math.isclose(cost, expected, rel_tol=1e-10)
