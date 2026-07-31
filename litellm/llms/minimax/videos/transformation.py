@@ -76,6 +76,23 @@ _DEFAULT_V2_RESOLUTION = "2K"
 
 _V2_MEDIA_KEYS = frozenset({"first_frame", "last_frame", "reference_images", "reference_videos", "reference_audios"})
 
+# OpenAI-shaped aliases this config translates into MiniMax fields. The shared video handler merges raw
+# extra_body over the mapped params, so these have to be stripped again before the request goes out.
+_CONSUMED_ALIAS_KEYS = frozenset(
+    {
+        "seconds",
+        "size",
+        "aspect_ratio",
+        "input_reference",
+        "image_url",
+        "end_image_url",
+        "image_urls",
+        "video_urls",
+        "audio_urls",
+        "extra_body",
+    }
+)
+
 _SIZE_TO_ASPECT_RATIO: Mapping[str, str] = MappingProxyType(
     {  # mutable-ok: frozen constant lookup table
         "1280x720": "16:9",
@@ -291,7 +308,11 @@ class MinimaxVideoConfig(BaseVideoConfig):
         litellm_params: GenericLiteLLMParams,
         headers: Mapping[str, Any],
     ) -> tuple[dict, RequestFiles, str]:  # mutable-ok: BaseVideoConfig contract returns dict body
-        mapped = {key: value for key, value in video_create_optional_request_params.items() if key != "model"}
+        mapped = {
+            key: value
+            for key, value in video_create_optional_request_params.items()
+            if key != "model" and key not in _CONSUMED_ALIAS_KEYS
+        }
         model_name = strip_minimax_prefix(model)
         if _uses_legacy_video_api(model_name):
             request_data = dict(drop_none_values({"model": model_name, "prompt": prompt, **mapped}))
@@ -517,7 +538,7 @@ class MinimaxVideoConfig(BaseVideoConfig):
         file_id = response_data.get("file_id")
         if not file_id:
             raise ValueError("Video file_id not found in MiniMax response. The job may still be processing.")
-        api_base = str(raw_response.request.url).split("/v1/")[0]
+        api_base = str(raw_response.request.url).split("?")[0].rsplit("/v1/", 1)[0]
         url = f"{api_base}/v1/files/retrieve?file_id={quote(str(file_id), safe='')}"
         return url, {"Authorization": raw_response.request.headers.get("Authorization", "")}
 

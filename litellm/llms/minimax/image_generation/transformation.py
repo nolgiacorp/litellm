@@ -1,4 +1,5 @@
 from collections.abc import Mapping, Sequence
+from math import gcd
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any  # noqa: TID251  # base transformation contracts type these payloads as Any
 
@@ -53,6 +54,21 @@ _SIZE_TO_ASPECT_RATIO: Mapping[str, str] = MappingProxyType(
 _RESERVED_REQUEST_KEYS = frozenset({"model", "prompt", "user", "size", "extra_body"})
 
 
+def _aspect_ratio_from_size(size: str) -> str:
+    mapped = _SIZE_TO_ASPECT_RATIO.get(size)
+    if mapped:
+        return mapped
+    width, _, height = size.partition("x")
+    try:
+        parsed_width, parsed_height = int(width), int(height)
+    except ValueError:
+        return size.replace("x", ":")
+    if parsed_width <= 0 or parsed_height <= 0:
+        return size.replace("x", ":")
+    divisor = gcd(parsed_width, parsed_height)
+    return f"{parsed_width // divisor}:{parsed_height // divisor}"
+
+
 class MinimaxImageGenerationConfig(BaseImageGenerationConfig):
     def get_supported_openai_params(
         self, model: str
@@ -101,9 +117,7 @@ class MinimaxImageGenerationConfig(BaseImageGenerationConfig):
                 f"parameters are {supported}. Set drop_params=True to drop unsupported parameters."
             )
         size = non_default_params.get("size")
-        aspect_ratio = (
-            _SIZE_TO_ASPECT_RATIO.get(size, size.replace("x", ":")) if isinstance(size, str) and size else None
-        )
+        aspect_ratio = _aspect_ratio_from_size(size) if isinstance(size, str) and size else None
         return {
             **optional_params,
             **{key: value for key, value in non_default_params.items() if key != "size" and key not in unsupported},
@@ -156,6 +170,7 @@ class MinimaxImageGenerationConfig(BaseImageGenerationConfig):
         api_key: str | None = None,
         json_mode: bool | None = None,
     ) -> ImageResponse:
+        self._raise_for_status(raw_response)
         response_data = self._parse_json(raw_response)
         self._raise_for_minimax_error(raw_response, response_data)
         data = response_data.get("data") or EMPTY_MAP
@@ -169,6 +184,30 @@ class MinimaxImageGenerationConfig(BaseImageGenerationConfig):
             raise ValueError(f"MiniMax image generation returned no images: {response_data}")
         model_response.data = images
         return model_response
+
+    def _raise_for_status(self, raw_response: httpx.Response) -> None:
+        if raw_response.is_success:
+            return
+        raise self.get_error_class(
+            error_message=self._error_message_from_body(raw_response),
+            status_code=raw_response.status_code,
+            headers=raw_response.headers,
+        )
+
+    @staticmethod
+    def _error_message_from_body(raw_response: httpx.Response) -> str:
+        try:
+            body = raw_response.json()
+        except Exception:
+            return raw_response.text
+        if not isinstance(body, dict):
+            return raw_response.text
+        error = body.get("error")
+        message = error.get("message") if isinstance(error, dict) else None
+        if not (isinstance(message, str) and message):
+            base_resp = body.get("base_resp")
+            message = base_resp.get("status_msg") if isinstance(base_resp, dict) else None
+        return message if isinstance(message, str) and message else raw_response.text
 
     @staticmethod
     def _parse_json(raw_response: httpx.Response) -> Mapping[str, Any]:

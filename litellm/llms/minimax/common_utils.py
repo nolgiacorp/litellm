@@ -25,7 +25,7 @@ def minimax_bearer_headers(
     headers: Mapping[str, Any],
     api_key: str | None,
 ) -> dict:  # mutable-ok: validate_environment contracts return dict
-    final_api_key = api_key or litellm.api_key or get_secret_str("MINIMAX_API_KEY")
+    final_api_key = api_key or get_secret_str("MINIMAX_API_KEY") or litellm.api_key
     if not final_api_key:
         raise ValueError("MINIMAX_API_KEY is not set")
     return {**headers, "Authorization": f"Bearer {final_api_key}", "Content-Type": "application/json"}

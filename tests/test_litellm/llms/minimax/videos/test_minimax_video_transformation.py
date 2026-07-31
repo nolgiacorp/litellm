@@ -322,6 +322,53 @@ class TestMinimaxVideoTransformation:
             {"type": "audio_url", "audio_url": {"url": "https://audio.example.com/voice.mp3"}, "role": "reference_audio"},
         ]
 
+    def test_create_request_v2_drops_consumed_aliases_remerged_by_extra_body(self):
+        body, _files, _url = self.config.transform_video_create_request(
+            model=V2_MODEL,
+            prompt="a rocket launch",
+            api_base=API_BASE,
+            video_create_optional_request_params={
+                "duration": 4,
+                "resolution": "2K",
+                "ratio": "16:9",
+                "seconds": "4",
+                "aspect_ratio": "16:9",
+                "size": "1280x720",
+                "input_reference": "https://img.example.com/start.png",
+                "image_urls": ["https://img.example.com/character.png"],
+                "video_urls": ["https://video.example.com/ref.mp4"],
+            },
+            litellm_params=GenericLiteLLMParams(),
+            headers={},
+        )
+        assert list(body["content"]) == [{"type": "text", "text": "a rocket launch"}]
+        for alias in ("seconds", "aspect_ratio", "size", "input_reference", "image_urls", "video_urls"):
+            assert alias not in body
+        assert body["duration"] == 4
+        assert body["ratio"] == "16:9"
+
+    def test_create_request_v1_drops_consumed_aliases_remerged_by_extra_body(self):
+        body, _files, _url = self.config.transform_video_create_request(
+            model=V1_MODEL,
+            prompt="a mouse runs",
+            api_base=API_BASE,
+            video_create_optional_request_params={
+                "duration": 6,
+                "resolution": "768P",
+                "seconds": "6",
+                "size": "1280x720",
+                "input_reference": "https://img.example.com/start.png",
+            },
+            litellm_params=GenericLiteLLMParams(),
+            headers={},
+        )
+        assert body == {
+            "model": "MiniMax-Hailuo-2.3-Fast",
+            "prompt": "a mouse runs",
+            "duration": 6,
+            "resolution": "768P",
+        }
+
     def test_create_request_v1_body_and_url(self):
         body, files, url = self.config.transform_video_create_request(
             model=V1_MODEL,
@@ -580,6 +627,37 @@ class TestMinimaxVideoTransformation:
         assert fake_client.calls[0]["url"] == f"{API_BASE}/v1/files/retrieve?file_id=176844028768320"
         assert fake_client.calls[0]["headers"]["Authorization"] == "Bearer mm-secret"
         assert fake_client.calls[1]["url"] == "https://cdn.example.com/output.mp4"
+
+    def test_content_v1_file_retrieve_keeps_custom_base_path(self, monkeypatch):
+        fake_client = _FakeClient(
+            [
+                {
+                    "file": {"download_url": "https://cdn.example.com/output.mp4"},
+                    "base_resp": {"status_code": 0, "status_msg": "success"},
+                },
+                b"mp4-bytes",
+            ]
+        )
+        monkeypatch.setattr(
+            "litellm.llms.minimax.videos.transformation._get_httpx_client",
+            lambda: fake_client,
+        )
+        raw_response = _response(
+            {
+                "task_id": "106",
+                "status": "Success",
+                "file_id": "176844028768320",
+                "base_resp": {"status_code": 0, "status_msg": "success"},
+            },
+            url="https://gateway.example/v1/minimax/v1/query/video_generation?task_id=106",
+            headers={"Authorization": "Bearer mm-secret"},
+        )
+        content = self.config.transform_video_content_response(raw_response=raw_response, logging_obj=self.logging_obj)
+        assert content == b"mp4-bytes"
+        assert (
+            fake_client.calls[0]["url"]
+            == "https://gateway.example/v1/minimax/v1/files/retrieve?file_id=176844028768320"
+        )
 
     def test_content_v1_fail_status_raises(self):
         raw_response = _response(
