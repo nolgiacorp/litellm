@@ -133,6 +133,31 @@ class TestMinimaxImageTransformation:
         assert body["width"] == 1024
         assert body["height"] == 1024
 
+    def test_transform_request_maps_image_url_to_subject_reference(self):
+        body = self.config.transform_image_generation_request(
+            model=MODEL,
+            prompt="same character on a beach",
+            optional_params={"image_url": "https://img.example.com/character.png"},
+            litellm_params={},
+            headers={},
+        )
+        assert body["subject_reference"] == (
+            {"type": "character", "image_file": "https://img.example.com/character.png"},
+        )
+        assert "image_url" not in body
+
+    def test_transform_request_explicit_subject_reference_wins_over_image_url(self):
+        explicit = [{"type": "character", "image_file": "https://img.example.com/explicit.png"}]
+        body = self.config.transform_image_generation_request(
+            model=MODEL,
+            prompt="same character on a beach",
+            optional_params={"image_url": "https://img.example.com/character.png", "subject_reference": explicit},
+            litellm_params={},
+            headers={},
+        )
+        assert body["subject_reference"] == explicit
+        assert "image_url" not in body
+
     def test_transform_response_url_images(self):
         response = self.config.transform_image_generation_response(
             model=MODEL,

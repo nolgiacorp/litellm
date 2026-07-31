@@ -28,7 +28,7 @@ else:
     LiteLLMLoggingObj = Any
 
 MINIMAX_IMAGE_PASSTHROUGH_PARAMS = frozenset(
-    {"aspect_ratio", "width", "height", "seed", "prompt_optimizer", "subject_reference"}
+    {"aspect_ratio", "width", "height", "seed", "prompt_optimizer", "subject_reference", "image_url"}
 )
 
 _V1_ERROR_HTTP_STATUS: Mapping[int, int] = MappingProxyType(
@@ -123,8 +123,25 @@ class MinimaxImageGenerationConfig(BaseImageGenerationConfig):
             **optional_params,
             **(extra_body if isinstance(extra_body, dict) else EMPTY_MAP),
         }
-        forwarded = drop_none_values({key: value for key, value in params.items() if key not in _RESERVED_REQUEST_KEYS})
-        return {"model": strip_minimax_prefix(model), "prompt": prompt, **forwarded}
+        forwarded = drop_none_values(
+            {key: value for key, value in params.items() if key not in _RESERVED_REQUEST_KEYS and key != "image_url"}
+        )
+        image_url = params.get("image_url")
+        reference = (
+            ({"type": "character", "image_file": image_url.strip()},)  # mutable-ok: MiniMax wire shape is a JSON object
+            if "subject_reference" not in forwarded and isinstance(image_url, str) and image_url.strip()
+            else None
+        )
+        return dict(
+            drop_none_values(
+                {
+                    "model": strip_minimax_prefix(model),
+                    "prompt": prompt,
+                    **forwarded,
+                    "subject_reference": reference if reference is not None else forwarded.get("subject_reference"),
+                }
+            )
+        )
 
     def transform_image_generation_response(
         self,
