@@ -2809,7 +2809,9 @@
       "endpoints": {
         "chat_completions": true,
         "messages": true,
-        "responses": true
+        "responses": true,
+        "image_generations": true,
+        "video_generations": true
       }
     },
     "pg_vector": {

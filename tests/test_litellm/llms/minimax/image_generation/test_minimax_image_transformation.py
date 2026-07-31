@@ -1,0 +1,213 @@
+from unittest.mock import Mock
+
+import httpx
+import pytest
+
+import litellm
+from litellm.llms.base_llm.chat.transformation import BaseLLMException
+from litellm.llms.minimax.image_generation.transformation import (
+    MinimaxImageGenerationConfig,
+)
+from litellm.types.utils import ImageResponse
+
+MODEL = "minimax/image-01"
+API_BASE = "https://api.minimax.io"
+
+
+def _response(payload, status_code=200):
+    request = httpx.Request("POST", f"{API_BASE}/v1/image_generation")
+    return httpx.Response(status_code, json=payload, request=request)
+
+
+class TestMinimaxImageTransformation:
+    def setup_method(self):
+        self.config = MinimaxImageGenerationConfig()
+        self.logging_obj = Mock()
+
+    def test_validate_environment_sets_bearer(self, monkeypatch):
+        monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
+        headers = self.config.validate_environment(
+            headers={},
+            model=MODEL,
+            messages=[],
+            optional_params={},
+            litellm_params={},
+            api_key="mm-secret",
+        )
+        assert headers["Authorization"] == "Bearer mm-secret"
+
+    def test_validate_environment_requires_key(self, monkeypatch):
+        monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
+        monkeypatch.setattr("litellm.api_key", None, raising=False)
+        with pytest.raises(ValueError, match="MINIMAX_API_KEY"):
+            self.config.validate_environment(
+                headers={},
+                model=MODEL,
+                messages=[],
+                optional_params={},
+                litellm_params={},
+                api_key=None,
+            )
+
+    def test_get_complete_url_targets_image_generation(self):
+        url = self.config.get_complete_url(
+            api_base=None,
+            api_key=None,
+            model=MODEL,
+            optional_params={},
+            litellm_params={},
+        )
+        assert url == f"{API_BASE}/v1/image_generation"
+
+    def test_map_openai_params_size_to_aspect_ratio(self):
+        mapped = self.config.map_openai_params(
+            non_default_params={"size": "1280x720", "n": 3, "response_format": "url"},
+            optional_params={},
+            model=MODEL,
+            drop_params=False,
+        )
+        assert mapped == {"aspect_ratio": "16:9", "n": 3, "response_format": "url"}
+
+    def test_map_openai_params_passthrough_native_fields(self):
+        mapped = self.config.map_openai_params(
+            non_default_params={
+                "aspect_ratio": "21:9",
+                "seed": 7,
+                "prompt_optimizer": True,
+                "subject_reference": [{"type": "character", "image_file": "https://img.example.com/face.png"}],
+            },
+            optional_params={},
+            model=MODEL,
+            drop_params=False,
+        )
+        assert mapped["aspect_ratio"] == "21:9"
+        assert mapped["seed"] == 7
+        assert mapped["prompt_optimizer"] is True
+        assert mapped["subject_reference"] == [
+            {"type": "character", "image_file": "https://img.example.com/face.png"}
+        ]
+
+    def test_map_openai_params_raises_on_unsupported(self):
+        with pytest.raises(ValueError, match="not supported"):
+            self.config.map_openai_params(
+                non_default_params={"totally_unknown": 1},
+                optional_params={},
+                model=MODEL,
+                drop_params=False,
+            )
+
+    def test_map_openai_params_drops_unsupported_when_allowed(self):
+        mapped = self.config.map_openai_params(
+            non_default_params={"totally_unknown": 1, "n": 2},
+            optional_params={},
+            model=MODEL,
+            drop_params=True,
+        )
+        assert mapped == {"n": 2}
+
+    def test_transform_request_strips_prefix_and_forwards_params(self):
+        body = self.config.transform_image_generation_request(
+            model=MODEL,
+            prompt="a red fox",
+            optional_params={"aspect_ratio": "16:9", "n": 2, "response_format": "url", "user": "u1", "size": None},
+            litellm_params={},
+            headers={},
+        )
+        assert body == {
+            "model": "image-01",
+            "prompt": "a red fox",
+            "aspect_ratio": "16:9",
+            "n": 2,
+            "response_format": "url",
+        }
+
+    def test_transform_request_merges_extra_body(self):
+        body = self.config.transform_image_generation_request(
+            model=MODEL,
+            prompt="a red fox",
+            optional_params={"extra_body": {"prompt_optimizer": True, "width": 1024, "height": 1024}},
+            litellm_params={},
+            headers={},
+        )
+        assert body["prompt_optimizer"] is True
+        assert body["width"] == 1024
+        assert body["height"] == 1024
+
+    def test_transform_response_url_images(self):
+        response = self.config.transform_image_generation_response(
+            model=MODEL,
+            raw_response=_response(
+                {
+                    "id": "trace-1",
+                    "data": {"image_urls": ["https://cdn.example.com/a.png", "https://cdn.example.com/b.png"]},
+                    "metadata": {"success_count": 2, "failed_count": 0},
+                    "base_resp": {"status_code": 0, "status_msg": "success"},
+                }
+            ),
+            model_response=ImageResponse(),
+            logging_obj=self.logging_obj,
+            request_data={},
+            optional_params={},
+            litellm_params={},
+            encoding=None,
+        )
+        assert [image.url for image in response.data] == [
+            "https://cdn.example.com/a.png",
+            "https://cdn.example.com/b.png",
+        ]
+
+    def test_transform_response_base64_images(self):
+        response = self.config.transform_image_generation_response(
+            model=MODEL,
+            raw_response=_response(
+                {
+                    "data": {"image_base64": ["aGVsbG8="]},
+                    "base_resp": {"status_code": 0, "status_msg": "success"},
+                }
+            ),
+            model_response=ImageResponse(),
+            logging_obj=self.logging_obj,
+            request_data={},
+            optional_params={},
+            litellm_params={},
+            encoding=None,
+        )
+        assert response.data[0].b64_json == "aGVsbG8="
+
+    def test_transform_response_base_resp_error_raises(self):
+        with pytest.raises(BaseLLMException) as excinfo:
+            self.config.transform_image_generation_response(
+                model=MODEL,
+                raw_response=_response({"base_resp": {"status_code": 1008, "status_msg": "insufficient balance"}}),
+                model_response=ImageResponse(),
+                logging_obj=self.logging_obj,
+                request_data={},
+                optional_params={},
+                litellm_params={},
+                encoding=None,
+            )
+        assert excinfo.value.status_code == 402
+        assert "insufficient balance" in excinfo.value.message
+
+    def test_transform_response_no_images_raises(self):
+        with pytest.raises(ValueError, match="no images"):
+            self.config.transform_image_generation_response(
+                model=MODEL,
+                raw_response=_response(
+                    {"data": {"image_urls": []}, "base_resp": {"status_code": 0, "status_msg": "success"}}
+                ),
+                model_response=ImageResponse(),
+                logging_obj=self.logging_obj,
+                request_data={},
+                optional_params={},
+                litellm_params={},
+                encoding=None,
+            )
+
+    def test_provider_image_generation_config_registry(self):
+        from litellm.utils import ProviderConfigManager
+
+        config = ProviderConfigManager.get_provider_image_generation_config(
+            model=MODEL, provider=litellm.LlmProviders.MINIMAX
+        )
+        assert isinstance(config, MinimaxImageGenerationConfig)
