@@ -106,25 +106,44 @@ class TestRequestCompliance:
         assert "array" in input_types, "Input should support array"
 
     def test_content_schema_uses_discriminator(self, spec_dict):
-        """Verify Content uses type discriminator."""
-        content_schema = spec_dict["components"]["schemas"]["Content"]
+        """Verify Content is a union discriminated on the `type` field."""
+        schemas = spec_dict["components"]["schemas"]
+        content_schema = schemas["Content"]
 
-        assert "discriminator" in content_schema
-        assert content_schema["discriminator"]["propertyName"] == "type"
+        discriminator = content_schema.get("discriminator")
+        if discriminator is not None:
+            assert discriminator["propertyName"] == "type"
 
         # Check TextContent is an option (via mapping if present, or via oneOf refs)
-        mapping = content_schema["discriminator"].get("mapping")
+        mapping = (discriminator or {}).get("mapping")
         if mapping:
             assert "text" in mapping
             print(f"Content type discriminator mapping: {list(mapping.keys())}")
-        else:
-            # Discriminator without explicit mapping — verify via oneOf
-            one_of = content_schema.get("oneOf", [])
-            ref_names = [opt["$ref"].split("/")[-1] for opt in one_of if "$ref" in opt]
-            assert (
-                "TextContent" in ref_names
-            ), f"TextContent not found in oneOf refs: {ref_names}"
-            print(f"Content type discriminator (no mapping), oneOf refs: {ref_names}")
+            return
+
+        # No explicit discriminator/mapping (Google's spec dropped it): the union is
+        # still discriminated as long as every member pins a distinct `type` const.
+        one_of = content_schema.get("oneOf", [])
+        ref_names = [opt["$ref"].split("/")[-1] for opt in one_of if "$ref" in opt]
+        assert (
+            "TextContent" in ref_names
+        ), f"TextContent not found in oneOf refs: {ref_names}"
+
+        type_consts = []
+        for ref_name in ref_names:
+            member = schemas[ref_name]
+            assert "type" in member.get(
+                "required", []
+            ), f"{ref_name} does not require a `type` field"
+            type_const = member["properties"]["type"].get("const")
+            assert type_const, f"{ref_name} does not pin a `type` const"
+            type_consts.append(type_const)
+
+        assert "text" in type_consts
+        assert len(set(type_consts)) == len(
+            type_consts
+        ), f"Content union has ambiguous `type` consts: {type_consts}"
+        print(f"Content union discriminated on `type` consts: {type_consts}")
 
     def test_text_content_schema(self, spec_dict):
         """Verify TextContent schema."""
