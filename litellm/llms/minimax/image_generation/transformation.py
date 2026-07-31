@@ -1,4 +1,5 @@
 from collections.abc import Mapping, Sequence
+from json import JSONDecodeError
 from math import gcd
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any  # noqa: TID251  # base transformation contracts type these payloads as Any
@@ -198,7 +199,7 @@ class MinimaxImageGenerationConfig(BaseImageGenerationConfig):
     def _error_message_from_body(raw_response: httpx.Response) -> str:
         try:
             body = raw_response.json()
-        except Exception:
+        except (ValueError, JSONDecodeError):
             return raw_response.text
         if not isinstance(body, dict):
             return raw_response.text
