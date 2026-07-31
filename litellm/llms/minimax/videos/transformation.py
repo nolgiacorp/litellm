@@ -225,6 +225,17 @@ class MinimaxVideoConfig(BaseVideoConfig):
                 model=model,
                 llm_provider=litellm.LlmProviders.MINIMAX.value,
             )
+        if reference_videos:
+            raise litellm.BadRequestError(
+                message=(
+                    "MiniMax H3 bills reference video input seconds (usage.input_seconds) on top of the generated "
+                    "output seconds, and a reference clip's length is unknown when the create call is charged, so "
+                    "reference videos (video_urls) would be undercharged and are not supported. Use reference images "
+                    "(image_urls) or first/last-frame conditioning instead."
+                ),
+                model=model,
+                llm_provider=litellm.LlmProviders.MINIMAX.value,
+            )
         return drop_none_values(
             {
                 "duration": duration if duration is not None else _DEFAULT_V2_DURATION,

@@ -184,16 +184,26 @@ class TestMinimaxVideoTransformation:
             video_create_optional_params={
                 "seconds": 5,
                 "image_urls": ["https://img.example.com/a.png", "", "https://img.example.com/b.png"],
-                "video_urls": ["https://video.example.com/ref.mp4"],
                 "audio_urls": ["https://audio.example.com/ref.mp3"],
             },
             model=V2_MODEL,
             drop_params=False,
         )
         assert mapped["reference_images"] == ("https://img.example.com/a.png", "https://img.example.com/b.png")
-        assert mapped["reference_videos"] == ("https://video.example.com/ref.mp4",)
         assert mapped["reference_audios"] == ("https://audio.example.com/ref.mp3",)
+        assert "reference_videos" not in mapped
         assert "ratio" not in mapped
+
+    def test_map_v2_reference_videos_rejected_because_input_seconds_are_billed(self):
+        with pytest.raises(litellm.BadRequestError, match="usage.input_seconds"):
+            self.config.map_openai_params(
+                video_create_optional_params={
+                    "seconds": 5,
+                    "video_urls": ["https://video.example.com/ref.mp4"],
+                },
+                model=V2_MODEL,
+                drop_params=False,
+            )
 
     def test_map_v2_reference_media_keeps_explicit_ratio(self):
         mapped = self.config.map_openai_params(
