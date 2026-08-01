@@ -173,6 +173,7 @@ class TestGeminiVideoConfig:
         mock_client = Mock()
         mock_client.get.return_value = download_response
         monkeypatch.setattr(litellm, "module_level_client", mock_client)
+        monkeypatch.setattr(litellm, "user_url_validation", False)
 
         data, _, _ = self.config.transform_video_create_request(
             model="veo-3.1-generate-preview",
@@ -191,7 +192,151 @@ class TestGeminiVideoConfig:
             "mimeType": "image/jpeg",
         }
         assert "image_url" not in data.get("parameters", {})
-        mock_client.get.assert_called_once_with(url="https://storage.example/signed.jpg")
+        mock_client.get.assert_called_once_with("https://storage.example/signed.jpg", follow_redirects=True)
+
+    def test_transform_video_create_request_input_reference_url_string(self, monkeypatch):
+        """input_reference arrives as a signed URL string via map_openai_params
+        (mapped to 'image'); it must be downloaded and inlined as base64, not
+        handed to the file-object encoder (NOL-252: 'str' object has no
+        attribute 'read' killed every Veo i2v submission)."""
+        import base64 as b64
+        from unittest.mock import Mock
+
+        import litellm
+
+        image_bytes = b"start-frame-bytes"
+        download_response = Mock()
+        download_response.content = image_bytes
+        download_response.headers = {"content-type": "image/png"}
+        download_response.raise_for_status = Mock()
+        mock_client = Mock()
+        mock_client.get.return_value = download_response
+        monkeypatch.setattr(litellm, "module_level_client", mock_client)
+        monkeypatch.setattr(litellm, "user_url_validation", False)
+
+        mapped = self.config.map_openai_params(
+            {"input_reference": "https://storage.example/signed-start.png", "seconds": "8"},
+            "veo-3.1-fast-generate-preview",
+            drop_params=False,
+        )
+        assert mapped["image"] == "https://storage.example/signed-start.png"
+
+        data, _, _ = self.config.transform_video_create_request(
+            model="veo-3.1-fast-generate-preview",
+            prompt="Creator lifts the lid off the box",
+            api_base="https://generativelanguage.googleapis.com/v1beta/models/veo-3.1-fast-generate-preview:predictLongRunning",
+            video_create_optional_request_params=mapped,
+            litellm_params=GenericLiteLLMParams(),
+            headers={},
+        )
+
+        assert data["instances"][0]["image"] == {
+            "bytesBase64Encoded": b64.b64encode(image_bytes).decode(),
+            "mimeType": "image/png",
+        }
+        assert data["parameters"]["durationSeconds"] == 8
+        mock_client.get.assert_called_once_with("https://storage.example/signed-start.png", follow_redirects=True)
+
+    def test_transform_video_create_request_input_reference_dedupes_image_url(self, monkeypatch):
+        """Production payloads mirror the start frame into both input_reference
+        and image_url and carry image_urls refs; the start frame must download
+        exactly once and refs land as referenceImages."""
+        from unittest.mock import Mock
+
+        import litellm
+
+        download_response = Mock()
+        download_response.content = b"img-bytes"
+        download_response.headers = {"content-type": "image/jpeg"}
+        download_response.raise_for_status = Mock()
+        mock_client = Mock()
+        mock_client.get.return_value = download_response
+        monkeypatch.setattr(litellm, "module_level_client", mock_client)
+        monkeypatch.setattr(litellm, "user_url_validation", False)
+
+        start_url = "https://storage.example/start.jpg"
+        data, _, _ = self.config.transform_video_create_request(
+            model="veo-3.1-generate-preview",
+            prompt="@Image1 unboxes the product",
+            api_base="https://generativelanguage.googleapis.com/v1beta/models/veo-3.1-generate-preview:predictLongRunning",
+            video_create_optional_request_params={
+                "image": start_url,
+                "image_url": start_url,
+                "image_urls": [
+                    "https://storage.example/ref-a.jpg",
+                    "https://storage.example/ref-b.jpg",
+                    "https://storage.example/ref-c.jpg",
+                ],
+                "aspectRatio": "9:16",
+                "durationSeconds": 8,
+            },
+            litellm_params=GenericLiteLLMParams(),
+            headers={},
+        )
+
+        instance = data["instances"][0]
+        assert instance["image"]["mimeType"] == "image/jpeg"
+        assert len(instance["referenceImages"]) == 3
+        assert data["parameters"]["aspectRatio"] == "9:16"
+        assert data["parameters"]["durationSeconds"] == 8
+        assert mock_client.get.call_count == 4
+        assert sum(1 for call in mock_client.get.call_args_list if call.args and call.args[0] == start_url) == 1
+
+    def test_transform_video_create_request_non_url_string_image_raises(self):
+        """A string image that is not an http(s) URL gets a clear ValueError,
+        not AttributeError from the file-object path."""
+        with pytest.raises(ValueError, match="expected an http\\(s\\) image URL"):
+            self.config.transform_video_create_request(
+                model="veo-3.1-generate-preview",
+                prompt="Animate this still",
+                api_base="https://generativelanguage.googleapis.com/v1beta/models/veo-3.1-generate-preview:predictLongRunning",
+                video_create_optional_request_params={"image": "not-a-url.jpg"},
+                litellm_params=GenericLiteLLMParams(),
+                headers={},
+            )
+
+    def test_transform_video_create_request_image_url_ssrf_blocked(self):
+        """A caller-supplied image URL pointing at a private/link-local address
+        is rejected before any request goes out."""
+        from litellm.litellm_core_utils.url_utils import SSRFError
+
+        with pytest.raises(SSRFError):
+            self.config.transform_video_create_request(
+                model="veo-3.1-generate-preview",
+                prompt="Animate this still",
+                api_base="https://generativelanguage.googleapis.com/v1beta/models/veo-3.1-generate-preview:predictLongRunning",
+                video_create_optional_request_params={"image": "http://169.254.169.254/latest/meta-data/"},
+                litellm_params=GenericLiteLLMParams(),
+                headers={},
+            )
+
+    def test_transform_video_create_request_mime_type_sniffed_from_bytes(self, monkeypatch):
+        """Signed URLs often answer with a generic content-type; the mimeType
+        sent to Veo must describe the actual bytes."""
+        from unittest.mock import Mock
+
+        import litellm
+
+        png_bytes = b"\x89PNG\r\n\x1a\n" + b"rest-of-the-png"
+        download_response = Mock()
+        download_response.content = png_bytes
+        download_response.headers = {"content-type": "application/octet-stream"}
+        download_response.raise_for_status = Mock()
+        mock_client = Mock()
+        mock_client.get.return_value = download_response
+        monkeypatch.setattr(litellm, "module_level_client", mock_client)
+        monkeypatch.setattr(litellm, "user_url_validation", False)
+
+        data, _, _ = self.config.transform_video_create_request(
+            model="veo-3.1-generate-preview",
+            prompt="Animate this still",
+            api_base="https://generativelanguage.googleapis.com/v1beta/models/veo-3.1-generate-preview:predictLongRunning",
+            video_create_optional_request_params={"image": "https://storage.example/signed-no-type"},
+            litellm_params=GenericLiteLLMParams(),
+            headers={},
+        )
+
+        assert data["instances"][0]["image"]["mimeType"] == "image/png"
 
     def test_map_openai_params_normalizes_snake_case_gemini_params(self):
         """aspect_ratio/negative_prompt (platform snake_case) become the camelCase
@@ -246,6 +391,7 @@ class TestGeminiVideoConfig:
         mock_client = Mock()
         mock_client.get.return_value = download_response
         monkeypatch.setattr(litellm, "module_level_client", mock_client)
+        monkeypatch.setattr(litellm, "user_url_validation", False)
 
         data, _, _ = self.config.transform_video_create_request(
             model="veo-3.1-generate-preview",

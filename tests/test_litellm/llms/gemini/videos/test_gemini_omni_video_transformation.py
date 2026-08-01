@@ -142,6 +142,7 @@ class TestGeminiOmniVideoConfig:
         import litellm
 
         monkeypatch.setattr(litellm, "module_level_client", mock_client)
+        monkeypatch.setattr(litellm, "user_url_validation", False)
 
         request_data, _, _ = self.config.transform_video_create_request(
             model=MODEL,
@@ -156,7 +157,7 @@ class TestGeminiOmniVideoConfig:
             {"type": "text", "text": "Animate this drawing."},
         ]
         assert request_data["generation_config"] == {"video_config": {"task": "image_to_video"}}
-        mock_client.get.assert_called_once_with(url="https://storage.example/signed.png")
+        mock_client.get.assert_called_once_with("https://storage.example/signed.png", follow_redirects=True)
 
     def test_transform_video_create_request_ignores_unsupported_aspect_ratio(self):
         request_data, _, _ = self.config.transform_video_create_request(

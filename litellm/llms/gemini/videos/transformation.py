@@ -7,6 +7,8 @@ from httpx._types import RequestFiles
 import litellm
 from litellm.constants import DEFAULT_GOOGLE_VIDEO_DURATION_SECONDS
 from litellm.images.utils import ImageEditRequestUtils
+from litellm.litellm_core_utils.token_counter import get_image_type
+from litellm.litellm_core_utils.url_utils import safe_get
 from litellm.llms.base_llm.videos.transformation import BaseVideoConfig
 from litellm.secret_managers.main import get_secret_str
 from litellm.types.llms.gemini import (
@@ -37,17 +39,35 @@ else:
 _MAX_REFERENCE_IMAGES = 3
 
 
+def _image_mime_type_from_response(response: httpx.Response) -> str:
+    """
+    Resolve the mimeType Veo receives, preferring the bytes over the header.
+
+    Signed URLs frequently answer with a generic ``application/octet-stream``
+    or an outright wrong image type, and Veo rejects a reference image whose
+    mimeType disagrees with its payload.
+    """
+    sniffed = get_image_type(response.content[:100])
+    if sniffed is not None:
+        return f"image/{sniffed}"
+    header_type = str(response.headers.get("content-type", "")).split(";")[0].strip()
+    return header_type if header_type.startswith("image/") else "image/jpeg"
+
+
 def fetch_image_as_base64(image_url: str) -> tuple[str, str]:
     """
     Download an image URL and return (base64_data, mime_type).
 
     Used for image-to-video: callers pass a signed URL, while the Gemini
-    APIs want inline base64 bytes.
+    APIs want inline base64 bytes. The URL is caller-controlled, so it is
+    fetched via ``safe_get``, which validates every redirect hop against the
+    SSRF block list.
     """
-    response = litellm.module_level_client.get(url=image_url)
+    response: httpx.Response = safe_get(  # pyright: ignore[reportAny]  # safe_get is declared Any-in/Any-out; it returns the httpx response
+        litellm.module_level_client, image_url
+    )
     response.raise_for_status()
-    content_type = response.headers.get("content-type", "").split(";")[0].strip() or "image/jpeg"
-    return base64.b64encode(response.content).decode("utf-8"), content_type
+    return base64.b64encode(response.content).decode("utf-8"), _image_mime_type_from_response(response)
 
 
 def _convert_image_to_gemini_format(image_file) -> Dict[str, str]:
@@ -302,10 +322,16 @@ class GeminiVideoConfig(BaseVideoConfig):
             image = params_copy.pop("image")
             if image is not None:
                 if isinstance(image, dict):
-                    image_data = image
+                    instance["image"] = image
+                elif isinstance(image, str):
+                    if not image.startswith(("http://", "https://")):
+                        raise ValueError(
+                            "Unsupported string image input for Gemini video generation; "
+                            f"expected an http(s) image URL, got: {image[:100]}"
+                        )
+                    params_copy["image_url"] = image
                 else:
-                    image_data = _convert_image_to_gemini_format(image)
-                instance["image"] = image_data
+                    instance["image"] = _convert_image_to_gemini_format(image)
 
         if "image_url" in params_copy:
             image_url = params_copy.pop("image_url")
