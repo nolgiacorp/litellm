@@ -1,4 +1,6 @@
 import base64
+import re
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, Dict, Tuple, Union
 
 import httpx
@@ -37,6 +39,58 @@ else:
 
 
 _MAX_REFERENCE_IMAGES = 3
+
+_VEO_3X_MODEL = re.compile(r"veo-3(?![0-9])")
+
+_AUDIO_PARAM_KEYS = ("generate_audio", "generateAudio")
+
+_PERSON_GENERATION_IMAGE_VALUE = "allow_adult"
+
+
+def _is_veo_3x(model: str) -> bool:
+    """Whether ``model`` names a Veo 3.x variant (3.0/3.1, fast/lite, preview or GA)."""
+    return _VEO_3X_MODEL.search(model.lower()) is not None
+
+
+def _audio_preference(params: Mapping[str, Any]) -> bool | None:
+    """
+    Return the audio track the caller asked for, or None if it did not ask.
+
+    The Gemini video surface has no audio toggle: Veo 3.x always generates
+    audio natively ("Always on" per https://ai.google.dev/gemini-api/docs/veo),
+    and Google's own SDK rejects the flag outright with "generate_audio
+    parameter is not supported in Gemini API". Only Vertex exposes a
+    ``generateAudio`` boolean. So the flag is consumed by the transform rather
+    than forwarded; forwarding it would make Google reject the request.
+    """
+    requested = tuple(params[key] for key in _AUDIO_PARAM_KEYS if params.get(key) is not None)
+    return bool(requested[0]) if requested else None
+
+
+def _person_generation_for_request(
+    model: str,
+    instance: GeminiVideoGenerationInstance,
+    params: Mapping[str, Any],
+) -> str | None:
+    """
+    Resolve ``personGeneration`` for an image-bearing Veo 3.x request.
+
+    Per https://ai.google.dev/gemini-api/docs/veo the accepted value is
+    mode-scoped: text-to-video and extension take "allow_all" only, while
+    image-to-video, interpolation, and reference-image runs take
+    "allow_adult" only. "allow_adult" is therefore not a permissive default
+    we picked; it is the single value Google accepts for this request shape,
+    and it is the stricter of the two (adults only, no minors).
+
+    Text-to-video is deliberately left unset so the provider default applies,
+    since that path works today and the Gemini surface documents no default.
+    """
+    if not _is_veo_3x(model):
+        return None
+    carries_image = "image" in instance or "referenceImages" in instance or params.get("lastFrame") is not None
+    if not carries_image:
+        return None
+    return _PERSON_GENERATION_IMAGE_VALUE
 
 
 def _image_mime_type_from_response(response: httpx.Response) -> str:
@@ -190,7 +244,11 @@ class GeminiVideoConfig(BaseVideoConfig):
         # (pydantic extra="ignore"), so an un-normalized aspect_ratio was
         # dropped on the floor and every text-to-video render came out 16:9
         # regardless of the requested ratio.
-        for snake, camel in (("aspect_ratio", "aspectRatio"), ("negative_prompt", "negativePrompt")):
+        for snake, camel in (
+            ("aspect_ratio", "aspectRatio"),
+            ("negative_prompt", "negativePrompt"),
+            ("person_generation", "personGeneration"),
+        ):
             if snake in mapped_params:
                 value = mapped_params.pop(snake)
                 if value is not None and camel not in mapped_params:
@@ -356,6 +414,20 @@ class GeminiVideoConfig(BaseVideoConfig):
                     )
                 if reference_images:
                     instance["referenceImages"] = reference_images
+
+        wants_audio = _audio_preference(params_copy)
+        for audio_key in _AUDIO_PARAM_KEYS:
+            params_copy.pop(audio_key, None)
+        if wants_audio is False and _is_veo_3x(model):
+            raise ValueError(
+                "generate_audio=false is not supported for Veo 3.x on the Gemini video route: "
+                "audio is generated natively and always on, and the Gemini API exposes no field "
+                "to disable it. Route to a model that renders silent video if you need no audio track."
+            )
+
+        params_copy["personGeneration"] = params_copy.get("personGeneration") or _person_generation_for_request(
+            model, instance, params_copy
+        )
 
         parameters = GeminiVideoGenerationParameters(**params_copy)
 
