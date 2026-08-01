@@ -302,10 +302,16 @@ class GeminiVideoConfig(BaseVideoConfig):
             image = params_copy.pop("image")
             if image is not None:
                 if isinstance(image, dict):
-                    image_data = image
+                    instance["image"] = image
+                elif isinstance(image, str):
+                    if not image.startswith(("http://", "https://")):
+                        raise ValueError(
+                            "Unsupported string image input for Gemini video generation; "
+                            f"expected an http(s) image URL, got: {image[:100]}"
+                        )
+                    params_copy["image_url"] = image
                 else:
-                    image_data = _convert_image_to_gemini_format(image)
-                instance["image"] = image_data
+                    instance["image"] = _convert_image_to_gemini_format(image)
 
         if "image_url" in params_copy:
             image_url = params_copy.pop("image_url")
