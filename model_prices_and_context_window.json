@@ -31078,6 +31078,21 @@
         "supports_reasoning": true,
         "supports_tool_choice": true
     },
+    "openrouter/deepseek/deepseek-v4-flash-0731": {
+        "input_cost_per_token": 9e-08,
+        "input_cost_per_token_cache_hit": 1.8e-08,
+        "litellm_provider": "openrouter",
+        "max_input_tokens": 1048576,
+        "max_output_tokens": 1048576,
+        "max_tokens": 1048576,
+        "mode": "chat",
+        "output_cost_per_token": 1.8e-07,
+        "supports_assistant_prefill": true,
+        "supports_function_calling": true,
+        "supports_prompt_caching": true,
+        "supports_reasoning": true,
+        "supports_tool_choice": true
+    },
     "openrouter/deepseek/deepseek-v3.2": {
         "input_cost_per_token": 2.8e-07,
         "input_cost_per_token_cache_hit": 2.8e-08,
