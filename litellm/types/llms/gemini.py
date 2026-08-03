@@ -244,7 +244,14 @@ class GeminiVideoGenerationParameters(BaseModel):
     """
     Parameters for Gemini video generation request.
 
-    See: Veo 3/3.1 parameter guide.
+    See: Veo 3/3.1 parameter guide (https://ai.google.dev/gemini-api/docs/veo).
+
+    There is deliberately no ``generateAudio`` field. Veo 3.x on the Gemini
+    surface generates audio natively and always on, and the API rejects the
+    flag ("generate_audio parameter is not supported in Gemini API"); only
+    Vertex exposes ``generateAudio``. A caller's ``generate_audio`` is consumed
+    in ``GeminiVideoConfig.transform_video_create_request`` rather than
+    forwarded, since forwarding it would make Google reject the request.
     """
 
     aspectRatio: Optional[str] = None
@@ -289,6 +296,11 @@ class GeminiVideoGenerationParameters(BaseModel):
     Text-to-video & Extension: "allow_all" only
     Image-to-video, Interpolation, & Reference images (Veo 3.x): "allow_adult" only
     See documentation for region restrictions & more.
+
+    Populated for image-bearing Veo 3.x requests by
+    ``GeminiVideoConfig.transform_video_create_request``; "allow_adult" is the
+    only value Google accepts for that request shape.
+    https://ai.google.dev/gemini-api/docs/veo
     """
 
 

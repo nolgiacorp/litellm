@@ -381,6 +381,10 @@
           "type": "number",
           "minimum": 0
         },
+        "output_cost_per_audio": {
+          "type": "number",
+          "minimum": 0
+        },
         "output_cost_per_audio_token": {
           "type": "number",
           "minimum": 0

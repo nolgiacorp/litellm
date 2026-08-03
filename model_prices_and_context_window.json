@@ -27467,6 +27467,15 @@
         "supports_tool_choice": true,
         "source": "https://aws.amazon.com/bedrock/pricing/"
     },
+    "minimax/image-01": {
+        "litellm_provider": "minimax",
+        "mode": "image_generation",
+        "output_cost_per_image": 0.0035,
+        "source": "https://platform.minimax.io/docs/guides/pricing-paygo",
+        "supported_endpoints": [
+            "/v1/images/generations"
+        ]
+    },
     "minimax/speech-02-hd": {
         "input_cost_per_character": 0.0001,
         "litellm_provider": "minimax",
@@ -27497,6 +27506,33 @@
         "mode": "audio_speech",
         "supported_endpoints": [
             "/v1/audio/speech"
+        ]
+    },
+    "minimax/MiniMax-H3": {
+        "litellm_provider": "minimax",
+        "mode": "video_generation",
+        "output_cost_per_video_per_second": 0.13,
+        "source": "https://platform.minimax.io/docs/guides/pricing-paygo",
+        "supported_endpoints": [
+            "/v1/videos"
+        ]
+    },
+    "minimax/MiniMax-Hailuo-2.3": {
+        "litellm_provider": "minimax",
+        "mode": "video_generation",
+        "output_cost_per_video_per_second": 0.056,
+        "source": "https://platform.minimax.io/docs/guides/pricing-paygo",
+        "supported_endpoints": [
+            "/v1/videos"
+        ]
+    },
+    "minimax/MiniMax-Hailuo-2.3-Fast": {
+        "litellm_provider": "minimax",
+        "mode": "video_generation",
+        "output_cost_per_video_per_second": 0.032,
+        "source": "https://platform.minimax.io/docs/guides/pricing-paygo",
+        "supported_endpoints": [
+            "/v1/videos"
         ]
     },
     "minimax/MiniMax-M2.1": {

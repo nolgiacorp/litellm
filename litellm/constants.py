@@ -200,6 +200,8 @@ FAL_AI_POLLING_TIMEOUT = int(os.getenv("FAL_AI_POLLING_TIMEOUT", 900))  # 15 min
 KLING_DEFAULT_API_BASE = str(os.getenv("KLING_DEFAULT_API_BASE", "https://api-singapore.klingai.com/v1"))
 KLING_POLLING_TIMEOUT = int(os.getenv("KLING_POLLING_TIMEOUT", 900))
 
+MINIMAX_MEDIA_DEFAULT_API_BASE = str(os.getenv("MINIMAX_MEDIA_DEFAULT_API_BASE", "https://api.minimax.io"))
+
 ########## Networking constants ##############################################################
 _DEFAULT_TTL_FOR_HTTPX_CLIENTS = 3600  # 1 hour, re-use the same httpx client for 1 hour
 

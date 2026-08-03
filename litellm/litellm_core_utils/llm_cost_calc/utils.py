@@ -1204,6 +1204,15 @@ class CostCalculatorUtils:
                 model=model,
                 image_response=completion_response,
             )
+        elif custom_llm_provider == litellm.LlmProviders.MINIMAX.value:
+            from litellm.llms.minimax.cost_calculator import (
+                image_cost_calculator as minimax_image_cost_calculator,
+            )
+
+            return minimax_image_cost_calculator(
+                model=model,
+                image_response=completion_response,
+            )
         elif custom_llm_provider == litellm.LlmProviders.BLACK_FOREST_LABS.value:
             from litellm.llms.black_forest_labs.cost_calculator import (
                 image_cost_calculator as bfl_image_cost_calculator,
