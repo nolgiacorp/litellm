@@ -31115,6 +31115,7 @@
         "supports_tool_choice": true
     },
     "openrouter/deepseek/deepseek-v4-flash-0731": {
+        "cache_read_input_token_cost": 1.8e-08,
         "input_cost_per_token": 9e-08,
         "input_cost_per_token_cache_hit": 1.8e-08,
         "litellm_provider": "openrouter",

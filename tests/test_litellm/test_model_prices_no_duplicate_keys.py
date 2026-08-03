@@ -91,6 +91,37 @@ def test_grok_imagine_entries_match_across_price_maps():
         assert root[model][cost_key] == rate, f"{model} {cost_key} is not {rate}"
 
 
+def test_fleet_brain_cache_read_uses_the_key_the_cost_calculator_reads():
+    """NOL-376: the fleet brain's cache-read rate has to sit under a consumed key.
+
+    `input_cost_per_token_cache_hit` is declared on ModelInfoBase but no cost
+    calculator ever reads it - `_calculate_input_cost` bills cached prompt tokens
+    at `cache_read_input_token_cost`, which defaults to 0.0 when absent. So an
+    entry carrying only the cache_hit spelling prices cache hits at $0 instead of
+    $0.018/M and undercounts spend, which matters here because prod runs
+    LITELLM_LOCAL_MODEL_COST_MAP=True and bills off the packaged backup map.
+    Both spellings are kept at the same rate, as the 23 other dual-key entries do.
+    """
+    model = "openrouter/deepseek/deepseek-v4-flash-0731"
+    with open(REPO_ROOT / "model_prices_and_context_window.json") as f:
+        root = json.load(f)
+    with open(REPO_ROOT / "litellm" / "model_prices_and_context_window_backup.json") as f:
+        backup = json.load(f)
+
+    for name, price_map in (("canonical", root), ("backup", backup)):
+        assert model in price_map, f"{model} missing from the {name} price map"
+    assert root[model] == backup[model], f"{model} differs between the price map and its backup copy"
+
+    entry = root[model]
+    assert entry["cache_read_input_token_cost"] == 1.8e-08, (
+        "cache reads must be priced under cache_read_input_token_cost - it is the "
+        "only cache-read key the cost calculator consumes"
+    )
+    assert entry["input_cost_per_token_cache_hit"] == entry["cache_read_input_token_cost"]
+    assert entry["input_cost_per_token"] == 9e-08
+    assert entry["output_cost_per_token"] == 1.8e-07
+
+
 def test_guard_detects_duplicate_top_level_key(tmp_path):
     """The exact shape NOL-90 fixed: one model key written twice."""
     path = tmp_path / "dup.json"
