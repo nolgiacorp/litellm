@@ -3356,6 +3356,121 @@ async def test_call_mcp_tool_user_unauthorized_access():
 
 
 @pytest.mark.asyncio
+async def test_call_mcp_tool_unauthorized_403_does_not_leak_server_credentials():
+    """Regression for LIT-4703 / GH #29936.
+
+    Calling a tool on a server the key is not scoped to must 403 with a bare
+    message. The prior code interpolated the caller's allowed ``List[MCPServer]``
+    config objects into the 403 detail, dumping every upstream credential
+    (authentication_token, client_secret, AWS keys, private keys, env,
+    static_headers) in cleartext to the caller.
+    """
+    from fastapi import HTTPException
+
+    from litellm.proxy._experimental.mcp_server.server import call_mcp_tool
+    from litellm.proxy._types import UserAPIKeyAuth
+    from litellm.types.mcp_server.mcp_server_manager import MCPServer
+
+    mock_user_auth = UserAPIKeyAuth(
+        api_key="test-key",
+        user_id="test-user",
+        team_id="team-basic",
+        object_permission_id="key-permission-123",
+    )
+
+    secret_fields = {
+        "authentication_token": "sk-LEAK-authtok",
+        "client_id": "LEAK-clientid",
+        "client_secret": "sk-LEAK-clientsecret",
+        "aws_access_key_id": "LEAK-akid",
+        "aws_secret_access_key": "LEAK-awssecret",
+        "aws_session_token": "LEAK-awssess",
+        "client_private_key": "LEAK-privkey",
+    }
+    allowed_server_obj = MCPServer(
+        server_id="allowed_server",
+        name="allowed_server",
+        server_name="allowed_server",
+        alias="allowed_server",
+        transport="http",
+        auth_type=MCPAuth.bearer_token,
+        env={"UPSTREAM_API_KEY": "LEAK-env"},
+        static_headers={"X-Upstream-Auth": "LEAK-header"},
+        **secret_fields,
+    )
+
+    def mock_get_server_by_id(server_id):
+        if server_id == "allowed_server":
+            return allowed_server_obj
+        return None
+
+    with (
+        patch(
+            "litellm.proxy._experimental.mcp_server.auth.user_api_key_auth_mcp.MCPRequestHandler.get_allowed_mcp_servers",
+            AsyncMock(return_value=["allowed_server"]),
+        ),
+        patch(
+            "litellm.proxy._experimental.mcp_server.server.global_mcp_server_manager.get_mcp_server_by_id",
+            side_effect=mock_get_server_by_id,
+        ),
+    ):
+        with pytest.raises(HTTPException) as exc_info:
+            await call_mcp_tool(
+                name="restricted_server-send_email",
+                arguments={"to": "test@example.com"},
+                user_api_key_auth=mock_user_auth,
+                mcp_auth_header="Bearer test_token",
+            )
+
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.detail == "User not allowed to call this tool."
+    all_secret_values = list(secret_fields.values()) + ["LEAK-env", "LEAK-header"]
+    detail_text = str(exc_info.value.detail)
+    leaked = [value for value in all_secret_values if value in detail_text]
+    assert leaked == [], f"403 body leaked upstream credentials: {leaked}"
+
+
+def test_mcpserver_repr_and_str_mask_credentials():
+    """Regression for LIT-4703 / GH #29936.
+
+    ``MCPServer.__repr__``/``__str__`` must never render credential fields, so a
+    stray f-string, log line, or list interpolation cannot leak them. Only
+    display is masked; ``model_dump`` serialization is unchanged.
+    """
+    from litellm.types.mcp_server.mcp_server_manager import MCPServer
+
+    secret_fields = {
+        "authentication_token": "sk-SENTINEL-authtok",
+        "client_id": "SENTINEL-clientid",
+        "client_secret": "sk-SENTINEL-clientsecret",
+        "aws_access_key_id": "SENTINEL-akid",
+        "aws_secret_access_key": "SENTINEL-awssecret",
+        "aws_session_token": "SENTINEL-awssess",
+        "client_private_key": "SENTINEL-privkey",
+        "client_private_key_id": "SENTINEL-privkeyid",
+    }
+    server = MCPServer(
+        server_id="srv1",
+        name="srv1",
+        transport="http",
+        auth_type=MCPAuth.bearer_token,
+        env={"UPSTREAM_API_KEY": "SENTINEL-env"},
+        static_headers={"X-Upstream-Auth": "SENTINEL-header"},
+        env_vars=[{"name": "K", "value": "SENTINEL-envvar"}],
+        **secret_fields,
+    )
+
+    all_secrets = list(secret_fields.values()) + ["SENTINEL-env", "SENTINEL-header", "SENTINEL-envvar"]
+    for text in (repr(server), str(server), repr([server]), f"{server}", f"{[server]}"):
+        leaked = [secret for secret in all_secrets if secret in text]
+        assert leaked == [], f"MCPServer rendering leaked credentials {leaked} in {text!r}"
+
+    assert "srv1" in repr(server)
+    assert server.model_dump()["authentication_token"] == "sk-SENTINEL-authtok"
+    assert server.model_dump()["client_secret"] == "sk-SENTINEL-clientsecret"
+
+
+@pytest.mark.asyncio
 async def test_list_tools_filters_by_key_team_permissions():
     """Test that list_tools filters tools based on key/team mcp_tool_permissions"""
     try:
@@ -7015,6 +7130,14 @@ def _mock_mcp_logging_obj() -> MagicMock:
     return logging_obj
 
 
+def _mock_mcp_proxy_logging() -> MagicMock:
+    """ProxyLogging stand-in whose post_mcp_call_hook passes the result through."""
+    proxy_logging_mock = MagicMock()
+    proxy_logging_mock.post_call_failure_hook = AsyncMock()
+    proxy_logging_mock.post_mcp_call_hook = AsyncMock(side_effect=lambda response, **_: response)
+    return proxy_logging_mock
+
+
 def test_extract_mcp_tool_result_error_message():
     from litellm.proxy._experimental.mcp_server.utils import (
         extract_mcp_tool_result_error_message,
@@ -7045,8 +7168,7 @@ async def test_fire_mcp_tool_call_logging_iserror_logs_failure():
     from litellm.proxy._experimental.mcp_server.exceptions import MCPToolResultError
 
     logging_obj = _mock_mcp_logging_obj()
-    proxy_logging_mock = MagicMock()
-    proxy_logging_mock.post_call_failure_hook = AsyncMock()
+    proxy_logging_mock = _mock_mcp_proxy_logging()
     user_auth = UserAPIKeyAuth(api_key="test-key", user_id="test-user")
 
     with patch("litellm.proxy.proxy_server.proxy_logging_obj", proxy_logging_mock):
@@ -7084,8 +7206,7 @@ async def test_fire_mcp_tool_call_logging_success_path_unchanged():
     )
 
     logging_obj = _mock_mcp_logging_obj()
-    proxy_logging_mock = MagicMock()
-    proxy_logging_mock.post_call_failure_hook = AsyncMock()
+    proxy_logging_mock = _mock_mcp_proxy_logging()
     result = _call_tool_result(False, "all good")
 
     with patch("litellm.proxy.proxy_server.proxy_logging_obj", proxy_logging_mock):
@@ -7114,8 +7235,7 @@ async def test_fire_mcp_tool_call_logging_iserror_without_auth_skips_failure_hoo
     )
 
     logging_obj = _mock_mcp_logging_obj()
-    proxy_logging_mock = MagicMock()
-    proxy_logging_mock.post_call_failure_hook = AsyncMock()
+    proxy_logging_mock = _mock_mcp_proxy_logging()
 
     with patch("litellm.proxy.proxy_server.proxy_logging_obj", proxy_logging_mock):
         await _fire_mcp_tool_call_logging(
@@ -7141,8 +7261,7 @@ async def test_fire_mcp_tool_call_logging_strips_credentials_from_failure_hook()
     )
 
     logging_obj = _mock_mcp_logging_obj()
-    proxy_logging_mock = MagicMock()
-    proxy_logging_mock.post_call_failure_hook = AsyncMock()
+    proxy_logging_mock = _mock_mcp_proxy_logging()
     user_auth = UserAPIKeyAuth(api_key="test-key", user_id="test-user")
     request_data = {
         "name": "explode",
@@ -7413,8 +7532,7 @@ async def test_call_mcp_tool_skips_failure_hook_for_upstream_auth_error():
         transport=MCPTransport.http,
         mcp_info={"server_name": "test_server"},
     )
-    proxy_logging_mock = MagicMock()
-    proxy_logging_mock.post_call_failure_hook = AsyncMock()
+    proxy_logging_mock = _mock_mcp_proxy_logging()
     user_auth = UserAPIKeyAuth(api_key="test-key", user_id="test-user")
 
     with (
@@ -7726,3 +7844,83 @@ class TestPreemptive401ModeAware:
             await self._run(delegate, None, has_stored_token=False)
         assert exc.value.status_code == 401
         await self._run(delegate, self.LITELLM_KEY_HEADERS, has_stored_token=False)
+
+
+@pytest.mark.asyncio
+async def test_post_mcp_call_guardrails_return_the_rewritten_result():
+    """The result a post_mcp_call guardrail rewrote must be what the caller sends back."""
+    from litellm.proxy._experimental.mcp_server.server import (
+        _run_post_mcp_call_guardrails,
+    )
+
+    logging_obj = _mock_mcp_logging_obj()
+    raw_result = _call_tool_result(False, "jane@example.com")
+    masked_result = _call_tool_result(False, "<EMAIL_ADDRESS>")
+    proxy_logging_mock = _mock_mcp_proxy_logging()
+    proxy_logging_mock.post_mcp_call_hook = AsyncMock(return_value=masked_result)
+
+    with patch("litellm.proxy.proxy_server.proxy_logging_obj", proxy_logging_mock):
+        returned = await _run_post_mcp_call_guardrails(
+            result=raw_result,
+            litellm_logging_obj=logging_obj,
+            user_api_key_auth=UserAPIKeyAuth(api_key="test-key", user_id="test-user"),
+            request_data={},
+        )
+
+    assert returned is masked_result
+    hook_kwargs = proxy_logging_mock.post_mcp_call_hook.await_args.kwargs
+    assert hook_kwargs["response"] is raw_result
+    assert hook_kwargs["request_data"] is logging_obj.model_call_details
+
+
+@pytest.mark.asyncio
+async def test_post_mcp_call_guardrails_run_without_a_logging_object():
+    """Enforcement must not depend on logging being configured.
+
+    A tool call dispatched without a litellm_logging_obj (tool search, and any
+    caller that omits it) would otherwise skip the guardrail entirely and return
+    the unscanned tool output to the client.
+    """
+    from litellm.proxy._experimental.mcp_server.server import (
+        _run_post_mcp_call_guardrails,
+    )
+
+    raw_result = _call_tool_result(False, "jane@example.com")
+    masked_result = _call_tool_result(False, "<EMAIL_ADDRESS>")
+    proxy_logging_mock = _mock_mcp_proxy_logging()
+    proxy_logging_mock.post_mcp_call_hook = AsyncMock(return_value=masked_result)
+
+    with patch("litellm.proxy.proxy_server.proxy_logging_obj", proxy_logging_mock):
+        returned = await _run_post_mcp_call_guardrails(
+            result=raw_result,
+            litellm_logging_obj=None,
+            user_api_key_auth=UserAPIKeyAuth(api_key="test-key", user_id="test-user"),
+            request_data={"name": "fetch_record"},
+        )
+
+    assert returned is masked_result
+    proxy_logging_mock.post_mcp_call_hook.assert_awaited_once()
+    assert proxy_logging_mock.post_mcp_call_hook.await_args.kwargs["request_data"] == {"name": "fetch_record"}
+
+
+@pytest.mark.asyncio
+async def test_post_mcp_call_guardrails_propagate_a_block():
+    """A post_mcp_call guardrail rejection must propagate instead of returning the result."""
+    from litellm.exceptions import BlockedPiiEntityError
+    from litellm.proxy._experimental.mcp_server.server import (
+        _run_post_mcp_call_guardrails,
+    )
+
+    proxy_logging_mock = _mock_mcp_proxy_logging()
+    proxy_logging_mock.post_mcp_call_hook = AsyncMock(
+        side_effect=BlockedPiiEntityError(entity_type="EMAIL_ADDRESS", guardrail_name="presidio-mcp")
+    )
+
+    with patch("litellm.proxy.proxy_server.proxy_logging_obj", proxy_logging_mock):
+        with pytest.raises(BlockedPiiEntityError):
+            await _run_post_mcp_call_guardrails(
+                result=_call_tool_result(False, "jane@example.com"),
+                litellm_logging_obj=_mock_mcp_logging_obj(),
+                user_api_key_auth=None,
+                request_data={},
+            )
