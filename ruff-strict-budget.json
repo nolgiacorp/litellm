@@ -15,7 +15,7 @@
     "limit": 944
   },
   "ANN204": {
-    "limit": 722
+    "limit": 724
   },
   "ANN205": {
     "limit": 127
@@ -60,7 +60,7 @@
     "limit": 4
   },
   "BLE001": {
-    "limit": 2898
+    "limit": 2899
   },
   "C401": {
     "limit": 11
@@ -93,7 +93,7 @@
     "limit": 33
   },
   "DTZ005": {
-    "limit": 230
+    "limit": 241
   },
   "DTZ006": {
     "limit": 13
@@ -120,10 +120,10 @@
     "limit": 4
   },
   "FURB188": {
-    "limit": 51
+    "limit": 52
   },
   "I001": {
-    "limit": 267
+    "limit": 270
   },
   "LOG015": {
     "limit": 8
@@ -150,7 +150,7 @@
     "limit": 4
   },
   "PIE804": {
-    "limit": 21
+    "limit": 24
   },
   "PIE810": {
     "limit": 44
@@ -159,7 +159,7 @@
     "limit": 31
   },
   "PLC0208": {
-    "limit": 3
+    "limit": 4
   },
   "PLC0414": {
     "limit": 38
@@ -195,7 +195,7 @@
     "limit": 4
   },
   "PLW0602": {
-    "limit": 228
+    "limit": 230
   },
   "PLW0603": {
     "limit": 193
@@ -222,7 +222,7 @@
     "limit": 38
   },
   "RET504": {
-    "limit": 715
+    "limit": 716
   },
   "RUF010": {
     "limit": 874
@@ -237,7 +237,7 @@
     "limit": 41
   },
   "RUF022": {
-    "limit": 83
+    "limit": 85
   },
   "RUF023": {
     "limit": 5
@@ -255,7 +255,7 @@
     "limit": 480
   },
   "S110": {
-    "limit": 234
+    "limit": 236
   },
   "S112": {
     "limit": 24
@@ -267,7 +267,7 @@
     "limit": 324
   },
   "SIM103": {
-    "limit": 127
+    "limit": 129
   },
   "SIM113": {
     "limit": 6
@@ -282,7 +282,7 @@
     "limit": 10
   },
   "SIM118": {
-    "limit": 92
+    "limit": 114
   },
   "SIM201": {
     "limit": 4
@@ -309,7 +309,7 @@
     "limit": 2687
   },
   "TRY002": {
-    "limit": 546
+    "limit": 547
   },
   "TRY004": {
     "limit": 98
