@@ -24,6 +24,9 @@ from litellm.types.videos.utils import (
 SORA_2_MODEL = "fal_ai/fal-ai/sora-2/text-to-video"
 KLING_MODEL = "fal_ai/fal-ai/kling-video/v2.5-turbo/pro/text-to-video"
 KLING_MODEL_ID = "fal-ai/kling-video/v2.5-turbo/pro/text-to-video"
+KLING_I2V_MODEL = "fal_ai/fal-ai/kling-video/v3/pro/image-to-video"
+SEEDANCE_R2V_MODEL = "fal_ai/fal-ai/bytedance/seedance-2.0/reference-to-video"
+SEEDANCE_I2V_MODEL = "fal_ai/fal-ai/bytedance/seedance-2.0/image-to-video"
 KLING_QUEUE_NAMESPACE = "fal-ai/kling-video"
 FAL_API_BASE = "https://queue.fal.run"
 FAL_CONTENT_POLICY_BODY = (
@@ -183,6 +186,33 @@ class TestFalAIVideoTransformation:
         )
         assert params["duration"] == "5"
         assert params["aspect_ratio"] == "16:9"
+
+    def test_map_openai_params_sends_seedance_r2v_reference_as_a_list(self):
+        params = self.config.map_openai_params(
+            video_create_optional_params={"input_reference": "https://example.com/a.jpg"},
+            model=SEEDANCE_R2V_MODEL,
+            drop_params=False,
+        )
+        assert params["image_urls"] == ["https://example.com/a.jpg"]
+        assert "image_url" not in params
+
+    def test_map_openai_params_sends_seedance_i2v_reference_as_a_single_url(self):
+        params = self.config.map_openai_params(
+            video_create_optional_params={"input_reference": "https://example.com/a.jpg"},
+            model=SEEDANCE_I2V_MODEL,
+            drop_params=False,
+        )
+        assert params["image_url"] == "https://example.com/a.jpg"
+        assert "image_urls" not in params
+
+    def test_map_openai_params_sends_kling_reference_as_start_image_url(self):
+        params = self.config.map_openai_params(
+            video_create_optional_params={"input_reference": "https://example.com/a.jpg"},
+            model=KLING_I2V_MODEL,
+            drop_params=False,
+        )
+        assert params["start_image_url"] == "https://example.com/a.jpg"
+        assert "image_url" not in params
 
     def test_map_openai_params_falls_back_to_colon_replacement(self):
         params = self.config.map_openai_params(
