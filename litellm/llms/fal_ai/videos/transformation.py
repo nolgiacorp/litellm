@@ -54,6 +54,8 @@ _SIZE_TO_ASPECT_RATIO = {
 
 _MISSING_VIDEO_URL_MESSAGE = "Video URL not found in fal.ai response. The job may still be processing."
 _UNREADABLE_RESULT_MESSAGE = "fal.ai returned an unreadable video result payload"
+_FAL_ERROR_KEYS = ("detail", "error")
+_MAX_ERROR_UNWRAP_DEPTH = 5
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,26 +97,41 @@ def _fal_error_field(loc: object) -> str | None:
     return segments[-1] if segments else None
 
 
-def _fal_failure_reason(payload: object) -> str | None:
-    if isinstance(payload, str):
-        return payload.strip() or None
-    if isinstance(payload, Sequence) and not isinstance(payload, (str, bytes)):
-        reasons = tuple(reason for reason in (_fal_failure_reason(item) for item in payload) if reason)
-        return "; ".join(reasons) or None
-    if not isinstance(payload, dict):
+def _entry_reason(entry: object) -> str | None:
+    if isinstance(entry, str):
+        return entry.strip() or None
+    if not isinstance(entry, Mapping):
         return None
 
-    message = payload.get("msg") or payload.get("message")
-    if isinstance(message, str) and message.strip():
-        field = _fal_error_field(payload.get("loc"))
-        return f"{message.strip()} (field: {field})" if field else message.strip()
+    message = entry.get("msg") or entry.get("message")
+    if not isinstance(message, str) or not message.strip():
+        return None
 
-    nested = tuple(
-        reason
-        for reason in (_fal_failure_reason(payload[key]) for key in ("detail", "error") if key in payload)
-        if reason
-    )
-    return nested[0] if nested else None
+    field = _fal_error_field(entry.get("loc"))
+    return f"{message.strip()} (field: {field})" if field else message.strip()
+
+
+def _unwrap_error_container(payload: object) -> object:
+    container = payload
+    for _ in range(_MAX_ERROR_UNWRAP_DEPTH):
+        if not isinstance(container, Mapping) or _entry_reason(container) is not None:
+            return container
+        nested = next(
+            (container[key] for key in _FAL_ERROR_KEYS if container.get(key) is not None),
+            None,
+        )
+        if nested is None:
+            return None
+        container = nested
+    return None
+
+
+def _fal_failure_reason(payload: object) -> str | None:
+    container = _unwrap_error_container(payload)
+    if isinstance(container, Sequence) and not isinstance(container, (str, bytes)):
+        reasons = tuple(reason for reason in (_entry_reason(item) for item in container) if reason)
+        return "; ".join(reasons) or None
+    return _entry_reason(container)
 
 
 def _video_url_from_payload(payload: Mapping[str, object]) -> str | None:
