@@ -11,6 +11,7 @@ from litellm.types.videos.main import VideoCreateOptionalRequestParams
 
 if TYPE_CHECKING:
     from litellm.litellm_core_utils.litellm_logging import Logging as _LiteLLMLoggingObj
+    from litellm.llms.custom_httpx.http_handler import AsyncHTTPHandler, HTTPHandler
     from litellm.types.videos.main import CharacterObject as _CharacterObject
     from litellm.types.videos.main import VideoObject as _VideoObject
 
@@ -287,6 +288,16 @@ class BaseVideoConfig(ABC):
             logging_obj=logging_obj,
             custom_llm_provider=custom_llm_provider,
         )
+
+    def set_status_lookup_client(self, client: "HTTPHandler | AsyncHTTPHandler") -> None:
+        """
+        Adopt the HTTP client the handler selected for the status request.
+
+        No-op by default. Providers whose status transform issues a further lookup
+        (e.g. fal.ai resolving a queue-completed request against its result payload)
+        override this so the follow-up request inherits the caller's client, mock,
+        transport and ssl_verify settings instead of a fresh default client.
+        """
 
     def transform_video_create_character_request(
         self,

@@ -6,6 +6,8 @@ import pytest
 import litellm
 from litellm.litellm_core_utils.exception_mapping_utils import exception_type
 from litellm.llms.base_llm.chat.transformation import BaseLLMException
+from litellm.llms.custom_httpx.http_handler import AsyncHTTPHandler, HTTPHandler
+from litellm.llms.custom_httpx.llm_http_handler import BaseLLMHTTPHandler
 from litellm.llms.fal_ai.videos.transformation import (
     FalAIVideoConfig,
     _classify_result_payload,
@@ -699,6 +701,88 @@ class TestFalAIVideoTransformation:
             custom_llm_provider="fal_ai",
         )
         assert completed_obj.status == "completed"
+
+
+class _RecordingHTTPHandler(HTTPHandler):
+    """A real HTTPHandler so the shared video handler accepts it as the caller's client."""
+
+    def __init__(self, responses):
+        super().__init__()
+        self._responses = responses
+        self.calls = []
+
+    def get(self, url, params=None, headers=None, **kwargs):
+        self.calls.append(url)
+        return self._responses[url]
+
+
+class _RecordingAsyncHTTPHandler(AsyncHTTPHandler):
+    def __init__(self, responses):
+        super().__init__()
+        self._responses = responses
+        self.calls = []
+
+    async def get(self, url, params=None, headers=None, **kwargs):
+        self.calls.append(url)
+        return self._responses[url]
+
+
+def _handler_poll_responses(result_payload, result_status_code=200):
+    status_url = f"{FAL_API_BASE}/{KLING_QUEUE_NAMESPACE}/requests/abc-123/status"
+    result_url = f"{FAL_API_BASE}/{KLING_QUEUE_NAMESPACE}/requests/abc-123"
+    responses = {
+        status_url: httpx.Response(
+            200, json=FAL_QUEUE_COMPLETED_STATUS, request=httpx.Request("GET", status_url)
+        ),
+        result_url: httpx.Response(
+            result_status_code, json=result_payload, request=httpx.Request("GET", result_url)
+        ),
+    }
+    return status_url, result_url, responses
+
+
+def test_video_status_handler_resolves_result_through_the_callers_client():
+    # A caller-supplied client (or one built from ssl_verify) must carry the follow-up
+    # result lookup too, or half the poll escapes its transport and CA settings.
+    status_url, result_url, responses = _handler_poll_responses(
+        FAL_FILE_DOWNLOAD_ERROR_RESULT, result_status_code=422
+    )
+    caller_client = _RecordingHTTPHandler(responses)
+
+    video_obj = BaseLLMHTTPHandler().video_status_handler(
+        video_id=encode_video_id_with_provider("abc-123", "fal_ai", KLING_MODEL_ID),
+        video_status_provider_config=FalAIVideoConfig(),
+        custom_llm_provider="fal_ai",
+        litellm_params=GenericLiteLLMParams(api_base=FAL_API_BASE),
+        logging_obj=Mock(),
+        client=caller_client,
+        api_key="test-key",
+    )
+
+    assert caller_client.calls == [status_url, result_url]
+    assert video_obj.status == "failed"
+    assert "Failed to download the file" in video_obj.error["message"]
+
+
+@pytest.mark.asyncio
+async def test_async_video_status_handler_resolves_result_through_the_callers_client():
+    status_url, result_url, responses = _handler_poll_responses(
+        {"video": {"url": "https://cdn.example.com/v.mp4"}}
+    )
+    caller_client = _RecordingAsyncHTTPHandler(responses)
+
+    video_obj = await BaseLLMHTTPHandler().async_video_status_handler(
+        video_id=encode_video_id_with_provider("abc-123", "fal_ai", KLING_MODEL_ID),
+        video_status_provider_config=FalAIVideoConfig(),
+        custom_llm_provider="fal_ai",
+        litellm_params=GenericLiteLLMParams(api_base=FAL_API_BASE),
+        logging_obj=Mock(),
+        client=caller_client,
+        api_key="test-key",
+    )
+
+    assert caller_client.calls == [status_url, result_url]
+    assert video_obj.status == "completed"
 
 
 def test_provider_config_manager_returns_fal_ai_video_config():

@@ -8249,6 +8249,9 @@ class BaseLLMHTTPHandler:
         else:
             sync_httpx_client = client
 
+        # Providers whose status transform issues a follow-up lookup reuse this client.
+        video_status_provider_config.set_status_lookup_client(sync_httpx_client)
+
         headers = video_status_provider_config.validate_environment(
             api_key=api_key,
             headers=extra_headers or {},
@@ -8340,6 +8343,9 @@ class BaseLLMHTTPHandler:
             )
         else:
             async_httpx_client = client
+
+        # Providers whose status transform issues a follow-up lookup reuse this client.
+        video_status_provider_config.set_status_lookup_client(async_httpx_client)
 
         headers = video_status_provider_config.validate_environment(
             api_key=api_key,

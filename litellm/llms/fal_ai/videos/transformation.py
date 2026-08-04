@@ -208,6 +208,14 @@ class FalAIVideoConfig(BaseVideoConfig):
         self._sync_client = sync_client
         self._async_client = async_client
 
+    def set_status_lookup_client(self, client: HTTPHandler | AsyncHTTPHandler) -> None:
+        # The result lookup must ride the same client as the status request, or a
+        # caller's mock, proxy or private-CA settings apply to only half the poll.
+        if isinstance(client, AsyncHTTPHandler):
+            self._async_client = client
+        elif isinstance(client, HTTPHandler):
+            self._sync_client = client
+
     def _http_client(self) -> HTTPHandler:
         return self._sync_client or _get_httpx_client()
 
