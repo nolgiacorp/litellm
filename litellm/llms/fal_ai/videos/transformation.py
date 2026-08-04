@@ -52,6 +52,26 @@ _SIZE_TO_ASPECT_RATIO = {
     "1280x1280": "1:1",
 }
 
+
+@dataclass(frozen=True, slots=True)
+class _ReferenceField:
+    name: str
+    is_list: bool
+
+
+_SINGLE_IMAGE_URL = _ReferenceField(name="image_url", is_list=False)
+
+# fal apps disagree on the reference field, and an app silently ignores a field it
+# does not declare rather than rejecting it. Seedance reference-to-video takes
+# `image_urls` as an array (max 9); its image-to-video sibling takes a single
+# `image_url`; Kling v3 image-to-video takes `start_image_url`. Sending the wrong
+# name produces a reference-free generation with no error, so each entry is
+# verified against that app's published input schema.
+_REFERENCE_FIELD_BY_MODEL_MARKER: tuple[tuple[str, _ReferenceField], ...] = (
+    ("kling-video/v3", _ReferenceField(name="start_image_url", is_list=False)),
+    ("seedance-2.0/reference-to-video", _ReferenceField(name="image_urls", is_list=True)),
+)
+
 _MISSING_VIDEO_URL_MESSAGE = "Video URL not found in fal.ai response. The job may still be processing."
 _UNREADABLE_RESULT_MESSAGE = "fal.ai returned an unreadable video result payload"
 _FAL_ERROR_KEYS = ("detail", "error")
@@ -235,12 +255,12 @@ class FalAIVideoConfig(BaseVideoConfig):
         ]
 
     @staticmethod
-    def _image_url_field_for_model(model: str) -> str:
-        # Kling v3 image-to-video requires `start_image_url`; Seedance uses `image_url`.
+    def _reference_field_for_model(model: str) -> _ReferenceField:
         normalized = model.lower()
-        if "kling-video/v3" in normalized:
-            return "start_image_url"
-        return "image_url"
+        for marker, field in _REFERENCE_FIELD_BY_MODEL_MARKER:
+            if marker in normalized:
+                return field
+        return _SINGLE_IMAGE_URL
 
     def map_openai_params(
         self,
@@ -264,7 +284,8 @@ class FalAIVideoConfig(BaseVideoConfig):
 
         input_reference = video_create_optional_params.get("input_reference")
         if isinstance(input_reference, str) and input_reference:
-            mapped[self._image_url_field_for_model(model)] = input_reference
+            field = self._reference_field_for_model(model)
+            mapped[field.name] = [input_reference] if field.is_list else input_reference
 
         supported = self.get_supported_openai_params(model)
         for key, value in video_create_optional_params.items():
