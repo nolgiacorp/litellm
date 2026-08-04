@@ -460,6 +460,82 @@ class TestFalAIVideoTransformation:
         assert "loc" not in message
         assert "docs.fal.ai" not in message
 
+    @pytest.mark.parametrize("transient_status", [429, 500, 502, 503])
+    def test_transient_result_lookup_failure_is_not_reported_as_generation_failure(
+        self, transient_status
+    ):
+        result_client = _RecordingClient(
+            _fal_result_response({"detail": "upstream unavailable"}, status_code=transient_status)
+        )
+        config = FalAIVideoConfig(sync_client=result_client)
+
+        with pytest.raises(Exception) as exc_info:
+            config.transform_video_status_retrieve_response(
+                raw_response=_fal_status_response(FAL_QUEUE_COMPLETED_STATUS),
+                logging_obj=self.mock_logging_obj,
+                custom_llm_provider="fal_ai",
+            )
+
+        assert not isinstance(exc_info.value, litellm.BadRequestError)
+        assert exc_info.value.status_code == transient_status
+
+    def test_rate_limited_result_lookup_stays_retryable(self):
+        result_client = _RecordingClient(
+            _fal_result_response({"detail": "slow down"}, status_code=429)
+        )
+        config = FalAIVideoConfig(sync_client=result_client)
+
+        with pytest.raises(litellm.RateLimitError) as exc_info:
+            config.transform_video_status_retrieve_response(
+                raw_response=_fal_status_response(FAL_QUEUE_COMPLETED_STATUS),
+                logging_obj=self.mock_logging_obj,
+                custom_llm_provider="fal_ai",
+            )
+
+        assert exc_info.value.status_code == 429
+        assert litellm._should_retry(429) is True
+
+    @pytest.mark.parametrize(
+        "status_code,expected,expected_status,retryable",
+        [
+            (401, litellm.AuthenticationError, 401, False),
+            (403, litellm.PermissionDeniedError, 403, False),
+            (429, litellm.RateLimitError, 429, True),
+            (408, BaseLLMException, 408, True),
+            (422, litellm.BadRequestError, 400, False),
+        ],
+    )
+    def test_get_error_class_preserves_status_categories(
+        self, status_code, expected, expected_status, retryable
+    ):
+        with pytest.raises(expected) as exc_info:
+            self.config.get_error_class(
+                error_message="upstream said no",
+                status_code=status_code,
+                headers=httpx.Headers(),
+            )
+
+        assert exc_info.value.status_code == expected_status
+        assert litellm._should_retry(exc_info.value.status_code) is retryable
+
+    def test_unreadable_result_body_does_not_claim_generation_failed(self):
+        request = httpx.Request(
+            "GET", f"{FAL_API_BASE}/{KLING_MODEL_ID}/requests/abc-123"
+        )
+        result_client = _RecordingClient(
+            httpx.Response(200, content=b"<html>gateway</html>", request=request)
+        )
+        config = FalAIVideoConfig(sync_client=result_client)
+
+        with pytest.raises(BaseLLMException) as exc_info:
+            config.transform_video_status_retrieve_response(
+                raw_response=_fal_status_response(FAL_QUEUE_COMPLETED_STATUS),
+                logging_obj=self.mock_logging_obj,
+                custom_llm_provider="fal_ai",
+            )
+
+        assert exc_info.value.status_code == 502
+
     def test_transform_video_status_response_tolerates_non_json_body(self):
         mock_response = Mock(spec=httpx.Response)
         mock_response.json.side_effect = ValueError(

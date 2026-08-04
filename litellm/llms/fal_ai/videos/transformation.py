@@ -56,6 +56,8 @@ _MISSING_VIDEO_URL_MESSAGE = "Video URL not found in fal.ai response. The job ma
 _UNREADABLE_RESULT_MESSAGE = "fal.ai returned an unreadable video result payload"
 _FAL_ERROR_KEYS = ("detail", "error")
 _MAX_ERROR_UNWRAP_DEPTH = 5
+_RETRYABLE_CLIENT_STATUS_CODES = frozenset((408, 425))
+_RESULT_VERDICT_STATUS_CODES = frozenset((200, 422))
 
 
 @dataclass(frozen=True, slots=True)
@@ -439,12 +441,22 @@ class FalAIVideoConfig(BaseVideoConfig):
             return None
         return cls._result_url_from_status_request(raw_response)
 
-    @staticmethod
-    def _classify_result_response(result_response: httpx.Response) -> _GenerationOutcome:
+    def _classify_result_response(self, result_response: httpx.Response) -> _GenerationOutcome:
+        if result_response.status_code not in _RESULT_VERDICT_STATUS_CODES:
+            raise self.get_error_class(
+                error_message=result_response.text,
+                status_code=result_response.status_code,
+                headers=result_response.headers,
+            )
         try:
-            return _classify_result_payload(result_response.json())
+            payload = result_response.json()
         except (ValueError, JSONDecodeError):
-            return _GenerationFailed(_UNREADABLE_RESULT_MESSAGE)
+            raise self.get_error_class(
+                error_message=_UNREADABLE_RESULT_MESSAGE,
+                status_code=502,
+                headers=result_response.headers,
+            )
+        return _classify_result_payload(payload)
 
     def _video_object_for_state(
         self,
@@ -667,13 +679,21 @@ class FalAIVideoConfig(BaseVideoConfig):
                 llm_provider=litellm.LlmProviders.FAL_AI.value,
             )
         customer_message = self._customer_facing_error_message(error_message)
+        provider = litellm.LlmProviders.FAL_AI.value
 
-        if 400 <= status_code < 500:
-            raise litellm.BadRequestError(
+        if status_code == 401:
+            raise litellm.AuthenticationError(message=customer_message, model="", llm_provider=provider)
+        if status_code == 403:
+            raise litellm.PermissionDeniedError(
                 message=customer_message,
                 model="",
-                llm_provider=litellm.LlmProviders.FAL_AI.value,
+                llm_provider=provider,
+                response=httpx.Response(status_code, request=httpx.Request("GET", FAL_AI_DEFAULT_API_BASE)),
             )
+        if status_code == 429:
+            raise litellm.RateLimitError(message=customer_message, model="", llm_provider=provider)
+        if 400 <= status_code < 500 and status_code not in _RETRYABLE_CLIENT_STATUS_CODES:
+            raise litellm.BadRequestError(message=customer_message, model="", llm_provider=provider)
 
         raise BaseLLMException(
             status_code=status_code,
