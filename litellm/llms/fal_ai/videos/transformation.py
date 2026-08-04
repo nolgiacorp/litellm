@@ -554,17 +554,6 @@ class FalAIVideoConfig(BaseVideoConfig):
                 assert_never(outcome)
 
     @staticmethod
-    def _extract_video_url(response_data: dict[str, Any]) -> str:
-        outcome = _classify_result_payload(response_data)
-        match outcome:
-            case _GeneratedVideo(url):
-                return url
-            case _GenerationFailed(message):
-                raise ValueError(message)
-            case _:
-                assert_never(outcome)
-
-    @staticmethod
     def _queue_request_namespace(model_id: str) -> str:
         # Queue submits accept full model subpaths (fal-ai/kling-video/v3/pro/
         # image-to-video), but request status/result routes only exist under the

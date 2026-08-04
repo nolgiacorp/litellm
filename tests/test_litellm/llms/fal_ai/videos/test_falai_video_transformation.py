@@ -6,7 +6,12 @@ import pytest
 import litellm
 from litellm.litellm_core_utils.exception_mapping_utils import exception_type
 from litellm.llms.base_llm.chat.transformation import BaseLLMException
-from litellm.llms.fal_ai.videos.transformation import FalAIVideoConfig
+from litellm.llms.fal_ai.videos.transformation import (
+    FalAIVideoConfig,
+    _classify_result_payload,
+    _GeneratedVideo,
+    _GenerationFailed,
+)
 from litellm.types.router import GenericLiteLLMParams
 from litellm.types.videos.main import VideoObject
 from litellm.types.videos.utils import (
@@ -494,19 +499,26 @@ class TestFalAIVideoTransformation:
         )
         assert params == {}
 
-    def test_extract_video_url_handles_video_object(self):
-        url = self.config._extract_video_url(
+    def test_classify_result_handles_video_object(self):
+        outcome = _classify_result_payload(
             {"video": {"url": "https://cdn.example.com/v.mp4"}}
         )
-        assert url == "https://cdn.example.com/v.mp4"
+        assert outcome == _GeneratedVideo("https://cdn.example.com/v.mp4")
 
-    def test_extract_video_url_handles_top_level_url(self):
-        url = self.config._extract_video_url({"url": "https://cdn.example.com/v.mp4"})
-        assert url == "https://cdn.example.com/v.mp4"
+    def test_classify_result_handles_top_level_url(self):
+        outcome = _classify_result_payload({"url": "https://cdn.example.com/v.mp4"})
+        assert outcome == _GeneratedVideo("https://cdn.example.com/v.mp4")
 
-    def test_extract_video_url_raises_when_missing(self):
-        with pytest.raises(ValueError, match="Video URL not found"):
-            self.config._extract_video_url({"status": "IN_PROGRESS"})
+    def test_classify_result_fails_when_url_missing(self):
+        outcome = _classify_result_payload({"status": "IN_PROGRESS"})
+        assert isinstance(outcome, _GenerationFailed)
+        assert "Video URL not found" in outcome.message
+
+    def test_classify_result_fails_on_fal_error_envelope(self):
+        outcome = _classify_result_payload(FAL_FILE_DOWNLOAD_ERROR_RESULT)
+        assert outcome == _GenerationFailed(
+            "Failed to download the file. Please check if the URL is accessible and try again. (field: image_urls)"
+        )
 
     def test_status_request_requires_model_id_in_video_id(self):
         plain_id = encode_video_id_with_provider("abc-123", "fal_ai", None)
