@@ -25,6 +25,8 @@ SORA_2_MODEL = "fal_ai/fal-ai/sora-2/text-to-video"
 KLING_MODEL = "fal_ai/fal-ai/kling-video/v2.5-turbo/pro/text-to-video"
 KLING_MODEL_ID = "fal-ai/kling-video/v2.5-turbo/pro/text-to-video"
 KLING_I2V_MODEL = "fal_ai/fal-ai/kling-video/v3/pro/image-to-video"
+KLING_V3_T2V_MODEL = "fal_ai/fal-ai/kling-video/v3/standard/text-to-video"
+KLING_V3_T2V_MODEL_ID = "fal-ai/kling-video/v3/standard/text-to-video"
 SEEDANCE_R2V_MODEL = "fal_ai/fal-ai/bytedance/seedance-2.0/reference-to-video"
 SEEDANCE_I2V_MODEL = "fal_ai/fal-ai/bytedance/seedance-2.0/image-to-video"
 KLING_QUEUE_NAMESPACE = "fal-ai/kling-video"
@@ -253,6 +255,64 @@ class TestFalAIVideoTransformation:
         assert data["aspect_ratio"] == "16:9"
         assert "model" not in data
         assert files == []
+
+    def test_map_openai_params_forwards_generate_audio_flag_for_kling_v3(self):
+        enabled = self.config.map_openai_params(
+            video_create_optional_params={"generate_audio": True},
+            model=KLING_V3_T2V_MODEL,
+            drop_params=False,
+        )
+        disabled = self.config.map_openai_params(
+            video_create_optional_params={"generate_audio": False},
+            model=KLING_V3_T2V_MODEL,
+            drop_params=False,
+        )
+        assert enabled["generate_audio"] is True
+        assert disabled["generate_audio"] is False
+
+    def test_transform_video_create_request_carries_generate_audio_into_fal_body(self):
+        data, _, url = self.config.transform_video_create_request(
+            model=KLING_V3_T2V_MODEL,
+            prompt="a talking head that speaks",
+            api_base=FAL_API_BASE,
+            video_create_optional_request_params={"generate_audio": True, "duration": "5"},
+            litellm_params=GenericLiteLLMParams(),
+            headers={},
+        )
+        assert url == f"{FAL_API_BASE}/{KLING_V3_T2V_MODEL_ID}"
+        assert data["generate_audio"] is True
+
+    def test_transform_video_content_response_preserves_native_audio_bytes(self):
+        cdn_url = "https://cdn.fal.run/kling-v3-with-audio.mp4"
+        clip_bytes = b"\x00\x00\x00\x18ftypmp42AUDIO-AAC-TRACK-\xde\xad\xbe\xef"
+        download_client = _RecordingClient(
+            httpx.Response(200, content=clip_bytes, request=httpx.Request("GET", cdn_url))
+        )
+        config = FalAIVideoConfig(sync_client=download_client)
+
+        out = config.transform_video_content_response(
+            raw_response=_fal_result_response({"video": {"url": cdn_url}}),
+            logging_obj=self.mock_logging_obj,
+        )
+
+        assert out == clip_bytes
+        assert download_client.calls == [(cdn_url, None)]
+
+    async def test_async_transform_video_content_response_preserves_native_audio_bytes(self):
+        cdn_url = "https://cdn.fal.run/kling-v3-with-audio.mp4"
+        clip_bytes = b"\x00\x00\x00\x18ftypmp42AUDIO-AAC-TRACK-\xde\xad\xbe\xef"
+        download_client = _RecordingAsyncClient(
+            httpx.Response(200, content=clip_bytes, request=httpx.Request("GET", cdn_url))
+        )
+        config = FalAIVideoConfig(async_client=download_client)
+
+        out = await config.async_transform_video_content_response(
+            raw_response=_fal_result_response({"video": {"url": cdn_url}}),
+            logging_obj=self.mock_logging_obj,
+        )
+
+        assert out == clip_bytes
+        assert download_client.calls == [(cdn_url, None)]
 
     def test_transform_video_create_response_encodes_model_into_video_id(self):
         mock_response = Mock(spec=httpx.Response)
