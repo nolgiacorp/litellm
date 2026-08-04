@@ -1,5 +1,7 @@
-from json import JSONDecodeError
-from typing import TYPE_CHECKING, Any
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from json import JSONDecodeError, loads
+from typing import TYPE_CHECKING, Any, Literal, assert_never
 
 import httpx
 from httpx._types import RequestFiles
@@ -50,13 +52,175 @@ _SIZE_TO_ASPECT_RATIO = {
     "1280x1280": "1:1",
 }
 
+_MISSING_VIDEO_URL_MESSAGE = "Video URL not found in fal.ai response. The job may still be processing."
+_UNREADABLE_RESULT_MESSAGE = "fal.ai returned an unreadable video result payload"
+_FAL_ERROR_KEYS = ("detail", "error")
+_MAX_ERROR_UNWRAP_DEPTH = 5
+_RETRYABLE_CLIENT_STATUS_CODES = frozenset((408, 425))
+_RESULT_VERDICT_STATUS_CODES = frozenset((200, 422))
+
+
+@dataclass(frozen=True, slots=True)
+class _QueuePending:
+    status: Literal["queued", "in_progress"]
+    queue_position: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class _QueueSettled:
+    pass
+
+
+@dataclass(frozen=True, slots=True)
+class _QueueRejected:
+    message: str
+
+
+_QueueState = _QueuePending | _QueueSettled | _QueueRejected
+
+
+@dataclass(frozen=True, slots=True)
+class _GeneratedVideo:
+    url: str
+
+
+@dataclass(frozen=True, slots=True)
+class _GenerationFailed:
+    message: str
+
+
+_GenerationOutcome = _GeneratedVideo | _GenerationFailed
+
+
+def _fal_error_field(loc: object) -> str | None:
+    if not isinstance(loc, Sequence) or isinstance(loc, (str, bytes)):
+        return None
+    segments = tuple(segment for segment in loc if isinstance(segment, str) and segment != "body")
+    return segments[-1] if segments else None
+
+
+def _entry_reason(entry: object) -> str | None:
+    if isinstance(entry, str):
+        return entry.strip() or None
+    if not isinstance(entry, Mapping):
+        return None
+
+    message = entry.get("msg") or entry.get("message")
+    if not isinstance(message, str) or not message.strip():
+        return None
+
+    field = _fal_error_field(entry.get("loc"))
+    return f"{message.strip()} (field: {field})" if field else message.strip()
+
+
+def _unwrap_error_container(payload: object) -> object:
+    container = payload
+    for _ in range(_MAX_ERROR_UNWRAP_DEPTH):
+        if not isinstance(container, Mapping) or _entry_reason(container) is not None:
+            return container
+        nested = next(
+            (container[key] for key in _FAL_ERROR_KEYS if container.get(key) is not None),
+            None,
+        )
+        if nested is None:
+            return None
+        container = nested
+    return None
+
+
+def _fal_failure_reason(payload: object) -> str | None:
+    container = _unwrap_error_container(payload)
+    if isinstance(container, Sequence) and not isinstance(container, (str, bytes)):
+        reasons = tuple(reason for reason in (_entry_reason(item) for item in container) if reason)
+        return "; ".join(reasons) or None
+    return _entry_reason(container)
+
+
+def _video_url_from_payload(payload: Mapping[str, object]) -> str | None:
+    video = payload.get("video")
+    if isinstance(video, dict):
+        url = video.get("url")
+        if isinstance(url, str) and url:
+            return url
+
+    top_level = payload.get("url")
+    return top_level if isinstance(top_level, str) and top_level else None
+
+
+def _classify_result_payload(payload: object) -> _GenerationOutcome:
+    if not isinstance(payload, dict):
+        return _GenerationFailed(_UNREADABLE_RESULT_MESSAGE)
+
+    failure = _fal_failure_reason(payload)
+    if failure is not None:
+        return _GenerationFailed(failure)
+
+    url = _video_url_from_payload(payload)
+    if url is None:
+        return _GenerationFailed(_MISSING_VIDEO_URL_MESSAGE)
+    return _GeneratedVideo(url)
+
+
+def _request_id_from(payload: Mapping[str, object] | None) -> str:
+    if payload is None:
+        return ""
+    request_id = payload.get("request_id")
+    return request_id if isinstance(request_id, str) else ""
+
+
+def _parse_queue_state(payload: Mapping[str, object]) -> _QueueState:
+    rejection = _fal_failure_reason(payload)
+    if rejection is not None:
+        return _QueueRejected(rejection)
+
+    status_raw = payload.get("status")
+    normalized = status_raw.upper() if isinstance(status_raw, str) else "IN_QUEUE"
+    queue_position = payload.get("queue_position")
+    position = queue_position if isinstance(queue_position, int) else None
+
+    if normalized in ("FAILED", "CANCELLED"):
+        return _QueueRejected(f"fal.ai queue reported {normalized.lower()}")
+    if normalized == "COMPLETED":
+        return _QueueSettled()
+    if normalized == "IN_PROGRESS":
+        return _QueuePending("in_progress", position)
+    return _QueuePending("queued", position)
+
 
 class FalAIVideoConfig(BaseVideoConfig):
     """
     fal.ai uses a queue API: POST to /{model_id}, then poll
     /{model_id}/requests/{id}/status and GET /{model_id}/requests/{id} for the
     result. Video models return {"video": {"url": ...}}.
+
+    A queue status of COMPLETED only means the queue request finished; a run that
+    errored also reports COMPLETED, and the failure is visible only in the result
+    payload. Terminal status therefore resolves against the result payload before
+    reporting success.
     """
+
+    def __init__(
+        self,
+        sync_client: HTTPHandler | None = None,
+        async_client: AsyncHTTPHandler | None = None,
+    ) -> None:
+        super().__init__()
+        self._sync_client = sync_client
+        self._async_client = async_client
+
+    def set_status_lookup_client(self, client: HTTPHandler | AsyncHTTPHandler) -> None:
+        # The result lookup must ride the same client as the status request, or a
+        # caller's mock, proxy or private-CA settings apply to only half the poll.
+        if isinstance(client, AsyncHTTPHandler):
+            self._async_client = client
+        elif isinstance(client, HTTPHandler):
+            self._sync_client = client
+
+    def _http_client(self) -> HTTPHandler:
+        return self._sync_client or _get_httpx_client()
+
+    def _async_http_client(self) -> AsyncHTTPHandler:
+        return self._async_client or get_async_httpx_client(llm_provider=litellm.LlmProviders.FAL_AI)
 
     def get_supported_openai_params(self, model: str) -> list:
         return [
@@ -227,40 +391,153 @@ class FalAIVideoConfig(BaseVideoConfig):
         logging_obj: LiteLLMLoggingObj,
         custom_llm_provider: str | None = None,
     ) -> VideoObject:
+        payload = self._status_payload(raw_response)
+        state = _parse_queue_state(payload) if payload is not None else _QueuePending("in_progress", None)
+        request_id = _request_id_from(payload)
+
+        result_url = self._settled_result_url(state, raw_response)
+        if result_url is None:
+            return self._video_object_for_state(state, request_id, raw_response, custom_llm_provider)
+
+        result_response = self._http_client().get(
+            url=result_url,
+            headers=self._forwarded_auth_headers(raw_response),
+        )
+        return self._video_object_for_outcome(
+            self._classify_result_response(result_response),
+            request_id,
+            raw_response,
+            custom_llm_provider,
+        )
+
+    async def async_transform_video_status_retrieve_response(
+        self,
+        raw_response: httpx.Response,
+        logging_obj: LiteLLMLoggingObj,
+        custom_llm_provider: str | None = None,
+    ) -> VideoObject:
+        payload = self._status_payload(raw_response)
+        state = _parse_queue_state(payload) if payload is not None else _QueuePending("in_progress", None)
+        request_id = _request_id_from(payload)
+
+        result_url = self._settled_result_url(state, raw_response)
+        if result_url is None:
+            return self._video_object_for_state(state, request_id, raw_response, custom_llm_provider)
+
+        result_response = await self._async_http_client().get(
+            url=result_url,
+            headers=self._forwarded_auth_headers(raw_response),
+        )
+        return self._video_object_for_outcome(
+            self._classify_result_response(result_response),
+            request_id,
+            raw_response,
+            custom_llm_provider,
+        )
+
+    def _status_payload(self, raw_response: httpx.Response) -> Mapping[str, object] | None:
         self._raise_for_status(raw_response)
         try:
-            response_data = raw_response.json()
+            payload = raw_response.json()
         except (ValueError, JSONDecodeError):
-            return VideoObject(id="", object="video", status="in_progress")
-        status_raw = response_data.get("status", "IN_QUEUE")
-        error_payload = response_data.get("error")
+            return None
+        return payload if isinstance(payload, Mapping) else None
 
-        status = _FAL_AI_STATUS_MAP.get(status_raw.upper(), "queued")
-        if error_payload:
-            status = "failed"
+    @classmethod
+    def _settled_result_url(cls, state: _QueueState, raw_response: httpx.Response) -> str | None:
+        if not isinstance(state, _QueueSettled):
+            return None
+        return cls._result_url_from_status_request(raw_response)
 
-        video_data: dict[str, Any] = {
-            "id": response_data.get("request_id", ""),
-            "object": "video",
-            "status": status,
-        }
+    def _classify_result_response(self, result_response: httpx.Response) -> _GenerationOutcome:
+        if result_response.status_code not in _RESULT_VERDICT_STATUS_CODES:
+            raise self.get_error_class(
+                error_message=result_response.text,
+                status_code=result_response.status_code,
+                headers=result_response.headers,
+            )
+        try:
+            payload = result_response.json()
+        except (ValueError, JSONDecodeError):
+            raise self.get_error_class(
+                error_message=_UNREADABLE_RESULT_MESSAGE,
+                status_code=502,
+                headers=result_response.headers,
+            )
+        return _classify_result_payload(payload)
 
-        if "queue_position" in response_data:
-            video_data["progress"] = response_data["queue_position"]
+    def _video_object_for_state(
+        self,
+        state: _QueueState,
+        request_id: str,
+        raw_response: httpx.Response,
+        custom_llm_provider: str | None,
+    ) -> VideoObject:
+        match state:
+            case _QueuePending(status, queue_position):
+                return self._build_video_object(
+                    request_id, raw_response, custom_llm_provider, status, queue_position, None
+                )
+            case _QueueRejected(message):
+                return self._build_video_object(request_id, raw_response, custom_llm_provider, "failed", None, message)
+            case _QueueSettled():
+                return self._build_video_object(request_id, raw_response, custom_llm_provider, "completed", None, None)
+            case _:
+                assert_never(state)
 
-        if status == "failed":
-            video_data["error"] = {
-                "code": "failed",
-                "message": str(error_payload or "Video generation failed"),
-            }
+    def _video_object_for_outcome(
+        self,
+        outcome: _GenerationOutcome,
+        request_id: str,
+        raw_response: httpx.Response,
+        custom_llm_provider: str | None,
+    ) -> VideoObject:
+        match outcome:
+            case _GeneratedVideo():
+                return self._build_video_object(request_id, raw_response, custom_llm_provider, "completed", None, None)
+            case _GenerationFailed(message):
+                return self._build_video_object(request_id, raw_response, custom_llm_provider, "failed", None, message)
+            case _:
+                assert_never(outcome)
 
-        video_obj = VideoObject(**video_data)  # type: ignore[arg-type]
+    def _build_video_object(
+        self,
+        request_id: str,
+        raw_response: httpx.Response,
+        custom_llm_provider: str | None,
+        status: str,
+        queue_position: int | None,
+        failure_message: str | None,
+    ) -> VideoObject:
+        video_obj = VideoObject(
+            id=request_id,
+            object="video",
+            status=status,
+            progress=queue_position,
+            error=None if failure_message is None else {"code": "generation_failed", "message": failure_message},
+        )
 
         if custom_llm_provider and video_obj.id:
             model_id = self._model_id_from_request_url(raw_response)
             video_obj.id = encode_video_id_with_provider(video_obj.id, custom_llm_provider, model_id)
 
         return video_obj
+
+    @staticmethod
+    def _result_url_from_status_request(raw_response: httpx.Response) -> str | None:
+        request = getattr(raw_response, "request", None)
+        if request is None:
+            return None
+        url = str(request.url)
+        return url.removesuffix("/status") if url.endswith("/status") else None
+
+    @staticmethod
+    def _forwarded_auth_headers(raw_response: httpx.Response) -> httpx.Headers:
+        request = getattr(raw_response, "request", None)
+        authorization = None if request is None else request.headers.get("Authorization")
+        if not authorization:
+            return httpx.Headers()
+        return httpx.Headers((("Authorization", authorization),))
 
     @staticmethod
     def _model_id_from_request_url(raw_response: httpx.Response) -> str | None:
@@ -290,9 +567,8 @@ class FalAIVideoConfig(BaseVideoConfig):
         logging_obj: LiteLLMLoggingObj,
     ) -> bytes:
         self._raise_for_status(raw_response)
-        video_url = self._extract_video_url(raw_response.json())
-        httpx_client: HTTPHandler = _get_httpx_client()
-        video_response = httpx_client.get(video_url)
+        video_url = self._video_url_or_raise(raw_response)
+        video_response = self._http_client().get(video_url)
         video_response.raise_for_status()
         return video_response.content
 
@@ -302,31 +578,24 @@ class FalAIVideoConfig(BaseVideoConfig):
         logging_obj: LiteLLMLoggingObj,
     ) -> bytes:
         self._raise_for_status(raw_response)
-        video_url = self._extract_video_url(raw_response.json())
-        async_client: AsyncHTTPHandler = get_async_httpx_client(
-            llm_provider=litellm.LlmProviders.FAL_AI,
-        )
-        video_response = await async_client.get(video_url)
+        video_url = self._video_url_or_raise(raw_response)
+        video_response = await self._async_http_client().get(video_url)
         video_response.raise_for_status()
         return video_response.content
 
-    @staticmethod
-    def _extract_video_url(response_data: dict[str, Any]) -> str:
-        error_payload = response_data.get("error")
-        if error_payload:
-            raise ValueError(f"fal.ai video generation failed: {error_payload}")
-
-        video = response_data.get("video")
-        if isinstance(video, dict):
-            url = video.get("url")
-            if isinstance(url, str) and url:
+    def _video_url_or_raise(self, raw_response: httpx.Response) -> str:
+        outcome = self._classify_result_response(raw_response)
+        match outcome:
+            case _GeneratedVideo(url):
                 return url
-
-        top_level = response_data.get("url")
-        if isinstance(top_level, str) and top_level:
-            return top_level
-
-        raise ValueError("Video URL not found in fal.ai response. The job may still be processing.")
+            case _GenerationFailed(message):
+                raise self.get_error_class(
+                    error_message=message,
+                    status_code=424,
+                    headers=raw_response.headers,
+                )
+            case _:
+                assert_never(outcome)
 
     @staticmethod
     def _queue_request_namespace(model_id: str) -> str:
@@ -417,11 +686,37 @@ class FalAIVideoConfig(BaseVideoConfig):
                 model="",
                 llm_provider=litellm.LlmProviders.FAL_AI.value,
             )
+        customer_message = self._customer_facing_error_message(error_message)
+        provider = litellm.LlmProviders.FAL_AI.value
+
+        if status_code == 401:
+            raise litellm.AuthenticationError(message=customer_message, model="", llm_provider=provider)
+        if status_code == 403:
+            raise litellm.PermissionDeniedError(
+                message=customer_message,
+                model="",
+                llm_provider=provider,
+                response=httpx.Response(status_code, request=httpx.Request("GET", FAL_AI_DEFAULT_API_BASE)),
+            )
+        if status_code == 429:
+            raise litellm.RateLimitError(message=customer_message, model="", llm_provider=provider)
+        if 400 <= status_code < 500 and status_code not in _RETRYABLE_CLIENT_STATUS_CODES:
+            raise litellm.BadRequestError(message=customer_message, model="", llm_provider=provider)
+
         raise BaseLLMException(
             status_code=status_code,
-            message=error_message,
+            message=customer_message,
             headers=headers,
         )
+
+    @staticmethod
+    def _customer_facing_error_message(error_message: str) -> str:
+        try:
+            payload = loads(error_message)
+        except (ValueError, JSONDecodeError):
+            return error_message
+        reason = _fal_failure_reason(payload)
+        return f"fal.ai video generation failed: {reason}" if reason else error_message
 
     @staticmethod
     def _is_content_policy_rejection(error_message: str) -> bool:
