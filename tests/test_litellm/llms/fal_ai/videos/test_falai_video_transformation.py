@@ -27,11 +27,59 @@ FAL_CONTENT_POLICY_BODY = (
 )
 
 
+FAL_FILE_DOWNLOAD_ERROR_RESULT = {
+    "detail": [
+        {
+            "loc": ["body", "image_urls"],
+            "msg": "Failed to download the file. Please check if the URL is accessible and try again.",
+            "type": "file_download_error",
+            "url": "https://docs.fal.ai/errors#file_download_error",
+            "input": ["https://storage.example.com/missing-reference.jpg"],
+        }
+    ]
+}
+
+FAL_QUEUE_COMPLETED_STATUS = {
+    "status": "COMPLETED",
+    "request_id": "abc-123",
+    "response_url": f"{FAL_API_BASE}/{KLING_QUEUE_NAMESPACE}/requests/abc-123",
+    "status_url": f"{FAL_API_BASE}/{KLING_QUEUE_NAMESPACE}/requests/abc-123/status",
+    "cancel_url": f"{FAL_API_BASE}/{KLING_QUEUE_NAMESPACE}/requests/abc-123/cancel",
+    "logs": None,
+    "metrics": {"inference_time": 0.5173070430755615},
+}
+
+
 def _fal_status_response(payload, request_id="abc-123", status_code=200):
     request = httpx.Request(
         "GET", f"{FAL_API_BASE}/{KLING_MODEL_ID}/requests/{request_id}/status"
     )
     return httpx.Response(status_code, json=payload, request=request)
+
+
+def _fal_result_response(payload, request_id="abc-123", status_code=200):
+    request = httpx.Request(
+        "GET", f"{FAL_API_BASE}/{KLING_MODEL_ID}/requests/{request_id}"
+    )
+    return httpx.Response(status_code, json=payload, request=request)
+
+
+class _RecordingClient:
+    """Stands in for the injected httpx handler; records the follow-up result lookup."""
+
+    def __init__(self, response):
+        self._response = response
+        self.calls = []
+
+    def get(self, url, headers=None, **kwargs):
+        self.calls.append((url, headers))
+        return self._response
+
+
+class _RecordingAsyncClient(_RecordingClient):
+    async def get(self, url, headers=None, **kwargs):
+        self.calls.append((url, headers))
+        return self._response
 
 
 class TestFalAIVideoTransformation:
@@ -298,6 +346,115 @@ class TestFalAIVideoTransformation:
         assert status_obj.error is not None
         assert status_obj.error["message"] == "model timed out"
 
+    def test_queue_completed_with_failed_generation_reports_failed_status(self):
+        result_client = _RecordingClient(
+            _fal_result_response(FAL_FILE_DOWNLOAD_ERROR_RESULT, status_code=422)
+        )
+        config = FalAIVideoConfig(sync_client=result_client)
+
+        status_obj = config.transform_video_status_retrieve_response(
+            raw_response=_fal_status_response(FAL_QUEUE_COMPLETED_STATUS),
+            logging_obj=self.mock_logging_obj,
+            custom_llm_provider="fal_ai",
+        )
+
+        assert status_obj.status == "failed"
+        assert status_obj.error is not None
+        assert "Failed to download the file" in status_obj.error["message"]
+        assert "image_urls" in status_obj.error["message"]
+
+        assert result_client.calls, "terminal queue status must be resolved against the result payload"
+        result_url, _ = result_client.calls[0]
+        assert result_url == f"{FAL_API_BASE}/{KLING_MODEL_ID}/requests/abc-123"
+
+    @pytest.mark.asyncio
+    async def test_async_queue_completed_with_failed_generation_reports_failed_status(self):
+        result_client = _RecordingAsyncClient(
+            _fal_result_response(FAL_FILE_DOWNLOAD_ERROR_RESULT, status_code=422)
+        )
+        config = FalAIVideoConfig(async_client=result_client)
+
+        status_obj = await config.async_transform_video_status_retrieve_response(
+            raw_response=_fal_status_response(FAL_QUEUE_COMPLETED_STATUS),
+            logging_obj=self.mock_logging_obj,
+            custom_llm_provider="fal_ai",
+        )
+
+        assert status_obj.status == "failed"
+        assert status_obj.error is not None
+        assert "Failed to download the file" in status_obj.error["message"]
+
+    def test_status_lookup_forwards_authorization_to_result_endpoint(self):
+        result_client = _RecordingClient(
+            _fal_result_response({"video": {"url": "https://cdn.example.com/v.mp4"}})
+        )
+        config = FalAIVideoConfig(sync_client=result_client)
+        request = httpx.Request(
+            "GET",
+            f"{FAL_API_BASE}/{KLING_MODEL_ID}/requests/abc-123/status",
+            headers={"Authorization": "Key secret-token"},
+        )
+        status_response = httpx.Response(
+            200, json=FAL_QUEUE_COMPLETED_STATUS, request=request
+        )
+
+        status_obj = config.transform_video_status_retrieve_response(
+            raw_response=status_response,
+            logging_obj=self.mock_logging_obj,
+            custom_llm_provider="fal_ai",
+        )
+
+        assert status_obj.status == "completed"
+        _, headers = result_client.calls[0]
+        assert headers == {"Authorization": "Key secret-token"}
+
+    def test_queue_completed_with_video_reports_completed_status(self):
+        result_client = _RecordingClient(
+            _fal_result_response({"video": {"url": "https://cdn.example.com/v.mp4"}})
+        )
+        config = FalAIVideoConfig(sync_client=result_client)
+
+        status_obj = config.transform_video_status_retrieve_response(
+            raw_response=_fal_status_response(FAL_QUEUE_COMPLETED_STATUS),
+            logging_obj=self.mock_logging_obj,
+            custom_llm_provider="fal_ai",
+        )
+
+        assert status_obj.status == "completed"
+        assert status_obj.error is None
+
+    def test_content_on_failed_job_raises_instead_of_serving_json_as_media(self):
+        config = FalAIVideoConfig()
+        failed_result = _fal_result_response(
+            FAL_FILE_DOWNLOAD_ERROR_RESULT, status_code=200
+        )
+
+        with pytest.raises(litellm.BadRequestError) as exc_info:
+            config.transform_video_content_response(
+                raw_response=failed_result,
+                logging_obj=self.mock_logging_obj,
+            )
+
+        assert exc_info.value.status_code == 400
+        assert "Failed to download the file" in exc_info.value.message
+        assert litellm._should_retry(exc_info.value.status_code) is False
+
+    def test_customer_facing_error_drops_raw_fal_envelope(self):
+        import json
+
+        with pytest.raises(litellm.BadRequestError) as exc_info:
+            self.config.get_error_class(
+                error_message=json.dumps(FAL_FILE_DOWNLOAD_ERROR_RESULT),
+                status_code=422,
+                headers=httpx.Headers(),
+            )
+
+        message = exc_info.value.message
+        assert "Failed to download the file" in message
+        assert "file_download_error" not in message
+        assert "loc" not in message
+        assert "docs.fal.ai" not in message
+
     def test_transform_video_status_response_tolerates_non_json_body(self):
         mock_response = Mock(spec=httpx.Response)
         mock_response.json.side_effect = ValueError(
@@ -396,7 +553,13 @@ class TestFalAIVideoTransformation:
             )
 
     def test_full_video_workflow(self):
-        config = FalAIVideoConfig()
+        result_client = _RecordingClient(
+            _fal_result_response(
+                {"video": {"url": "https://cdn.example.com/v.mp4"}},
+                request_id="queued-id-1",
+            )
+        )
+        config = FalAIVideoConfig(sync_client=result_client)
         mock_logging_obj = Mock()
 
         data, _, url = config.transform_video_create_request(

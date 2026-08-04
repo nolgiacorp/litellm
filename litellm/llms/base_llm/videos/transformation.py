@@ -268,6 +268,26 @@ class BaseVideoConfig(ABC):
     ) -> VideoObject:
         pass
 
+    async def async_transform_video_status_retrieve_response(
+        self,
+        raw_response: httpx.Response,
+        logging_obj: LiteLLMLoggingObj,
+        custom_llm_provider: str | None = None,
+    ) -> VideoObject:
+        """
+        Async transform of a video status response.
+        Optional method - providers whose terminal status needs a further async
+        lookup (e.g. fal.ai resolving a queue-completed request against its
+        result payload) should override this.
+
+        Default implementation falls back to sync transform_video_status_retrieve_response.
+        """
+        return self.transform_video_status_retrieve_response(
+            raw_response=raw_response,
+            logging_obj=logging_obj,
+            custom_llm_provider=custom_llm_provider,
+        )
+
     def transform_video_create_character_request(
         self,
         name: str,
