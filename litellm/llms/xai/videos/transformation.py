@@ -178,6 +178,10 @@ class XAIVideoConfig(BaseVideoConfig):
     ) -> tuple[dict, RequestFiles, str]:
         mapped: dict[str, Any] = dict(video_create_optional_request_params)
         mapped.pop("model", None)
+        if "reference_audios" in mapped:
+            # get_optional_params_video_generation merges the raw extra_body over the mapped params, so the
+            # caller's original shape can land back here; re-normalize to keep xAI's [{voice_id}] on the wire.
+            mapped["reference_audios"] = _normalize_reference_audios(mapped["reference_audios"]) or None
         request_data = {
             key: value
             for key, value in {

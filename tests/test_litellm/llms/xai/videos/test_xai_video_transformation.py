@@ -9,6 +9,7 @@ from litellm.types.videos.utils import (
     decode_video_id_with_provider,
     encode_video_id_with_provider,
 )
+from litellm.videos.utils import VideoGenerationRequestUtils
 
 MODEL = "xai/grok-imagine-video"
 API_BASE = "https://api.x.ai"
@@ -158,6 +159,35 @@ class TestXAIVideoTransformation:
         )
         assert url == f"{API_BASE}/v1/videos/generations"
         assert body["reference_audios"] == [{"voice_id": "eve"}]
+
+    def test_extra_body_reference_audios_survive_the_public_optional_params_path(self):
+        optional_params = VideoGenerationRequestUtils.get_optional_params_video_generation(
+            model="xai/grok-imagine-video-1.5",
+            video_generation_provider_config=self.config,
+            video_generation_optional_params={"extra_body": {"reference_audios": ["eve"]}},
+        )
+        # get_optional_params_video_generation merges the raw extra_body over the mapped params.
+        assert optional_params["reference_audios"] == ["eve"]
+        body, _files, _url = self.config.transform_video_create_request(
+            model="xai/grok-imagine-video-1.5",
+            prompt="<AUDIO_0> narrates the scene",
+            api_base=API_BASE,
+            video_create_optional_request_params=optional_params,
+            litellm_params=GenericLiteLLMParams(),
+            headers={},
+        )
+        assert body["reference_audios"] == [{"voice_id": "eve"}]
+
+    def test_transform_video_create_request_drops_unusable_reference_audios(self):
+        body, _files, _url = self.config.transform_video_create_request(
+            model="xai/grok-imagine-video-1.5",
+            prompt="a cat",
+            api_base=API_BASE,
+            video_create_optional_request_params={"reference_audios": [{}, ""]},
+            litellm_params=GenericLiteLLMParams(),
+            headers={},
+        )
+        assert "reference_audios" not in body
 
     def test_map_openai_params_drops_fal_only_params(self):
         mapped = self.config.map_openai_params(
