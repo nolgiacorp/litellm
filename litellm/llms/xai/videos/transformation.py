@@ -108,15 +108,29 @@ class XAIVideoConfig(BaseVideoConfig):
             else []
         )
         reference_images = [{"url": url} for url in reference_image_urls]
+        raw_reference_audios = params.get("reference_audios")
+        reference_audio_entries = (
+            [raw_reference_audios]
+            if isinstance(raw_reference_audios, str) and raw_reference_audios
+            else raw_reference_audios
+            if isinstance(raw_reference_audios, list)
+            else []
+        )
+        reference_audios = [
+            {"voice_id": entry} if isinstance(entry, str) else {"voice_id": str(entry["voice_id"])}
+            for entry in reference_audio_entries
+            if (isinstance(entry, str) and entry) or (isinstance(entry, dict) and entry.get("voice_id"))
+        ]
         resolution = params.get("resolution")
 
         return {
             **({"duration": duration} if duration is not None else {}),
             **({"aspect_ratio": aspect_ratio} if aspect_ratio else {}),
             **({"resolution": resolution} if resolution else {}),
-            # xAI requires image and reference_images to be mutually exclusive.
-            **({"image": image} if image and not reference_images else {}),
+            # xAI requires image (start frame) to be mutually exclusive with reference_images / reference_audios.
+            **({"image": image} if image and not reference_images and not reference_audios else {}),
             **({"reference_images": reference_images} if reference_images else {}),
+            **({"reference_audios": reference_audios} if reference_audios else {}),
         }
 
     def validate_environment(

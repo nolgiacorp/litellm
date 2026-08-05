@@ -110,6 +110,55 @@ class TestXAIVideoTransformation:
         )
         assert mapped == {"reference_images": [{"url": "https://img.example.com/character.png"}]}
 
+    def test_map_openai_params_forwards_reference_audios_voice_objects(self):
+        mapped = self.config.map_openai_params(
+            video_create_optional_params={
+                "extra_body": {"reference_audios": [{"voice_id": "eve"}, {"voice_id": "ara"}]},
+            },
+            model="xai/grok-imagine-video-1.5",
+            drop_params=False,
+        )
+        assert mapped["reference_audios"] == [{"voice_id": "eve"}, {"voice_id": "ara"}]
+
+    def test_map_openai_params_normalizes_reference_audios_from_voice_id_strings(self):
+        mapped = self.config.map_openai_params(
+            video_create_optional_params={
+                "extra_body": {"reference_audios": ["eve", "", "rex"]},
+            },
+            model="xai/grok-imagine-video-1.5",
+            drop_params=False,
+        )
+        assert mapped["reference_audios"] == [{"voice_id": "eve"}, {"voice_id": "rex"}]
+
+    def test_reference_audios_are_mutually_exclusive_with_start_frame_image(self):
+        mapped = self.config.map_openai_params(
+            video_create_optional_params={
+                "input_reference": "https://img.example.com/start.png",
+                "extra_body": {"reference_audios": [{"voice_id": "eve"}]},
+            },
+            model="xai/grok-imagine-video-1.5",
+            drop_params=False,
+        )
+        assert "image" not in mapped
+        assert mapped["reference_audios"] == [{"voice_id": "eve"}]
+
+    def test_transform_video_create_request_sends_reference_audios_to_xai(self):
+        mapped = self.config.map_openai_params(
+            video_create_optional_params={"extra_body": {"reference_audios": [{"voice_id": "eve"}]}},
+            model="xai/grok-imagine-video-1.5",
+            drop_params=False,
+        )
+        body, _files, url = self.config.transform_video_create_request(
+            model="xai/grok-imagine-video-1.5",
+            prompt="<AUDIO_0> narrates the scene",
+            api_base=API_BASE,
+            video_create_optional_request_params=mapped,
+            litellm_params=GenericLiteLLMParams(),
+            headers={},
+        )
+        assert url == f"{API_BASE}/v1/videos/generations"
+        assert body["reference_audios"] == [{"voice_id": "eve"}]
+
     def test_map_openai_params_drops_fal_only_params(self):
         mapped = self.config.map_openai_params(
             video_create_optional_params={
