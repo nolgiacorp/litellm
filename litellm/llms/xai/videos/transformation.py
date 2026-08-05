@@ -1,3 +1,4 @@
+from collections.abc import Mapping, Sequence
 from json import JSONDecodeError
 from typing import TYPE_CHECKING, Any
 
@@ -54,6 +55,29 @@ def _resolve_xai_video_api_base(api_base: str | None) -> str:
     return base.removesuffix("/v1").rstrip("/")
 
 
+def _voice_id(entry: Any) -> str | None:
+    if isinstance(entry, str):
+        return entry or None
+    voice_id = entry.get("voice_id") if isinstance(entry, Mapping) else None
+    return str(voice_id) if voice_id else None
+
+
+def _normalize_reference_audios(raw_reference_audios: Any) -> Sequence[Mapping[str, str]]:
+    """Normalize a voice_id string, a list of strings, or a list of {voice_id} objects to xAI's [{voice_id}] shape."""
+    entries: tuple[Any, ...] = (
+        (raw_reference_audios,)
+        if isinstance(raw_reference_audios, str)
+        else tuple(raw_reference_audios)
+        if isinstance(raw_reference_audios, list)
+        else ()
+    )
+    return [  # mutable-ok: xAI request payload, JSON-serialized as a list of {voice_id} objects
+        {"voice_id": voice_id}  # mutable-ok: one reference_audios entry inside that payload list
+        for voice_id in map(_voice_id, entries)
+        if voice_id
+    ]
+
+
 class XAIVideoConfig(BaseVideoConfig):
     def get_supported_openai_params(self, model: str) -> list:
         return [
@@ -108,15 +132,17 @@ class XAIVideoConfig(BaseVideoConfig):
             else []
         )
         reference_images = [{"url": url} for url in reference_image_urls]
+        reference_audios = _normalize_reference_audios(params.get("reference_audios"))
         resolution = params.get("resolution")
 
         return {
             **({"duration": duration} if duration is not None else {}),
             **({"aspect_ratio": aspect_ratio} if aspect_ratio else {}),
             **({"resolution": resolution} if resolution else {}),
-            # xAI requires image and reference_images to be mutually exclusive.
-            **({"image": image} if image and not reference_images else {}),
+            # xAI requires image (start frame) to be mutually exclusive with reference_images / reference_audios.
+            **({"image": image} if image and not reference_images and not reference_audios else {}),
             **({"reference_images": reference_images} if reference_images else {}),
+            **({"reference_audios": reference_audios} if reference_audios else {}),  # mutable-ok: xAI request payload
         }
 
     def validate_environment(
@@ -152,6 +178,10 @@ class XAIVideoConfig(BaseVideoConfig):
     ) -> tuple[dict, RequestFiles, str]:
         mapped: dict[str, Any] = dict(video_create_optional_request_params)
         mapped.pop("model", None)
+        if "reference_audios" in mapped:
+            # get_optional_params_video_generation merges the raw extra_body over the mapped params, so the
+            # caller's original shape can land back here; re-normalize to keep xAI's [{voice_id}] on the wire.
+            mapped["reference_audios"] = _normalize_reference_audios(mapped["reference_audios"]) or None
         request_data = {
             key: value
             for key, value in {
