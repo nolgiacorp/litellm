@@ -4,11 +4,15 @@ Black Forest Labs Common Utilities
 Common utilities, constants, and error handling for Black Forest Labs API.
 """
 
-from typing import Dict
+from collections.abc import Mapping
+from types import MappingProxyType
+from typing import Any, Dict  # noqa: TID251  # base transformation contracts type these payloads as Any
 from urllib.parse import urlparse
 
 from litellm.llms.base_llm.chat.transformation import BaseLLMException
 from litellm.secret_managers.main import get_secret_str
+
+EMPTY_MAP: Mapping[str, Any] = MappingProxyType({})  # mutable-ok: frozen shared empty mapping
 
 
 class BlackForestLabsError(BaseLLMException):
@@ -27,7 +31,7 @@ def resolve_bfl_api_base(api_base: str | None) -> str:
     return base_url.rstrip("/")
 
 
-def bfl_auth_headers(api_key: str | None) -> dict[str, str]:
+def bfl_auth_headers(api_key: str | None) -> Mapping[str, str]:
     """Build the shared BFL request headers, resolving the x-key from arg or environment."""
     resolved_key = api_key or get_secret_str("BFL_API_KEY") or get_secret_str("BLACK_FOREST_LABS_API_KEY")
 
@@ -37,11 +41,13 @@ def bfl_auth_headers(api_key: str | None) -> dict[str, str]:
             message="BFL_API_KEY is not set. Please set it via environment variable or pass api_key parameter.",
         )
 
-    return {
-        "x-key": resolved_key,
-        "Content-Type": "application/json",
-        "Accept": "application/json",
-    }
+    return MappingProxyType(
+        {  # mutable-ok: frozen header view, merged into the request headers by validate_environment
+            "x-key": resolved_key,
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
+    )
 
 
 # BFL uses regional subdomains (e.g. gateway.bfl.ai) for polling URLs that
@@ -97,9 +103,11 @@ IMAGE_EDIT_MODELS: Dict[str, str] = {
 
 # Model to endpoint mapping for video generation
 FLUX_3_VIDEO_ENDPOINT = "/v1/flux-3-video"
-VIDEO_GENERATION_MODELS: dict[str, str] = {
-    "flux-3-video": FLUX_3_VIDEO_ENDPOINT,
-}
+VIDEO_GENERATION_MODELS: Mapping[str, str] = MappingProxyType(
+    {  # mutable-ok: frozen constant lookup table
+        "flux-3-video": FLUX_3_VIDEO_ENDPOINT,
+    }
+)
 
 # Model to endpoint mapping for image generation
 IMAGE_GENERATION_MODELS: Dict[str, str] = {

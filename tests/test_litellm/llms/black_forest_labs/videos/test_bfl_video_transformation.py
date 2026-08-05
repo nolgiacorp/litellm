@@ -159,7 +159,7 @@ class TestBflVideoMapAndCreate:
             drop_params=False,
         )
         assert mapped["mode"] == "i2v"
-        assert mapped["keyframes"] == ["https://img/x.png"]
+        assert mapped["keyframes"] == ("https://img/x.png",)
         assert "image_url" not in mapped
 
     def test_map_input_reference_sets_i2v_and_keyframes(self):
@@ -169,7 +169,7 @@ class TestBflVideoMapAndCreate:
             drop_params=False,
         )
         assert mapped["mode"] == "i2v"
-        assert mapped["keyframes"] == ["https://img/x.png"]
+        assert mapped["keyframes"] == ("https://img/x.png",)
 
     def test_map_filelike_image_base64_encoded_into_keyframes(self):
         raw = b"\x89PNG\r\n\x1a\nfake-start-frame"
@@ -179,7 +179,7 @@ class TestBflVideoMapAndCreate:
             drop_params=False,
         )
         assert mapped["mode"] == "i2v"
-        assert mapped["keyframes"] == [base64.b64encode(raw).decode("utf-8")]
+        assert mapped["keyframes"] == (base64.b64encode(raw).decode("utf-8"),)
 
     def test_create_request_carries_all_fields_and_defaults_t2v(self):
         mapped = self.config.map_openai_params(
@@ -201,7 +201,7 @@ class TestBflVideoMapAndCreate:
             headers={},
         )
         assert url == f"{API_BASE}/v1/flux-3-video"
-        assert files == []
+        assert files == ()
         assert data["prompt"] == "a neon city at night"
         assert data["mode"] == "t2v"
         assert data["duration"] == 10
@@ -241,7 +241,7 @@ class TestBflVideoMapAndCreate:
             headers={},
         )
         assert data["mode"] == "i2v"
-        assert data["keyframes"] == ["https://img/x.png"]
+        assert data["keyframes"] == ("https://img/x.png",)
 
     def test_create_request_drops_none_values(self):
         data, _, _ = self.config.transform_video_create_request(

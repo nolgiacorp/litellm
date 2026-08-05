@@ -1,6 +1,8 @@
 import base64
 import time
+from collections.abc import Mapping
 from json import JSONDecodeError
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any  # noqa: TID251  # base video ABC + OpenAI video TypedDict are Any-typed
 
 import httpx
@@ -11,6 +13,7 @@ from litellm.litellm_core_utils.prompt_templates.common_utils import extract_fil
 from litellm.llms.base_llm.chat.transformation import BaseLLMException
 from litellm.llms.base_llm.videos.transformation import BaseVideoConfig
 from litellm.llms.black_forest_labs.common_utils import (
+    EMPTY_MAP,
     FLUX_3_VIDEO_ENDPOINT,
     VIDEO_GENERATION_MODELS,
     BlackForestLabsError,
@@ -39,36 +42,56 @@ else:
     LiteLLMLoggingObj = Any
 
 
-_BFL_STATUS_MAP = {
-    "Ready": "completed",
-    "Pending": "in_progress",
-    "Processing": "in_progress",
-    "Queued": "queued",
-    "Task Queued": "queued",
-    "Error": "failed",
-    "Failed": "failed",
-    "Content Moderated": "failed",
-    "Request Moderated": "failed",
-    "Task not found": "failed",
-}
+_BFL_STATUS_MAP: Mapping[str, str] = MappingProxyType(
+    {  # mutable-ok: frozen constant lookup table
+        "Ready": "completed",
+        "Pending": "in_progress",
+        "Processing": "in_progress",
+        "Queued": "queued",
+        "Task Queued": "queued",
+        "Error": "failed",
+        "Failed": "failed",
+        "Content Moderated": "failed",
+        "Request Moderated": "failed",
+        "Task not found": "failed",
+    }
+)
 
-_FAILED_STATUSES = frozenset({"Error", "Failed", "Content Moderated", "Request Moderated", "Task not found"})
+_FAILED_STATUSES = frozenset(("Error", "Failed", "Content Moderated", "Request Moderated", "Task not found"))
 
 _RESULT_URL_FIELDS = ("sample", "video", "url", "sample_url")
 
-_SIZE_TO_ASPECT_RATIO = {
-    "1280x720": "16:9",
-    "1920x1080": "16:9",
-    "3840x2160": "16:9",
-    "720x1280": "9:16",
-    "1080x1920": "9:16",
-    "2160x3840": "9:16",
-    "1024x1024": "1:1",
-    "1080x1080": "1:1",
-}
+_SIZE_TO_ASPECT_RATIO: Mapping[str, str] = MappingProxyType(
+    {  # mutable-ok: frozen constant lookup table
+        "1280x720": "16:9",
+        "1920x1080": "16:9",
+        "3840x2160": "16:9",
+        "720x1280": "9:16",
+        "1080x1920": "9:16",
+        "2160x3840": "9:16",
+        "1024x1024": "1:1",
+        "1080x1080": "1:1",
+    }
+)
+
+_SUPPORTED_OPENAI_PARAMS = (
+    "model",
+    "prompt",
+    "input_reference",
+    "image",
+    "seconds",
+    "size",
+    "resolution",
+    "aspect_ratio",
+    "generate_audio",
+    "safety_tolerance",
+    "user",
+    "extra_headers",
+    "extra_body",
+)
 
 _OPENAI_ONLY_PARAMS = frozenset(
-    {
+    (
         "model",
         "prompt",
         "user",
@@ -85,8 +108,27 @@ _OPENAI_ONLY_PARAMS = frozenset(
         "aspect_ratio",
         "generate_audio",
         "safety_tolerance",
-    }
+    )
 )
+
+
+def _safe_float(value: Any) -> float | None:
+    try:
+        return float(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _duration_usage(seconds: str | None) -> dict:  # mutable-ok: VideoObject.usage expects a dict
+    duration = _safe_float(seconds)
+    if duration is None:
+        return {}  # mutable-ok: VideoObject.usage expects a dict
+    return {"duration_seconds": duration}  # mutable-ok: VideoObject.usage expects a dict
+
+
+def _failure_error(bfl_status: Any) -> dict:  # mutable-ok: VideoObject.error expects a dict
+    message = str(bfl_status or "Video generation failed")
+    return {"code": "failed", "message": message}  # mutable-ok: VideoObject.error expects a dict
 
 
 class BflVideoConfig(BaseVideoConfig):
@@ -116,72 +158,49 @@ class BflVideoConfig(BaseVideoConfig):
     def _async_http_client(self) -> AsyncHTTPHandler:
         return self._async_client or get_async_httpx_client(llm_provider=litellm.LlmProviders.BLACK_FOREST_LABS)
 
-    def get_supported_openai_params(self, model: str) -> list:
-        return [
-            "model",
-            "prompt",
-            "input_reference",
-            "image",
-            "seconds",
-            "size",
-            "resolution",
-            "aspect_ratio",
-            "generate_audio",
-            "safety_tolerance",
-            "user",
-            "extra_headers",
-            "extra_body",
-        ]
+    def get_supported_openai_params(self, model: str) -> list:  # mutable-ok: BaseVideoConfig contract returns list
+        return list(_SUPPORTED_OPENAI_PARAMS)  # mutable-ok: BaseVideoConfig contract returns list
 
     def map_openai_params(
         self,
         video_create_optional_params: VideoCreateOptionalRequestParams,
         model: str,
         drop_params: bool,
-    ) -> dict:
-        params: dict[str, Any] = dict(video_create_optional_params)
-        extra_body = params.pop("extra_body", None)
-        if isinstance(extra_body, dict):
-            params = {**params, **extra_body}
-
-        mapped: dict[str, Any] = {}
-
+    ) -> dict:  # mutable-ok: BaseVideoConfig contract returns dict
+        params = self._merged_params(video_create_optional_params)
         seconds = params.get("seconds")
         if seconds is None:
             seconds = params.get("duration_seconds")
-        if seconds is not None:
-            mapped["duration"] = self._coerce_duration(seconds)
-
         resolution = params.get("resolution")
-        if resolution is not None:
-            mapped["resolution"] = str(resolution).strip().lower()
-
-        aspect_ratio = self._resolve_aspect_ratio(params)
-        if aspect_ratio is not None:
-            mapped["aspect_ratio"] = aspect_ratio
-
         generate_audio = params.get("generate_audio")
-        if generate_audio is not None:
-            mapped["generate_audio"] = self._coerce_bool(generate_audio)
-
-        safety_tolerance = params.get("safety_tolerance")
-        if safety_tolerance is not None:
-            mapped["safety_tolerance"] = safety_tolerance
-
         keyframes = self._keyframes(params)
-        if keyframes:
-            mapped["keyframes"] = keyframes
-            mapped["mode"] = "i2v"
-
-        for key, value in params.items():
-            if key in _OPENAI_ONLY_PARAMS or key in mapped or value is None:
-                continue
-            mapped[key] = value
-
-        return mapped
+        mapped = (
+            ("duration", self._coerce_duration(seconds) if seconds is not None else None),
+            ("resolution", str(resolution).strip().lower() if resolution is not None else None),
+            ("aspect_ratio", self._resolve_aspect_ratio(params)),
+            ("generate_audio", self._coerce_bool(generate_audio) if generate_audio is not None else None),
+            ("safety_tolerance", params.get("safety_tolerance")),
+            ("keyframes", keyframes),
+            ("mode", "i2v" if keyframes else None),
+        )
+        consumed = frozenset(key for key, value in mapped if value is not None)
+        passthrough = tuple(
+            (key, value) for key, value in params.items() if key not in _OPENAI_ONLY_PARAMS and key not in consumed
+        )
+        return {  # mutable-ok: BaseVideoConfig contract returns dict
+            key: value for key, value in (*mapped, *passthrough) if value is not None
+        }
 
     @staticmethod
-    def _resolve_aspect_ratio(params: dict) -> str | None:
+    def _merged_params(video_create_optional_params: VideoCreateOptionalRequestParams) -> Mapping[str, Any]:
+        extra_body = video_create_optional_params.get("extra_body")
+        return {  # mutable-ok: one-shot merge, read only as a Mapping; extra_body wins over top-level params
+            **video_create_optional_params,
+            **(extra_body if isinstance(extra_body, Mapping) else EMPTY_MAP),
+        }
+
+    @staticmethod
+    def _resolve_aspect_ratio(params: Mapping[str, Any]) -> str | None:
         aspect_ratio = params.get("aspect_ratio")
         if aspect_ratio is not None:
             return str(aspect_ratio)
@@ -196,15 +215,15 @@ class BflVideoConfig(BaseVideoConfig):
             return size.replace("x", ":")
         return None
 
-    def _keyframes(self, params: dict) -> list | None:
+    def _keyframes(self, params: Mapping[str, Any]) -> tuple[Any, ...] | None:
         existing = params.get("keyframes")
         if existing:
-            return existing if isinstance(existing, list) else [existing]
+            return tuple(existing) if isinstance(existing, (list, tuple)) else (existing,)
 
         for source in ("image", "input_reference", "image_url"):
             coerced = self._coerce_image_ref(params.get(source))
             if coerced is not None:
-                return [coerced]
+                return (coerced,)
         return None
 
     @staticmethod
@@ -231,25 +250,25 @@ class BflVideoConfig(BaseVideoConfig):
         if isinstance(value, bool):
             return value
         if isinstance(value, str):
-            return value.strip().lower() in {"true", "1", "yes", "on"}
+            return value.strip().lower() in ("true", "1", "yes", "on")
         return bool(value)
 
     def validate_environment(
         self,
-        headers: dict,
+        headers: Mapping[str, Any],
         model: str,
         api_key: str | None = None,
         litellm_params: GenericLiteLLMParams | None = None,
-    ) -> dict:
+    ) -> dict:  # mutable-ok: BaseVideoConfig contract returns dict
         if litellm_params and litellm_params.api_key:
             api_key = api_key or litellm_params.api_key
-        return {**headers, **bfl_auth_headers(api_key)}
+        return {**headers, **bfl_auth_headers(api_key)}  # mutable-ok: BaseVideoConfig contract returns dict
 
     def get_complete_url(
         self,
         model: str,
         api_base: str | None,
-        litellm_params: dict,
+        litellm_params: Mapping[str, Any],
     ) -> str:
         return resolve_bfl_api_base(api_base)
 
@@ -263,16 +282,18 @@ class BflVideoConfig(BaseVideoConfig):
         model: str,
         prompt: str,
         api_base: str,
-        video_create_optional_request_params: dict,
+        video_create_optional_request_params: Mapping[str, Any],
         litellm_params: GenericLiteLLMParams,
-        headers: dict,
-    ) -> tuple[dict, RequestFiles, str]:
-        body: dict[str, Any] = dict(video_create_optional_request_params)
-        body.pop("model", None)
-        body.setdefault("mode", "t2v")
-
-        request_data = {key: value for key, value in {"prompt": prompt, **body}.items() if value is not None}
-        return request_data, [], f"{api_base}{self._video_endpoint(model)}"
+        headers: Mapping[str, Any],
+    ) -> tuple[dict, RequestFiles, str]:  # mutable-ok: BaseVideoConfig contract returns dict body
+        mode = video_create_optional_request_params.get("mode") or "t2v"
+        body = tuple(
+            (key, value) for key, value in video_create_optional_request_params.items() if key not in ("model", "mode")
+        )
+        request_data = {  # mutable-ok: BaseVideoConfig contract returns dict body
+            key: value for key, value in (("prompt", prompt), ("mode", mode), *body) if value is not None
+        }
+        return request_data, (), f"{api_base}{self._video_endpoint(model)}"
 
     def transform_video_create_response(
         self,
@@ -280,7 +301,7 @@ class BflVideoConfig(BaseVideoConfig):
         raw_response: httpx.Response,
         logging_obj: LiteLLMLoggingObj,
         custom_llm_provider: str | None = None,
-        request_data: dict | None = None,
+        request_data: Mapping[str, Any] | None = None,
     ) -> VideoObject:
         response_data = raw_response.json()
         if "errors" in response_data:
@@ -296,20 +317,9 @@ class BflVideoConfig(BaseVideoConfig):
 
         assert_bfl_polling_url(polling_url)
 
-        seconds: str | None = None
-        size: str | None = None
-        if request_data:
-            if request_data.get("duration") is not None:
-                seconds = str(request_data["duration"])
-            if request_data.get("aspect_ratio") is not None:
-                size = str(request_data["aspect_ratio"]).replace(":", "x")
-
-        usage: dict[str, Any] = {}
-        if seconds is not None:
-            try:
-                usage["duration_seconds"] = float(seconds)
-            except (ValueError, TypeError):
-                pass
+        duration = request_data.get("duration") if request_data else None
+        aspect_ratio = request_data.get("aspect_ratio") if request_data else None
+        seconds = str(duration) if duration is not None else None
 
         video_obj = VideoObject(
             id=str(task_id),
@@ -317,9 +327,9 @@ class BflVideoConfig(BaseVideoConfig):
             status="queued",
             model=model,
             seconds=seconds,
-            size=size,
+            size=str(aspect_ratio).replace(":", "x") if aspect_ratio is not None else None,
             created_at=int(time.time()),
-            usage=usage,
+            usage=_duration_usage(seconds),
         )
 
         if custom_llm_provider:
@@ -331,9 +341,9 @@ class BflVideoConfig(BaseVideoConfig):
         video_id: str,
         api_base: str,
         litellm_params: GenericLiteLLMParams,
-        headers: dict,
-    ) -> tuple[str, dict]:
-        return self._decode_polling_url(video_id), {}
+        headers: Mapping[str, Any],
+    ) -> tuple[str, dict]:  # mutable-ok: BaseVideoConfig contract returns dict params
+        return self._decode_polling_url(video_id), {}  # mutable-ok: BaseVideoConfig contract returns dict params
 
     def transform_video_status_retrieve_response(
         self,
@@ -350,15 +360,11 @@ class BflVideoConfig(BaseVideoConfig):
         bfl_status = response_data.get("status")
         status = _BFL_STATUS_MAP.get(bfl_status, "in_progress")
 
-        error: dict[str, Any] | None = None
-        if status == "failed":
-            error = {"code": "failed", "message": str(bfl_status or "Video generation failed")}
-
         video_obj = VideoObject(
             id=str(response_data.get("id") or ""),
             object="video",
             status=status,
-            error=error,
+            error=_failure_error(bfl_status) if status == "failed" else None,
         )
 
         if custom_llm_provider:
@@ -372,10 +378,10 @@ class BflVideoConfig(BaseVideoConfig):
         video_id: str,
         api_base: str,
         litellm_params: GenericLiteLLMParams,
-        headers: dict,
+        headers: Mapping[str, Any],
         variant: str | None = None,
-    ) -> tuple[str, dict]:
-        return self._decode_polling_url(video_id), {}
+    ) -> tuple[str, dict]:  # mutable-ok: BaseVideoConfig contract returns dict params
+        return self._decode_polling_url(video_id), {}  # mutable-ok: BaseVideoConfig contract returns dict params
 
     def transform_video_content_response(
         self,
@@ -413,13 +419,13 @@ class BflVideoConfig(BaseVideoConfig):
         return str(request.url)
 
     @classmethod
-    def _extract_video_url(cls, response_data: dict) -> str:
+    def _extract_video_url(cls, response_data: Mapping[str, Any]) -> str:
         status = response_data.get("status")
         if status in _FAILED_STATUSES:
             raise ValueError(f"flux-3-video generation failed: {status}")
 
         result = response_data.get("result")
-        if isinstance(result, dict):
+        if isinstance(result, Mapping):
             for field in _RESULT_URL_FIELDS:
                 value = result.get(field)
                 if isinstance(value, str) and value:
@@ -433,9 +439,9 @@ class BflVideoConfig(BaseVideoConfig):
         prompt: str,
         api_base: str,
         litellm_params: GenericLiteLLMParams,
-        headers: dict,
-        extra_body: dict[str, Any] | None = None,
-    ) -> tuple[str, dict]:
+        headers: Mapping[str, Any],
+        extra_body: Mapping[str, Any] | None = None,
+    ) -> tuple[str, dict]:  # mutable-ok: BaseVideoConfig contract returns dict params
         raise NotImplementedError("Video remix is not supported by the Black Forest Labs API")
 
     def transform_video_remix_response(
@@ -450,12 +456,12 @@ class BflVideoConfig(BaseVideoConfig):
         self,
         api_base: str,
         litellm_params: GenericLiteLLMParams,
-        headers: dict,
+        headers: Mapping[str, Any],
         after: str | None = None,
         limit: int | None = None,
         order: str | None = None,
-        extra_query: dict[str, Any] | None = None,
-    ) -> tuple[str, dict]:
+        extra_query: Mapping[str, Any] | None = None,
+    ) -> tuple[str, dict]:  # mutable-ok: BaseVideoConfig contract returns dict params
         raise NotImplementedError("Video listing is not supported by the Black Forest Labs API")
 
     def transform_video_list_response(
@@ -463,7 +469,7 @@ class BflVideoConfig(BaseVideoConfig):
         raw_response: httpx.Response,
         logging_obj: LiteLLMLoggingObj,
         custom_llm_provider: str | None = None,
-    ) -> dict[str, str]:
+    ) -> dict[str, str]:  # mutable-ok: BaseVideoConfig contract returns dict
         raise NotImplementedError("Video listing is not supported by the Black Forest Labs API")
 
     def transform_video_delete_request(
@@ -471,8 +477,8 @@ class BflVideoConfig(BaseVideoConfig):
         video_id: str,
         api_base: str,
         litellm_params: GenericLiteLLMParams,
-        headers: dict,
-    ) -> tuple[str, dict]:
+        headers: Mapping[str, Any],
+    ) -> tuple[str, dict]:  # mutable-ok: BaseVideoConfig contract returns dict params
         raise NotImplementedError("Video delete/cancel is not supported by the Black Forest Labs API")
 
     def transform_video_delete_response(
@@ -482,7 +488,12 @@ class BflVideoConfig(BaseVideoConfig):
     ) -> VideoObject:
         raise NotImplementedError("Video delete/cancel is not supported by the Black Forest Labs API")
 
-    def get_error_class(self, error_message: str, status_code: int, headers: dict | httpx.Headers) -> BaseLLMException:
+    def get_error_class(
+        self,
+        error_message: str,
+        status_code: int,
+        headers: dict | httpx.Headers,  # mutable-ok: BaseLLMException carries the raw response headers dict
+    ) -> BaseLLMException:
         raise BlackForestLabsError(
             status_code=status_code,
             message=error_message,
