@@ -8747,6 +8747,12 @@ class ProviderConfigManager:
             from litellm.llms.xai.videos.transformation import XAIVideoConfig
 
             return XAIVideoConfig()
+        elif LlmProviders.BLACK_FOREST_LABS == provider:
+            from litellm.llms.black_forest_labs.videos.transformation import (
+                BflVideoConfig,
+            )
+
+            return BflVideoConfig()
         elif LlmProviders.OPENROUTER == provider:
             from litellm.llms.openrouter.videos.transformation import (
                 OpenRouterVideoConfig,

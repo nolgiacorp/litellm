@@ -8,6 +8,7 @@ from typing import Dict
 from urllib.parse import urlparse
 
 from litellm.llms.base_llm.chat.transformation import BaseLLMException
+from litellm.secret_managers.main import get_secret_str
 
 
 class BlackForestLabsError(BaseLLMException):
@@ -18,6 +19,30 @@ class BlackForestLabsError(BaseLLMException):
 
 # API Constants
 DEFAULT_API_BASE = "https://api.bfl.ai"
+
+
+def resolve_bfl_api_base(api_base: str | None) -> str:
+    """Resolve the BFL API base, honoring an explicit override then BFL_API_BASE then the default."""
+    base_url = api_base or get_secret_str("BFL_API_BASE") or DEFAULT_API_BASE
+    return base_url.rstrip("/")
+
+
+def bfl_auth_headers(api_key: str | None) -> dict[str, str]:
+    """Build the shared BFL request headers, resolving the x-key from arg or environment."""
+    resolved_key = api_key or get_secret_str("BFL_API_KEY") or get_secret_str("BLACK_FOREST_LABS_API_KEY")
+
+    if not resolved_key:
+        raise BlackForestLabsError(
+            status_code=401,
+            message="BFL_API_KEY is not set. Please set it via environment variable or pass api_key parameter.",
+        )
+
+    return {
+        "x-key": resolved_key,
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+
 
 # BFL uses regional subdomains (e.g. gateway.bfl.ai) for polling URLs that
 # differ from the submission host (api.bfl.ai). We validate against the
@@ -68,6 +93,12 @@ IMAGE_EDIT_MODELS: Dict[str, str] = {
     "flux-2-flex": "/v1/flux-2-flex",
     "flux-2-klein-9b": "/v1/flux-2-klein-9b",
     "flux-2-klein-4b": "/v1/flux-2-klein-4b",
+}
+
+# Model to endpoint mapping for video generation
+FLUX_3_VIDEO_ENDPOINT = "/v1/flux-3-video"
+VIDEO_GENERATION_MODELS: dict[str, str] = {
+    "flux-3-video": FLUX_3_VIDEO_ENDPOINT,
 }
 
 # Model to endpoint mapping for image generation
