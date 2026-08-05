@@ -79,6 +79,7 @@ _OPENAI_ONLY_PARAMS = frozenset(
         "image_url",
         "keyframes",
         "seconds",
+        "duration_seconds",
         "size",
         "resolution",
         "aspect_ratio",
@@ -146,6 +147,8 @@ class BflVideoConfig(BaseVideoConfig):
         mapped: dict[str, Any] = {}
 
         seconds = params.get("seconds")
+        if seconds is None:
+            seconds = params.get("duration_seconds")
         if seconds is not None:
             mapped["duration"] = self._coerce_duration(seconds)
 
