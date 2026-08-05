@@ -80,6 +80,7 @@ class KlingVideoConfig(BaseVideoConfig):
             "input_reference",
             "seconds",
             "size",
+            "generate_audio",
             "user",
             "extra_headers",
             "extra_body",
@@ -128,6 +129,10 @@ class KlingVideoConfig(BaseVideoConfig):
         start_image = self._coerce_start_image(params.get("input_reference"))
         if start_image:
             mapped["image"] = start_image
+
+        generate_audio = params.get("generate_audio")
+        if generate_audio is not None:
+            mapped["sound"] = "on" if generate_audio else "off"
 
         supported = self.get_supported_openai_params(model)
         handled = {"resolution"}

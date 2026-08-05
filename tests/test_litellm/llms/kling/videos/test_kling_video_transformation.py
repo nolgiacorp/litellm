@@ -86,6 +86,88 @@ class TestKlingVideoTransformation:
         assert mapped["audio"] is True
         assert "extra_body" not in mapped
 
+    def test_generate_audio_is_a_supported_param(self):
+        assert "generate_audio" in self.config.get_supported_openai_params(MODEL)
+
+    def test_map_generate_audio_true_maps_to_sound_on(self):
+        mapped = self.config.map_openai_params(
+            video_create_optional_params={"generate_audio": True},
+            model=MODEL,
+            drop_params=False,
+        )
+        assert mapped["sound"] == "on"
+        assert "generate_audio" not in mapped
+
+    def test_map_generate_audio_false_maps_to_sound_off(self):
+        mapped = self.config.map_openai_params(
+            video_create_optional_params={"generate_audio": False},
+            model=MODEL,
+            drop_params=False,
+        )
+        assert mapped["sound"] == "off"
+        assert "generate_audio" not in mapped
+
+    def test_map_generate_audio_omitted_leaves_sound_unset(self):
+        mapped = self.config.map_openai_params(
+            video_create_optional_params={"seconds": 5},
+            model=MODEL,
+            drop_params=False,
+        )
+        assert "sound" not in mapped
+
+    def test_create_request_t2v_carries_sound_on_into_body(self):
+        mapped = self.config.map_openai_params(
+            video_create_optional_params={"generate_audio": True, "seconds": 5},
+            model=MODEL,
+            drop_params=False,
+        )
+        data, _, url = self.config.transform_video_create_request(
+            model=MODEL,
+            prompt="a cat playing piano",
+            api_base=API_BASE,
+            video_create_optional_request_params=mapped,
+            litellm_params=GenericLiteLLMParams(),
+            headers={},
+        )
+        assert url == f"{API_BASE}/videos/text2video"
+        assert data["sound"] == "on"
+        assert "generate_audio" not in data
+
+    def test_create_request_i2v_carries_sound_on_into_body(self):
+        mapped = self.config.map_openai_params(
+            video_create_optional_params={"generate_audio": True, "input_reference": "https://img/x.png"},
+            model="kling-v3-i2v",
+            drop_params=False,
+        )
+        data, _, url = self.config.transform_video_create_request(
+            model="kling/kling-v3-i2v",
+            prompt="animate",
+            api_base=API_BASE,
+            video_create_optional_request_params=mapped,
+            litellm_params=GenericLiteLLMParams(),
+            headers={},
+        )
+        assert url == f"{API_BASE}/videos/image2video"
+        assert data["image"] == "https://img/x.png"
+        assert data["sound"] == "on"
+        assert "generate_audio" not in data
+
+    def test_create_request_generate_audio_false_carries_sound_off_into_body(self):
+        mapped = self.config.map_openai_params(
+            video_create_optional_params={"generate_audio": False},
+            model=MODEL,
+            drop_params=False,
+        )
+        data, _, _ = self.config.transform_video_create_request(
+            model=MODEL,
+            prompt="x",
+            api_base=API_BASE,
+            video_create_optional_request_params=mapped,
+            litellm_params=GenericLiteLLMParams(),
+            headers={},
+        )
+        assert data["sound"] == "off"
+
     @pytest.mark.parametrize(
         "resolution,expected_mode",
         [("720p", "std"), ("1080p", "pro"), ("4k", "4k")],
