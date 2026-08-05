@@ -255,6 +255,107 @@ class TestBflVideoMapAndCreate:
         assert "duration" not in data
         assert data["generate_audio"] is True
 
+    def test_map_end_frame_pins_start_and_end_keyframes(self):
+        # NOL-442: start + end frame pinning maps to BFL's two-element keyframes array (i2v).
+        mapped = self.config.map_openai_params(
+            video_create_optional_params={
+                "image_url": "https://img/start.png",
+                "end_image_url": "https://img/end.png",
+            },
+            model=MODEL,
+            drop_params=False,
+        )
+        assert mapped["mode"] == "i2v"
+        assert mapped["keyframes"] == ("https://img/start.png", "https://img/end.png")
+
+    def test_map_element_refs_become_timestamped_keyframes(self):
+        # NOL-442: three or more storyboard frames pin to evenly spaced timestamps across the duration.
+        mapped = self.config.map_openai_params(
+            video_create_optional_params={
+                "image_urls": ["https://img/a.png", "https://img/b.png", "https://img/c.png"],
+                "seconds": 6,
+            },
+            model=MODEL,
+            drop_params=False,
+        )
+        assert mapped["mode"] == "i2v"
+        assert mapped["keyframes"] == (
+            (0.0, "https://img/a.png"),
+            (3.0, "https://img/b.png"),
+            (6.0, "https://img/c.png"),
+        )
+
+    def test_map_start_plus_elements_plus_end_ordered_and_timestamped(self):
+        mapped = self.config.map_openai_params(
+            video_create_optional_params={
+                "image_url": "https://img/start.png",
+                "image_urls": ["https://img/mid.png"],
+                "end_image_url": "https://img/end.png",
+                "duration_seconds": 10,
+            },
+            model=MODEL,
+            drop_params=False,
+        )
+        assert mapped["mode"] == "i2v"
+        assert mapped["keyframes"] == (
+            (0.0, "https://img/start.png"),
+            (5.0, "https://img/mid.png"),
+            (10.0, "https://img/end.png"),
+        )
+
+    def test_map_video_refs_become_v2v_start_video(self):
+        # NOL-442: a reference video maps to start_video and forces v2v continuation, never keyframes.
+        mapped = self.config.map_openai_params(
+            video_create_optional_params={
+                "video_urls": ["https://v/clip.mp4"],
+                "image_url": "https://img/ignored.png",
+            },
+            model=MODEL,
+            drop_params=False,
+        )
+        assert mapped["mode"] == "v2v"
+        assert mapped["start_video"] == "https://v/clip.mp4"
+        assert "keyframes" not in mapped
+
+    def test_nolgia_reference_aliases_never_leak_into_strict_body(self):
+        # NOL-442 regression: BFL's flux-3-video body is strict (422 extra_forbidden), so the
+        # platform's end_image_url / image_urls / video_urls aliases must be consumed, never forwarded.
+        mapped = self.config.map_openai_params(
+            video_create_optional_params={
+                "image_url": "https://img/start.png",
+                "end_image_url": "https://img/end.png",
+                "image_urls": ["https://img/mid.png"],
+                "seconds": 8,
+            },
+            model=MODEL,
+            drop_params=False,
+        )
+        data, _, _ = self.config.transform_video_create_request(
+            model=MODEL,
+            prompt="a storyboard",
+            api_base=API_BASE,
+            video_create_optional_request_params=mapped,
+            litellm_params=GenericLiteLLMParams(),
+            headers={},
+        )
+        assert "end_image_url" not in data
+        assert "image_urls" not in data
+        assert "video_urls" not in data
+        assert "image_url" not in data
+        assert data["mode"] == "i2v"
+
+    def test_map_explicit_keyframes_take_precedence(self):
+        mapped = self.config.map_openai_params(
+            video_create_optional_params={
+                "keyframes": [[0, "https://img/a.png"], [2.5, "https://img/b.png"]],
+                "image_url": "https://img/ignored.png",
+            },
+            model=MODEL,
+            drop_params=False,
+        )
+        assert mapped["mode"] == "i2v"
+        assert mapped["keyframes"] == ([0, "https://img/a.png"], [2.5, "https://img/b.png"])
+
 
 class TestBflVideoEnvironmentAndUrls:
     def setup_method(self):
@@ -485,7 +586,9 @@ def test_provider_config_manager_returns_bfl_video_config():
     from litellm.types.utils import LlmProviders
     from litellm.utils import ProviderConfigManager
 
-    config = ProviderConfigManager.get_provider_video_config(model="flux-3-video", provider=LlmProviders.BLACK_FOREST_LABS)
+    config = ProviderConfigManager.get_provider_video_config(
+        model="flux-3-video", provider=LlmProviders.BLACK_FOREST_LABS
+    )
     assert isinstance(config, BflVideoConfig)
 
 

@@ -100,6 +100,10 @@ _OPENAI_ONLY_PARAMS = frozenset(
         "input_reference",
         "image",
         "image_url",
+        "image_urls",
+        "end_image_url",
+        "video_urls",
+        "start_video",
         "keyframes",
         "seconds",
         "duration_seconds",
@@ -173,7 +177,8 @@ class BflVideoConfig(BaseVideoConfig):
             seconds = params.get("duration_seconds")
         resolution = params.get("resolution")
         generate_audio = params.get("generate_audio")
-        keyframes = self._keyframes(params)
+        start_video = self._start_video(params)
+        keyframes = None if start_video is not None else self._keyframes(params, seconds)
         mapped = (
             ("duration", self._coerce_duration(seconds) if seconds is not None else None),
             ("resolution", str(resolution).strip().lower() if resolution is not None else None),
@@ -181,7 +186,8 @@ class BflVideoConfig(BaseVideoConfig):
             ("generate_audio", self._coerce_bool(generate_audio) if generate_audio is not None else None),
             ("safety_tolerance", params.get("safety_tolerance")),
             ("keyframes", keyframes),
-            ("mode", "i2v" if keyframes else None),
+            ("start_video", start_video),
+            ("mode", self._mode(params, start_video=start_video, keyframes=keyframes)),
         )
         consumed = frozenset(key for key, value in mapped if value is not None)
         passthrough = tuple(
@@ -215,19 +221,67 @@ class BflVideoConfig(BaseVideoConfig):
             return size.replace("x", ":")
         return None
 
-    def _keyframes(self, params: Mapping[str, Any]) -> tuple[Any, ...] | None:
+    def _keyframes(self, params: Mapping[str, Any], seconds: object) -> tuple[object, ...] | None:
         existing = params.get("keyframes")
         if existing:
             return tuple(existing) if isinstance(existing, (list, tuple)) else (existing,)
 
+        frames = tuple(
+            frame
+            for frame in (
+                self._start_frame(params),
+                *self._element_frames(params),
+                self._coerce_media_ref(params.get("end_image_url")),
+            )
+            if frame is not None
+        )
+        if not frames:
+            return None
+        if len(frames) <= 2:
+            return frames
+        return self._timestamped_keyframes(frames, seconds)
+
+    def _start_frame(self, params: Mapping[str, Any]) -> str | None:
         for source in ("image", "input_reference", "image_url"):
-            coerced = self._coerce_image_ref(params.get(source))
+            coerced = self._coerce_media_ref(params.get(source))
             if coerced is not None:
-                return (coerced,)
+                return coerced
+        return None
+
+    def _element_frames(self, params: Mapping[str, Any]) -> tuple[str, ...]:
+        image_urls = params.get("image_urls")
+        if not isinstance(image_urls, (list, tuple)):
+            return ()
+        return tuple(frame for frame in (self._coerce_media_ref(url) for url in image_urls) if frame is not None)
+
+    @staticmethod
+    def _timestamped_keyframes(frames: tuple[str, ...], seconds: object) -> tuple[object, ...]:
+        duration = _safe_float(seconds)
+        if duration is None or duration <= 0:
+            return frames
+        last = len(frames) - 1
+        return tuple((round(index * duration / last, 2), frame) for index, frame in enumerate(frames))
+
+    def _start_video(self, params: Mapping[str, Any]) -> str | None:
+        native = params.get("start_video")
+        if native:
+            return self._coerce_media_ref(native)
+        video_urls = params.get("video_urls")
+        if isinstance(video_urls, (list, tuple)) and video_urls:
+            return self._coerce_media_ref(video_urls[0])
         return None
 
     @staticmethod
-    def _coerce_image_ref(ref: Any) -> str | None:
+    def _mode(params: Mapping[str, Any], start_video: str | None, keyframes: tuple[object, ...] | None) -> str | None:
+        if start_video is not None:
+            return "v2v"
+        if keyframes:
+            return "i2v"
+        explicit = params.get("mode")
+        return str(explicit) if explicit else None
+
+    @staticmethod
+    def _coerce_media_ref(ref: Any) -> str | None:
         if ref is None:
             return None
         if isinstance(ref, str):
