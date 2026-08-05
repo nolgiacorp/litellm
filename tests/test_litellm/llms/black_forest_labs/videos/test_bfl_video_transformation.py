@@ -74,6 +74,47 @@ class TestBflVideoMapAndCreate:
         )
         assert mapped["duration"] == "auto"
 
+    def test_map_platform_duration_seconds_alias_becomes_duration(self):
+        # Regression (NOL-431): the platform sends duration_seconds; BFL's t2v schema forbids it
+        # (extra_forbidden 422) and wants duration, so the alias must map to duration, never leak.
+        mapped = self.config.map_openai_params(
+            video_create_optional_params={"duration_seconds": 5},
+            model=MODEL,
+            drop_params=False,
+        )
+        assert mapped["duration"] == 5
+        assert "duration_seconds" not in mapped
+
+    def test_map_seconds_wins_and_duration_seconds_never_leaks(self):
+        # Regression (NOL-431): nolgia-api mirrors the clip length into BOTH seconds and
+        # duration_seconds; BFL must receive a single duration field and no duration_seconds.
+        mapped = self.config.map_openai_params(
+            video_create_optional_params={"seconds": 8, "duration_seconds": 8},
+            model=MODEL,
+            drop_params=False,
+        )
+        assert mapped["duration"] == 8
+        assert "duration_seconds" not in mapped
+
+    def test_create_request_body_carries_duration_not_duration_seconds(self):
+        # Regression (NOL-431): the exact payload that 422'd in prod must produce a BFL body
+        # with duration and without the extra_forbidden duration_seconds field.
+        mapped = self.config.map_openai_params(
+            video_create_optional_params={"seconds": 5, "duration_seconds": 5, "generate_audio": True},
+            model=MODEL,
+            drop_params=False,
+        )
+        data, _, _ = self.config.transform_video_create_request(
+            model=MODEL,
+            prompt="a calico cat stretching",
+            api_base=API_BASE,
+            video_create_optional_request_params=mapped,
+            litellm_params=GenericLiteLLMParams(),
+            headers={},
+        )
+        assert data["duration"] == 5
+        assert "duration_seconds" not in data
+
     @pytest.mark.parametrize("value", [True, False])
     def test_generate_audio_top_level_is_forwarded(self, value):
         # Regression: generate_audio arriving as a top-level param must reach the BFL body.
