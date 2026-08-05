@@ -35,6 +35,26 @@ def _add_base64_padding(value: str) -> str:
     return value
 
 
+def _urlsafe_b64encode_without_padding(value: str) -> str:
+    """
+    URL-safe base64 with the '=' padding stripped, so the encoded id carries no
+    '/', '+', or '=' and stays intact as a single URL path segment.
+    """
+    return base64.urlsafe_b64encode(value.encode("utf-8")).decode("utf-8").rstrip("=")
+
+
+def _b64decode_urlsafe_or_standard(value: str) -> str:
+    """
+    Decode a managed-id payload minted by the URL-safe encoder, falling back to the
+    legacy standard-base64 alphabet so ids issued before the URL-safe switch still resolve.
+    """
+    padded = _add_base64_padding(value)
+    try:
+        return base64.urlsafe_b64decode(padded.encode("utf-8")).decode("utf-8")
+    except Exception:
+        return base64.b64decode(padded.encode("utf-8")).decode("utf-8")
+
+
 def encode_video_id_with_provider(video_id: str, provider: str, model_id: Optional[str] = None) -> str:
     """Encode provider and model_id into video_id using base64."""
     if not provider or not video_id:
@@ -51,7 +71,7 @@ def encode_video_id_with_provider(video_id: str, provider: str, model_id: Option
     # ID is not encoded (even if it starts with video_), so encode it
     assembled_id = str(SpecialEnums.LITELLM_MANAGED_VIDEO_COMPLETE_STR.value).format(provider, model_id or "", video_id)
 
-    base64_encoded_id: str = base64.b64encode(assembled_id.encode("utf-8")).decode("utf-8")
+    base64_encoded_id: str = _urlsafe_b64encode_without_padding(assembled_id)
 
     return f"{VIDEO_ID_PREFIX}{base64_encoded_id}"
 
@@ -73,9 +93,8 @@ def decode_video_id_with_provider(encoded_video_id: str) -> DecodedVideoId:
         )
 
     try:
-        cleaned_id = encoded_video_id.replace(VIDEO_ID_PREFIX, "")
-        cleaned_id = _add_base64_padding(cleaned_id)
-        decoded_id = base64.b64decode(cleaned_id.encode("utf-8")).decode("utf-8")
+        cleaned_id = encoded_video_id.removeprefix(VIDEO_ID_PREFIX)
+        decoded_id = _b64decode_urlsafe_or_standard(cleaned_id)
 
         if ";" not in decoded_id:
             return DecodedVideoId(
