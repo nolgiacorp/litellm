@@ -6814,6 +6814,10 @@ class BaseLLMHTTPHandler:
         else:
             sync_httpx_client = client
 
+        # Providers whose create transform issues follow-up requests (e.g. Topaz relaying the
+        # source clip to a presigned upload URL) reuse this client.
+        video_generation_provider_config.set_status_lookup_client(sync_httpx_client)
+
         headers = video_generation_provider_config.validate_environment(
             api_key=api_key or litellm_params.get("api_key", None),
             headers=video_generation_optional_request_params.get("extra_headers", {}) or {},
@@ -6918,6 +6922,10 @@ class BaseLLMHTTPHandler:
         else:
             async_httpx_client = client
 
+        # Providers whose create transform issues follow-up requests (e.g. Topaz relaying the
+        # source clip to a presigned upload URL) reuse this client.
+        video_generation_provider_config.set_status_lookup_client(async_httpx_client)
+
         headers = video_generation_provider_config.validate_environment(
             api_key=api_key or litellm_params.get("api_key", None),
             headers=video_generation_optional_request_params.get("extra_headers", {}) or {},
@@ -6982,7 +6990,7 @@ class BaseLLMHTTPHandler:
                 provider_config=video_generation_provider_config,
             )
 
-        return video_generation_provider_config.transform_video_create_response(
+        return await video_generation_provider_config.async_transform_video_create_response(
             model=model,
             raw_response=response,
             logging_obj=logging_obj,
@@ -7026,6 +7034,9 @@ class BaseLLMHTTPHandler:
             sync_httpx_client = _get_httpx_client(params={"ssl_verify": litellm_params.get("ssl_verify", None)})
         else:
             sync_httpx_client = client
+
+        # Providers whose content transform issues a follow-up download reuse this client.
+        video_content_provider_config.set_status_lookup_client(sync_httpx_client)
 
         headers = video_content_provider_config.validate_environment(
             headers=extra_headers or {},
@@ -7106,6 +7117,9 @@ class BaseLLMHTTPHandler:
             )
         else:
             async_httpx_client = client
+
+        # Providers whose content transform issues a follow-up download reuse this client.
+        video_content_provider_config.set_status_lookup_client(async_httpx_client)
 
         headers = video_content_provider_config.validate_environment(
             headers=extra_headers or {},

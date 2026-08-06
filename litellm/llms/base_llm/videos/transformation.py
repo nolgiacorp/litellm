@@ -122,6 +122,30 @@ class BaseVideoConfig(ABC):
     ) -> VideoObject:
         pass
 
+    async def async_transform_video_create_response(
+        self,
+        model: str,
+        raw_response: httpx.Response,
+        logging_obj: LiteLLMLoggingObj,
+        custom_llm_provider: Optional[str] = None,
+        request_data: Optional[Dict] = None,
+    ) -> VideoObject:
+        """
+        Async transform of a video create response.
+        Optional method - providers whose submit leg needs a further async call before the
+        job is actually running (e.g. Topaz, which must PUT the source bytes to the presigned
+        upload URL the create response returns) should override this.
+
+        Default implementation falls back to sync transform_video_create_response.
+        """
+        return self.transform_video_create_response(
+            model=model,
+            raw_response=raw_response,
+            logging_obj=logging_obj,
+            custom_llm_provider=custom_llm_provider,
+            request_data=request_data,
+        )
+
     @abstractmethod
     def transform_video_content_request(
         self,
@@ -298,11 +322,12 @@ class BaseVideoConfig(ABC):
 
     def set_status_lookup_client(self, client: "HTTPHandler | AsyncHTTPHandler") -> None:
         """
-        Adopt the HTTP client the handler selected for the status request.
+        Adopt the HTTP client the handler selected for the current request.
 
-        No-op by default. Providers whose status transform issues a further lookup
-        (e.g. fal.ai resolving a queue-completed request against its result payload)
-        override this so the follow-up request inherits the caller's client, mock,
+        Called on the create, status and content legs. No-op by default. Providers whose
+        transform issues a further request (e.g. fal.ai resolving a queue-completed request
+        against its result payload, or Topaz relaying source footage to a presigned upload
+        URL) override this so the follow-up request inherits the caller's client, mock,
         transport and ssl_verify settings instead of a fresh default client.
         """
 
