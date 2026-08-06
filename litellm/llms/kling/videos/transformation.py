@@ -149,7 +149,10 @@ class KlingVideoConfig(BaseVideoConfig):
         if resolution is not None:
             mapped["mode"] = self._resolution_to_mode(resolution)
 
-        start_image = self._coerce_start_image(params.get("input_reference"))
+        # input_reference and image_url are the same start-frame slot under two names
+        # and both are declared as executable, so both have to reach Kling's image
+        # field; forwarding image_url verbatim would leave it ignored by the provider.
+        start_image = self._coerce_start_image(params.get("input_reference") or params.get("image_url"))
         if start_image:
             mapped["image"] = start_image
 
@@ -158,7 +161,7 @@ class KlingVideoConfig(BaseVideoConfig):
             mapped["sound"] = "on" if generate_audio else "off"
 
         supported = self.get_supported_openai_params(model)
-        handled = {"resolution"}
+        handled = {"resolution", "image_url"}  # mutable-ok: local lookup set, never mutated
         for key, value in params.items():
             if key not in supported and key not in handled and key not in mapped:
                 mapped[key] = value

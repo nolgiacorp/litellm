@@ -18,11 +18,14 @@ sys.path.insert(0, os.path.abspath("../../.."))
 import litellm
 from litellm.llms.black_forest_labs.videos.transformation import BflVideoConfig
 from litellm.llms.fal_ai.videos.transformation import FalAIVideoConfig
+from litellm.llms.gemini.videos.transformation import GeminiVideoConfig
 from litellm.llms.kling.videos.transformation import KlingVideoConfig
 from litellm.llms.minimax.videos.transformation import MinimaxVideoConfig
 from litellm.llms.openai.videos.transformation import OpenAIVideoConfig
 from litellm.llms.openrouter.videos.transformation import OpenRouterVideoConfig
 from litellm.llms.xai.videos.transformation import XAIVideoConfig
+from litellm.proxy.video_endpoints.capabilities import build_video_capability_report
+from litellm.types.router import GenericLiteLLMParams
 from litellm.videos.capabilities import (
     CAPABILITY_PARAMS,
     DeclaredCapabilityParams,
@@ -208,3 +211,154 @@ def test_declared_support_never_claims_params_outside_the_vocabulary():
     )
     assert failure is not None
     assert "not_a_capability_param" not in failure.supported
+
+
+def test_unaudited_fal_app_stays_undeclared():
+    """
+    fal is a gateway onto arbitrary app schemas. Declaring an app we have never read
+    as exhaustively known would 400 a param that app accepts under a name this
+    transformation has not seen, replacing a working passthrough with a refusal.
+    """
+    config = FalAIVideoConfig()
+    assert isinstance(
+        config.get_capability_param_support("fal_ai/some-vendor/mystery-app"),
+        UndeclaredCapabilityParams,
+    )
+    _map(config, "fal_ai/some-vendor/mystery-app", {"end_image_url": "https://e.com/e.png"})
+
+
+def test_fal_upscale_app_declares_only_the_media_slot_it_reads():
+    """The restore lane takes a video and restore controls; it renders no soundtrack."""
+    model = "fal_ai/fal-ai/seedvr/upscale/video"
+    _map(FalAIVideoConfig(), model, {"input_reference": "https://e.com/src.mp4"})
+    with pytest.raises(litellm.BadRequestError):
+        _map(FalAIVideoConfig(), model, {"generate_audio": True})
+
+
+def test_kling_image_url_alias_sets_the_start_frame():
+    """
+    image_url is declared as executable, so it has to land in Kling's image field.
+    Forwarding it verbatim would leave an i2v request rejected as frameless and a
+    t2v request silently unconditioned.
+    """
+    mapped = _map(KlingVideoConfig(), "kling/kling-v3-i2v", {"image_url": "https://e.com/s.png"})
+    assert mapped["image"] == "https://e.com/s.png"
+    assert "image_url" not in mapped, "the alias must not also reach Kling as an unknown field"
+
+
+def test_gemini_omni_honors_input_reference_as_the_start_frame(monkeypatch):
+    """
+    input_reference is declared as executable, so an Omni request carrying it must
+    become an image_to_video interaction. Sending it as text-to-video would bill for a
+    generation that ignored the requested frame.
+    """
+    from litellm.llms.gemini.videos import omni_transformation
+
+    monkeypatch.setattr(omni_transformation, "fetch_image_as_base64", lambda url: ("Zm9v", "image/png"))
+
+    request_data, _, _ = omni_transformation.GeminiOmniVideoConfig().transform_video_create_request(
+        model="gemini/gemini-omni-flash-preview",
+        prompt="a cat",
+        api_base="https://generativelanguage.googleapis.com/v1beta/interactions",
+        video_create_optional_request_params={"input_reference": "https://e.com/s.png"},
+        litellm_params=GenericLiteLLMParams(),
+        headers={},
+    )
+
+    assert request_data["generation_config"] == {"video_config": {"task": "image_to_video"}}
+    assert request_data["input"][0] == {"type": "image", "data": "Zm9v", "mime_type": "image/png"}
+
+
+def _veo_request(model: str, params: dict):
+    return GeminiVideoConfig().transform_video_create_request(
+        model=model,
+        prompt="a cat",
+        api_base="https://generativelanguage.googleapis.com",
+        video_create_optional_request_params=params,
+        litellm_params=GenericLiteLLMParams(),
+        headers={},
+    )
+
+
+def test_veo_2_refuses_a_soundtrack_it_cannot_render():
+    """
+    Only Veo 3.x renders audio. The flag is consumed rather than forwarded, so
+    accepting generate_audio=true on Veo 2 would bill a silent video for a request
+    that asked for sound.
+    """
+    with pytest.raises(ValueError, match="generate_audio=true is not supported"):
+        _veo_request("gemini/veo-2.0-generate-001", {"generate_audio": True})
+
+
+@pytest.mark.parametrize(
+    "model,params",
+    (
+        # Veo 2 renders silent video, so no-audio is exactly what it delivers.
+        ("gemini/veo-2.0-generate-001", {"generate_audio": False}),
+        ("gemini/veo-3.0-generate-001", {"generate_audio": True}),
+    ),
+)
+def test_veo_audio_values_a_model_does_deliver_still_pass(model, params):
+    _veo_request(model, params)
+
+
+def _deployment(model_name: str, model: str, custom_llm_provider: str | None = None):
+    litellm_params = {"model": model}
+    if custom_llm_provider is not None:
+        litellm_params["custom_llm_provider"] = custom_llm_provider
+    return {"model_name": model_name, "litellm_params": litellm_params}
+
+
+def _entry(report, model_name: str):
+    return next((entry for entry in report["data"] if entry["model"] == model_name), None)
+
+
+def test_report_intersects_capabilities_across_deployments_of_one_name():
+    """
+    The router may route to any healthy deployment under a name, so advertising the
+    first one's surface would promise a capability that 400s once routing lands on the
+    other. Only what every route executes is safe to publish.
+    """
+    report = build_video_capability_report(
+        (
+            _deployment("kling-v3-i2v", "kling/kling-v3-i2v"),
+            _deployment("kling-v3-i2v", "fal_ai/fal-ai/kling-video/v3/pro/image-to-video"),
+        ),
+        visible_models=frozenset({"kling-v3-i2v"}),
+    )
+
+    entry = _entry(report, "kling-v3-i2v")
+    assert entry is not None
+    assert entry["custom_llm_providers"] == ["fal_ai", "kling"]
+    # fal's twin takes an end frame; the direct Kling route has no field for one.
+    assert "end_image_url" not in entry["capability_params"]
+    assert "input_reference" in entry["capability_params"]
+
+
+def test_report_uses_the_deployments_explicit_provider():
+    """
+    A deployment routes on litellm_params.custom_llm_provider, so resolving from the
+    model string alone would report a surface the route never serves.
+    """
+    report = build_video_capability_report(
+        (_deployment("veo-3", "veo-3.0-generate-001", custom_llm_provider="gemini"),),
+        visible_models=frozenset({"veo-3"}),
+    )
+
+    entry = _entry(report, "veo-3")
+    assert entry is not None
+    assert entry["custom_llm_providers"] == ["gemini"]
+    assert entry["declared"] is True
+
+
+def test_report_omits_models_the_caller_cannot_route_to():
+    """A key scoped to a subset of models must not learn the rest exist."""
+    report = build_video_capability_report(
+        (
+            _deployment("visible-video", "kling/kling-v3"),
+            _deployment("restricted-video", "kling/kling-v3"),
+        ),
+        visible_models=frozenset({"visible-video"}),
+    )
+
+    assert [entry["model"] for entry in report["data"]] == ["visible-video"]

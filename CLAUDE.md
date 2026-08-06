@@ -145,7 +145,11 @@ Ask yourself: "Would a senior engineer say this is overcomplicated?" If yes, sim
   audited" and keeps the old behavior. The declaration is also what
   `GET /v1/videos/capabilities` reports, which nolgia-api intersects its
   catalog against, so declaring a param a provider does not actually
-  consume re-opens the silent-drop hole from the advertisement side.
+  consume re-opens the silent-drop hole from the advertisement side. That
+  report is scoped to the calling key's visible models and, when several
+  deployments back one `model_name`, lists every provider
+  (`custom_llm_providers`) but only the capabilities ALL of them execute,
+  because the router may route to any of them.
 - Routing decides capability, not the vendor: `kling-v3-*-i2v` is served
   by the DIRECT kling provider (no end-frame field; Kling calls it
   `image_tail`) while `kling-v3-*-i2v-fal` accepts `end_image_url`, and
