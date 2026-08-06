@@ -29,6 +29,7 @@ KLING_V3_T2V_MODEL = "fal_ai/fal-ai/kling-video/v3/standard/text-to-video"
 KLING_V3_T2V_MODEL_ID = "fal-ai/kling-video/v3/standard/text-to-video"
 SEEDANCE_R2V_MODEL = "fal_ai/fal-ai/bytedance/seedance-2.0/reference-to-video"
 SEEDANCE_I2V_MODEL = "fal_ai/fal-ai/bytedance/seedance-2.0/image-to-video"
+SEEDVR_UPSCALE_MODEL = "fal_ai/fal-ai/seedvr/upscale/video"
 KLING_QUEUE_NAMESPACE = "fal-ai/kling-video"
 FAL_API_BASE = "https://queue.fal.run"
 FAL_CONTENT_POLICY_BODY = (
@@ -215,6 +216,34 @@ class TestFalAIVideoTransformation:
         )
         assert params["start_image_url"] == "https://example.com/a.jpg"
         assert "image_url" not in params
+
+    def test_map_openai_params_sends_seedvr_reference_as_video_url(self):
+        params = self.config.map_openai_params(
+            video_create_optional_params={"input_reference": "https://example.com/source.mp4"},
+            model=SEEDVR_UPSCALE_MODEL,
+            drop_params=False,
+        )
+        assert params["video_url"] == "https://example.com/source.mp4"
+        assert "image_url" not in params
+
+    def test_map_openai_params_forwards_seedvr_restore_controls(self):
+        params = self.config.map_openai_params(
+            video_create_optional_params={
+                "input_reference": "https://example.com/source.mp4",
+                "extra_body": {
+                    "upscale_mode": "target",
+                    "target_resolution": "1080p",
+                    "noise_scale": 0.2,
+                },
+            },
+            model=SEEDVR_UPSCALE_MODEL,
+            drop_params=False,
+        )
+        assert params["video_url"] == "https://example.com/source.mp4"
+        assert params["upscale_mode"] == "target"
+        assert params["target_resolution"] == "1080p"
+        assert params["noise_scale"] == 0.2
+        assert "extra_body" not in params
 
     def test_map_openai_params_falls_back_to_colon_replacement(self):
         params = self.config.map_openai_params(

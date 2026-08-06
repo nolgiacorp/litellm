@@ -70,6 +70,7 @@ _SINGLE_IMAGE_URL = _ReferenceField(name="image_url", is_list=False)
 _REFERENCE_FIELD_BY_MODEL_MARKER: tuple[tuple[str, _ReferenceField], ...] = (
     ("kling-video/v3", _ReferenceField(name="start_image_url", is_list=False)),
     ("seedance-2.0/reference-to-video", _ReferenceField(name="image_urls", is_list=True)),
+    ("seedvr/upscale/video", _ReferenceField(name="video_url", is_list=False)),
 )
 
 _MISSING_VIDEO_URL_MESSAGE = "Video URL not found in fal.ai response. The job may still be processing."
