@@ -31,15 +31,16 @@ EXCLUDED_ROLLOUT_FLAGS = {
     "LITELLM_RUST",
 }
 
-# Fork-specific provider constants. This test validates against the upstream public
-# docs (BerriAI/litellm-docs is checked out into docs/my-website at CI time), which
-# does not carry this fork's private provider settings, so there is nowhere here to
-# document them.
+# Fork-specific provider constants and the limits only this fork's providers read.
+# This test validates against the upstream public docs (BerriAI/litellm-docs is
+# checked out into docs/my-website at CI time), which does not carry this fork's
+# private provider settings, so there is nowhere here to document them.
 EXCLUDED_FORK_PRIVATE_VARS = {
     "FAL_AI_DEFAULT_API_BASE",
     "FAL_AI_POLLING_TIMEOUT",
     "KLING_DEFAULT_API_BASE",
     "KLING_POLLING_TIMEOUT",
+    "MAX_VIDEO_URL_DOWNLOAD_SIZE_MB",
     "MINIMAX_MEDIA_DEFAULT_API_BASE",
 }
 
