@@ -1,3 +1,4 @@
+import base64
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from json import JSONDecodeError, loads
@@ -8,6 +9,7 @@ from httpx._types import RequestFiles
 
 import litellm
 from litellm.constants import FAL_AI_DEFAULT_API_BASE
+from litellm.litellm_core_utils.prompt_templates.common_utils import extract_file_data
 from litellm.litellm_core_utils.url_utils import encode_url_path_segment
 from litellm.llms.base_llm.chat.transformation import BaseLLMException
 from litellm.llms.base_llm.videos.transformation import BaseVideoConfig
@@ -20,6 +22,7 @@ from litellm.llms.custom_httpx.http_handler import (
 from litellm.llms.fal_ai.utils import normalize_fal_model_id as _normalize_fal_model_id
 from litellm.secret_managers.main import get_secret_str
 from litellm.types.router import GenericLiteLLMParams
+from litellm.types.utils import FileTypes
 from litellm.types.videos.main import VideoCreateOptionalRequestParams, VideoObject
 from litellm.types.videos.utils import (
     decode_video_id_with_provider,
@@ -57,6 +60,7 @@ _SIZE_TO_ASPECT_RATIO = {
 class _ReferenceField:
     name: str
     is_list: bool
+    fallback_content_type: str = "image/png"
 
 
 _SINGLE_IMAGE_URL = _ReferenceField(name="image_url", is_list=False)
@@ -70,7 +74,15 @@ _SINGLE_IMAGE_URL = _ReferenceField(name="image_url", is_list=False)
 _REFERENCE_FIELD_BY_MODEL_MARKER: tuple[tuple[str, _ReferenceField], ...] = (
     ("kling-video/v3", _ReferenceField(name="start_image_url", is_list=False)),
     ("seedance-2.0/reference-to-video", _ReferenceField(name="image_urls", is_list=True)),
+    ("seedvr/upscale/video", _ReferenceField(name="video_url", is_list=False, fallback_content_type="video/mp4")),
 )
+
+# fal apps that take only media plus restore controls; a text prompt is neither
+# required nor used, so the create path must not invent one.
+_PROMPTLESS_MODEL_MARKERS: tuple[str, ...] = ("seedvr/upscale/video",)
+
+# Resolution knobs whose value selects the billed output tier for megapixel-priced apps.
+_RESOLUTION_REQUEST_KEYS: tuple[str, ...] = ("target_resolution", "resolution")
 
 _MISSING_VIDEO_URL_MESSAGE = "Video URL not found in fal.ai response. The job may still be processing."
 _UNREADABLE_RESULT_MESSAGE = "fal.ai returned an unreadable video result payload"
@@ -154,6 +166,22 @@ def _fal_failure_reason(payload: object) -> str | None:
         reasons = tuple(reason for reason in (_entry_reason(item) for item in container) if reason)
         return "; ".join(reasons) or None
     return _entry_reason(container)
+
+
+def _coerce_reference_url(value: FileTypes | None, fallback_content_type: str) -> str | None:
+    # fal file fields accept a hosted URL or a base64 data URI. A multipart
+    # /v1/videos upload reaches this point as bytes or a file-like object, so it
+    # is inlined as a data URI; dropping it would submit a reference-free job.
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value.strip() or None
+    extracted = extract_file_data(value)
+    content_type = extracted.get("content_type") or ""
+    if not content_type or content_type == "application/octet-stream":
+        content_type = fallback_content_type
+    encoded = base64.b64encode(extracted["content"]).decode("utf-8")
+    return f"data:{content_type};base64,{encoded}"
 
 
 def _video_url_from_payload(payload: Mapping[str, object]) -> str | None:
@@ -254,6 +282,10 @@ class FalAIVideoConfig(BaseVideoConfig):
             "extra_body",
         ]
 
+    def supports_promptless_video_create(self, model: str) -> bool:
+        normalized = model.lower()
+        return any(marker in normalized for marker in _PROMPTLESS_MODEL_MARKERS)
+
     @staticmethod
     def _reference_field_for_model(model: str) -> _ReferenceField:
         normalized = model.lower()
@@ -282,9 +314,12 @@ class FalAIVideoConfig(BaseVideoConfig):
             elif "x" in size:
                 mapped["aspect_ratio"] = size.replace("x", ":")
 
-        input_reference = video_create_optional_params.get("input_reference")
-        if isinstance(input_reference, str) and input_reference:
-            field = self._reference_field_for_model(model)
+        field = self._reference_field_for_model(model)
+        input_reference = _coerce_reference_url(
+            video_create_optional_params.get("input_reference"),
+            field.fallback_content_type,
+        )
+        if input_reference:
             mapped[field.name] = [input_reference] if field.is_list else input_reference
 
         supported = self.get_supported_openai_params(model)
@@ -345,7 +380,9 @@ class FalAIVideoConfig(BaseVideoConfig):
     ) -> tuple[dict, RequestFiles, str]:
         model_id = _normalize_fal_model_id(model)
 
-        request_data: dict[str, Any] = {"prompt": prompt}
+        # Restore/upscale apps reject an unknown `prompt` field on some schemas and
+        # ignore it on others, so an absent prompt stays absent.
+        request_data: dict[str, Any] = {"prompt": prompt} if prompt else {}
         request_data.update(video_create_optional_request_params)
         request_data.pop("model", None)
 
@@ -390,9 +427,25 @@ class FalAIVideoConfig(BaseVideoConfig):
                 usage["duration_seconds"] = float(video_obj.seconds)
             except (ValueError, TypeError):
                 pass
+        # Megapixel-priced apps (seedvr upscale) bill per output resolution, so the
+        # requested tier has to reach cost tracking; a per-second rate alone would
+        # charge a 4k restore at the 1080p price.
+        video_resolution = self._requested_video_resolution(request_data)
+        if video_resolution is not None:
+            usage["video_resolution"] = video_resolution
         video_obj.usage = usage
 
         return video_obj
+
+    @staticmethod
+    def _requested_video_resolution(request_data: dict | None) -> str | None:
+        if not request_data:
+            return None
+        for key in _RESOLUTION_REQUEST_KEYS:
+            value = request_data.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip().lower()
+        return None
 
     def transform_video_status_retrieve_request(
         self,

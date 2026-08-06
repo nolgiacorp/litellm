@@ -58,6 +58,34 @@ class TestVideoGeneration:
         assert response.size == "720x1280"
         assert response.seconds == "8"
 
+    def test_video_generation_requires_prompt_for_prompt_driven_models(self):
+        """A model that generates from text must not be sent an empty prompt."""
+        with pytest.raises(litellm.BadRequestError, match="prompt is required"):
+            video_generation(model="fal_ai/fal-ai/sora-2/text-to-video")
+
+    def test_video_generation_allows_omitted_prompt_for_video_restore(self):
+        """SeedVR restores are driven by the source clip alone, so /v1/videos must
+        accept a request without a prompt."""
+        handler = MagicMock(
+            return_value=VideoObject(id="video_1", object="video", status="queued")
+        )
+        with patch.object(
+            videos_main.base_llm_http_handler, "video_generation_handler", handler
+        ):
+            video_generation(
+                model="fal_ai/fal-ai/seedvr/upscale/video",
+                input_reference="https://example.com/source.mp4",
+                api_key="fake-fal-key",
+            )
+
+        assert handler.call_args.kwargs["prompt"] == ""
+        assert (
+            handler.call_args.kwargs["video_generation_optional_request_params"][
+                "video_url"
+            ]
+            == "https://example.com/source.mp4"
+        )
+
     def test_video_generation_with_mock_response(self):
         """Test video generation with mock response."""
         mock_data = {
@@ -314,6 +342,31 @@ class TestVideoGeneration:
             model_info=model_info,
         )
         assert cost == 0.5
+
+    @pytest.mark.parametrize(
+        "video_resolution, expected_rate",
+        [("720p", 0.0221), ("1080p", 0.0498), ("4k", 0.1991), (None, 0.0498)],
+    )
+    def test_seedvr_upscale_cost_tracks_output_resolution(
+        self, video_resolution, expected_rate
+    ):
+        """fal bills SeedVR restores per output megapixel, so a 4k restore must not
+        be charged at the 1080p rate."""
+        backup_map_path = os.path.join(
+            os.path.dirname(litellm.__file__),
+            "model_prices_and_context_window_backup.json",
+        )
+        with open(backup_map_path, "r") as f:
+            model_info = json.load(f)["fal_ai/fal-ai/seedvr/upscale/video"]
+
+        cost = default_video_cost_calculator(
+            model="fal_ai/fal-ai/seedvr/upscale/video",
+            duration_seconds=10.0,
+            custom_llm_provider="fal_ai",
+            model_info=model_info,
+            video_resolution=video_resolution,
+        )
+        assert cost == pytest.approx(expected_rate * 10.0)
 
     def test_video_generation_cost_1080p_tier_via_default_calculator(self):
         """default_video_cost_calculator uses output_cost_per_second_1080p when requested."""
