@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     from litellm.llms.custom_httpx.http_handler import AsyncHTTPHandler, HTTPHandler
     from litellm.types.videos.main import CharacterObject as _CharacterObject
     from litellm.types.videos.main import VideoObject as _VideoObject
+    from litellm.videos.capabilities import CapabilityParamSupport as _CapabilityParamSupport
 
     from ..chat.transformation import BaseLLMException as _BaseLLMException
 
@@ -21,11 +22,13 @@ if TYPE_CHECKING:
     BaseLLMException = _BaseLLMException
     VideoObject = _VideoObject
     CharacterObject = _CharacterObject
+    CapabilityParamSupport = _CapabilityParamSupport
 else:
     LiteLLMLoggingObj = Any
     BaseLLMException = Any
     VideoObject = Any
     CharacterObject = Any
+    CapabilityParamSupport = Any
 
 
 class BaseVideoConfig(ABC):
@@ -70,6 +73,22 @@ class BaseVideoConfig(ABC):
         upscale/restore app driven only by the source clip and its controls).
         """
         return False
+
+    def get_capability_param_support(self, model: str) -> "CapabilityParamSupport":
+        """
+        Declare which capability-bearing video params this model actually executes.
+
+        Capability params (start/end frames, reference media, generate_audio) change
+        what the customer receives, so a provider that cannot execute one must not
+        silently drop it. Overriding this opts the provider into a 400 instead; see
+        litellm/videos/capabilities.py for the vocabulary and the scoping rules.
+
+        The default is UndeclaredCapabilityParams, meaning "not audited" - behavior
+        is unchanged for every provider that has not opted in.
+        """
+        from litellm.videos.capabilities import UndeclaredCapabilityParams
+
+        return UndeclaredCapabilityParams()
 
     @abstractmethod
     def validate_environment(

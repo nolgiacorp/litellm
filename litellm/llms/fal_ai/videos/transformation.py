@@ -29,6 +29,7 @@ from litellm.types.videos.utils import (
     encode_video_id_with_provider,
     extract_original_video_id,
 )
+from litellm.videos.capabilities import CapabilityParamSupport, DeclaredCapabilityParams
 
 if TYPE_CHECKING:
     from litellm.litellm_core_utils.litellm_logging import Logging as _LiteLLMLoggingObj
@@ -235,6 +236,30 @@ def _parse_queue_state(payload: Mapping[str, object]) -> _QueueState:
     return _QueuePending("queued", position)
 
 
+_BASE_CAPABILITY_PARAMS = frozenset(
+    (
+        "input_reference",
+        "image_url",
+        "generate_audio",
+    )
+)
+
+_END_FRAME_MODEL_MARKER = "image-to-video"
+
+_REFERENCE_MEDIA_MODEL_MARKER = "reference-to-video"
+
+_END_FRAME_CAPABILITY_PARAMS = frozenset(("end_image_url",))
+
+_REFERENCE_MEDIA_CAPABILITY_PARAMS = frozenset(
+    (
+        "image_urls",
+        "video_urls",
+        "audio_urls",
+        "bitrate_mode",
+    )
+)
+
+
 class FalAIVideoConfig(BaseVideoConfig):
     """
     fal.ai uses a queue API: POST to /{model_id}, then poll
@@ -281,6 +306,26 @@ class FalAIVideoConfig(BaseVideoConfig):
             "extra_headers",
             "extra_body",
         ]
+
+    def get_capability_param_support(self, model: str) -> CapabilityParamSupport:
+        """
+        fal forwards unrecognized params verbatim to the app, so what an app can
+        execute is a property of the app's own input schema rather than of this
+        transformation. The declarations below mirror the fal schemas we route to:
+        every video app takes a start frame and generate_audio, image-to-video apps
+        add a top-level end_image_url, and the seedance reference-to-video app adds
+        the reference-media block (image_urls / video_urls / audio_urls) plus
+        bitrate_mode.
+
+        The verbatim passthrough is unaffected: the gate only inspects the closed
+        capability vocabulary, so every other param still flows through untouched.
+        """
+        normalized = model.lower()
+        return DeclaredCapabilityParams(
+            _BASE_CAPABILITY_PARAMS
+            | (_END_FRAME_CAPABILITY_PARAMS if _END_FRAME_MODEL_MARKER in normalized else frozenset())
+            | (_REFERENCE_MEDIA_CAPABILITY_PARAMS if _REFERENCE_MEDIA_MODEL_MARKER in normalized else frozenset())
+        )
 
     def supports_promptless_video_create(self, model: str) -> bool:
         normalized = model.lower()

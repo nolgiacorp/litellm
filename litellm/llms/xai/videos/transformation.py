@@ -23,6 +23,7 @@ from litellm.types.videos.utils import (
     encode_video_id_with_provider,
     extract_original_video_id,
 )
+from litellm.videos.capabilities import CapabilityParamSupport, DeclaredCapabilityParams
 
 if TYPE_CHECKING:
     from litellm.litellm_core_utils.litellm_logging import Logging as _LiteLLMLoggingObj
@@ -78,7 +79,26 @@ def _normalize_reference_audios(raw_reference_audios: Any) -> Sequence[Mapping[s
     ]
 
 
+_CAPABILITY_PARAMS = frozenset(
+    (
+        "input_reference",
+        "image_url",
+        "image_urls",
+        "reference_audios",
+    )
+)
+
+
 class XAIVideoConfig(BaseVideoConfig):
+    def get_capability_param_support(self, model: str) -> CapabilityParamSupport:
+        """
+        xAI executes a start frame (image), reference_images and preset-voice
+        reference_audios. It has no end-frame, reference-video, reference-audio-URL,
+        regeneration, bitrate or generate_audio surface; grok audio is native and
+        always on, so there is no soundtrack switch to honor.
+        """
+        return DeclaredCapabilityParams(_CAPABILITY_PARAMS)
+
     def get_supported_openai_params(self, model: str) -> list:
         return [
             "model",

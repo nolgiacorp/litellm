@@ -31,6 +31,7 @@ from litellm.types.videos.utils import (
     encode_video_id_with_provider,
     extract_original_video_id,
 )
+from litellm.videos.capabilities import CapabilityParamSupport, DeclaredCapabilityParams
 
 if TYPE_CHECKING:
     from litellm.litellm_core_utils.litellm_logging import Logging as _LiteLLMLoggingObj
@@ -56,6 +57,15 @@ _SIZE_TO_ASPECT_RATIO = {
 }
 
 
+_CAPABILITY_PARAMS = frozenset(
+    (
+        "input_reference",
+        "image_url",
+        "generate_audio",
+    )
+)
+
+
 class KlingVideoConfig(BaseVideoConfig):
     """
     Kling's classic /v1 API is a task API: POST to /v1/videos/text2video (or
@@ -72,6 +82,19 @@ class KlingVideoConfig(BaseVideoConfig):
 
     RESOLUTION_TO_MODE = {"720p": "std", "1080p": "pro", "4k": "4k"}
     DEFAULT_RESOLUTION = "1080p"
+
+    def get_capability_param_support(self, model: str) -> CapabilityParamSupport:
+        """
+        Kling's direct API executes a start frame (image) and generate_audio (sound).
+
+        It has NO end-frame surface here: Kling names that field image_tail, which
+        this transformation never emits, so an end_image_url would be forwarded
+        verbatim and ignored by the provider. Reference media, regeneration and
+        bitrate are likewise unimplemented. Kling's fal-hosted twin does accept an
+        end frame; that difference is exactly why advertisement has to follow the
+        route a model is actually configured on rather than the vendor's catalog.
+        """
+        return DeclaredCapabilityParams(_CAPABILITY_PARAMS)
 
     def get_supported_openai_params(self, model: str) -> list:
         return [

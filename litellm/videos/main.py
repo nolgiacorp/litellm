@@ -238,6 +238,7 @@ def video_generation(
             model=model,
             video_generation_provider_config=video_generation_provider_config,
             video_generation_optional_params=video_generation_optional_params,
+            custom_llm_provider=custom_llm_provider or "",
         )
 
         # Pre Call logging

@@ -21,14 +21,17 @@ from .transformation import fetch_image_as_base64
 
 if TYPE_CHECKING:
     from litellm.litellm_core_utils.litellm_logging import Logging as _LiteLLMLoggingObj
+    from litellm.videos.capabilities import CapabilityParamSupport as _CapabilityParamSupport
 
     from ...base_llm.chat.transformation import BaseLLMException as _BaseLLMException
 
     LiteLLMLoggingObj = _LiteLLMLoggingObj
     BaseLLMException = _BaseLLMException
+    CapabilityParamSupport = _CapabilityParamSupport
 else:
     LiteLLMLoggingObj = Any
     BaseLLMException = Any
+    CapabilityParamSupport = Any
 
 INTERACTIONS_API_REVISION = "2026-05-20"
 
@@ -63,6 +66,14 @@ def _find_video_part(interaction: InteractionsAPIResponse) -> dict[str, Any] | N
     return None
 
 
+_CAPABILITY_PARAMS = frozenset(
+    (
+        "input_reference",
+        "image_url",
+    )
+)
+
+
 class GeminiOmniVideoConfig(BaseVideoConfig):
     """
     Video generation for Gemini Omni models (e.g. gemini-omni-flash-preview).
@@ -77,6 +88,17 @@ class GeminiOmniVideoConfig(BaseVideoConfig):
     prompt guide both are expressed in the prompt text, which is what
     transform_video_create_request does with ``seconds`` and ``negative_prompt``.
     """
+
+    def get_capability_param_support(self, model: str) -> "CapabilityParamSupport":
+        """
+        Omni executes a start frame: transform_video_create_request reads image_url
+        and switches the interaction to image_to_video. It has no end-frame,
+        reference-media, regeneration or bitrate surface, and its audio is native
+        with no generate_audio switch.
+        """
+        from litellm.videos.capabilities import DeclaredCapabilityParams
+
+        return DeclaredCapabilityParams(_CAPABILITY_PARAMS)
 
     def get_supported_openai_params(self, model: str) -> list:
         return ["model", "prompt", "seconds", "size"]

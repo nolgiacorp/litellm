@@ -28,14 +28,17 @@ from litellm.types.videos.utils import (
 
 if TYPE_CHECKING:
     from litellm.litellm_core_utils.litellm_logging import Logging as _LiteLLMLoggingObj
+    from litellm.videos.capabilities import CapabilityParamSupport as _CapabilityParamSupport
 
     from ...base_llm.chat.transformation import BaseLLMException as _BaseLLMException
 
     LiteLLMLoggingObj = _LiteLLMLoggingObj
     BaseLLMException = _BaseLLMException
+    CapabilityParamSupport = _CapabilityParamSupport
 else:
     LiteLLMLoggingObj = Any
     BaseLLMException = Any
+    CapabilityParamSupport = Any
 
 
 _MAX_REFERENCE_IMAGES = 3
@@ -154,6 +157,16 @@ def _usage_video_resolution_from_parameters(
     return str(res).strip().lower()
 
 
+_CAPABILITY_PARAMS = frozenset(
+    (
+        "input_reference",
+        "image_url",
+        "image_urls",
+        "generate_audio",
+    )
+)
+
+
 class GeminiVideoConfig(BaseVideoConfig):
     """
     Configuration class for Gemini (Veo) video generation.
@@ -174,6 +187,19 @@ class GeminiVideoConfig(BaseVideoConfig):
 
     def __init__(self):
         super().__init__()
+
+    def get_capability_param_support(self, model: str) -> "CapabilityParamSupport":
+        """
+        Veo executes a start frame (image / image_url) and up to three reference
+        images ("ingredients", mapped to referenceImages on the instance), and it
+        consumes generate_audio explicitly rather than dropping it.
+
+        It has no end-frame, reference-video, reference-audio, regeneration or
+        bitrate surface.
+        """
+        from litellm.videos.capabilities import DeclaredCapabilityParams
+
+        return DeclaredCapabilityParams(_CAPABILITY_PARAMS)
 
     def get_supported_openai_params(self, model: str) -> list:
         """

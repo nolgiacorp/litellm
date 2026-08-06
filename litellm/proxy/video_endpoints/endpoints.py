@@ -16,6 +16,7 @@ from litellm.proxy.common_utils.openai_endpoint_utils import (
     get_custom_llm_provider_from_request_query,
 )
 from litellm.proxy.image_endpoints.endpoints import batch_to_bytesio
+from litellm.proxy.video_endpoints.capabilities import build_video_capability_report
 from litellm.proxy.video_endpoints.utils import (
     encode_character_id_in_response,
     extract_model_from_target_model_names,
@@ -27,6 +28,45 @@ from litellm.types.videos.utils import (
 )
 
 router = APIRouter()
+
+_VIDEO_ROUTE_DEPENDENCIES = [Depends(user_api_key_auth)]  # mutable-ok: FastAPI's decorator contract takes a list
+_VIDEO_ROUTE_TAGS = ["videos"]  # mutable-ok: FastAPI's decorator contract takes a list
+
+
+# Registered before /v1/videos/{video_id} on purpose: FastAPI resolves in
+# registration order, so the literal path has to be declared first or the
+# parameterized status route would swallow it.
+@router.get(
+    "/v1/videos/capabilities",
+    dependencies=_VIDEO_ROUTE_DEPENDENCIES,
+    response_class=ORJSONResponse,
+    tags=_VIDEO_ROUTE_TAGS,
+)
+@router.get(
+    "/videos/capabilities",
+    dependencies=_VIDEO_ROUTE_DEPENDENCIES,
+    response_class=ORJSONResponse,
+    tags=_VIDEO_ROUTE_TAGS,
+)
+async def video_capabilities():
+    """
+    Report the capability params each configured video model can actually execute.
+
+    Capability advertisement lives outside this proxy, so a catalog can get ahead of
+    the deployed image and promise inputs that would be silently discarded. This
+    endpoint is the deployed image answering for itself, derived from the same
+    provider configs the request path uses.
+
+    Example:
+    ```bash
+    curl -X GET "http://localhost:4000/v1/videos/capabilities" \
+        -H "Authorization: Bearer sk-1234"
+    ```
+    """
+    from litellm.proxy.proxy_server import llm_router
+
+    deployments = llm_router.get_model_list() if llm_router is not None else None
+    return ORJSONResponse(build_video_capability_report(deployments or ()))
 
 
 @router.post(
