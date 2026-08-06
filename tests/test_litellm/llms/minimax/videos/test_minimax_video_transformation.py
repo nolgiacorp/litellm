@@ -205,6 +205,90 @@ class TestMinimaxVideoTransformation:
                 drop_params=False,
             )
 
+    def test_map_v2_base_video_url_maps_without_default_ratio(self):
+        mapped = self.config.map_openai_params(
+            video_create_optional_params={
+                "seconds": 6,
+                "base_video_url": "https://video.example.com/source-768p.mp4",
+                "resolution": "2K",
+            },
+            model=V2_MODEL,
+            drop_params=False,
+        )
+        assert mapped["base_video"] == ("https://video.example.com/source-768p.mp4",)
+        assert mapped["resolution"] == "2K"
+        assert "ratio" not in mapped
+
+    def test_map_v2_base_video_keeps_explicit_ratio(self):
+        mapped = self.config.map_openai_params(
+            video_create_optional_params={
+                "seconds": 6,
+                "base_video_url": "https://video.example.com/source-768p.mp4",
+                "aspect_ratio": "9:16",
+            },
+            model=V2_MODEL,
+            drop_params=False,
+        )
+        assert mapped["ratio"] == "9:16"
+
+    def test_map_v2_base_video_allows_original_reference_media(self):
+        mapped = self.config.map_openai_params(
+            video_create_optional_params={
+                "seconds": 6,
+                "base_video_url": "https://video.example.com/source-768p.mp4",
+                "image_urls": ["https://img.example.com/subject.png"],
+            },
+            model=V2_MODEL,
+            drop_params=False,
+        )
+        assert mapped["base_video"] == ("https://video.example.com/source-768p.mp4",)
+        assert mapped["reference_images"] == ("https://img.example.com/subject.png",)
+
+    def test_map_v2_base_video_allows_original_frames(self):
+        mapped = self.config.map_openai_params(
+            video_create_optional_params={
+                "seconds": 6,
+                "base_video_url": "https://video.example.com/source-768p.mp4",
+                "input_reference": "https://img.example.com/start.png",
+            },
+            model=V2_MODEL,
+            drop_params=False,
+        )
+        assert mapped["base_video"] == ("https://video.example.com/source-768p.mp4",)
+        assert mapped["first_frame"] == "https://img.example.com/start.png"
+
+    @pytest.mark.parametrize("bad", ["", "   ", 42, ["https://video.example.com/a.mp4"]])
+    def test_map_v2_base_video_url_must_be_single_nonempty_string(self, bad):
+        with pytest.raises(litellm.BadRequestError, match="base_video_url"):
+            self.config.map_openai_params(
+                video_create_optional_params={"seconds": 6, "base_video_url": bad},
+                model=V2_MODEL,
+                drop_params=False,
+            )
+
+    def test_map_v2_reference_videos_still_rejected_alongside_base_video(self):
+        with pytest.raises(litellm.BadRequestError, match="usage.input_seconds"):
+            self.config.map_openai_params(
+                video_create_optional_params={
+                    "seconds": 6,
+                    "base_video_url": "https://video.example.com/source-768p.mp4",
+                    "video_urls": ["https://video.example.com/ref.mp4"],
+                },
+                model=V2_MODEL,
+                drop_params=False,
+            )
+
+    def test_map_legacy_rejects_base_video_url(self):
+        with pytest.raises(litellm.BadRequestError, match="base_video"):
+            self.config.map_openai_params(
+                video_create_optional_params={
+                    "seconds": 6,
+                    "base_video_url": "https://video.example.com/source-768p.mp4",
+                },
+                model=V1_MODEL,
+                drop_params=False,
+            )
+
     def test_map_v2_reference_media_keeps_explicit_ratio(self):
         mapped = self.config.map_openai_params(
             video_create_optional_params={
@@ -322,6 +406,33 @@ class TestMinimaxVideoTransformation:
             {"type": "audio_url", "audio_url": {"url": "https://audio.example.com/voice.mp3"}, "role": "reference_audio"},
         ]
 
+    def test_create_request_v2_base_video_content_item(self):
+        body, _files, url = self.config.transform_video_create_request(
+            model=V2_MODEL,
+            prompt="a rocket launch",
+            api_base=API_BASE,
+            video_create_optional_request_params={
+                "duration": 6,
+                "resolution": "2K",
+                "base_video": ("https://video.example.com/source-768p.mp4",),
+                "base_video_url": "https://video.example.com/source-768p.mp4",
+            },
+            litellm_params=GenericLiteLLMParams(),
+            headers={},
+        )
+        assert url == f"{API_BASE}/v2/video_generation"
+        assert list(body["content"]) == [
+            {"type": "text", "text": "a rocket launch"},
+            {
+                "type": "video_url",
+                "video_url": {"url": "https://video.example.com/source-768p.mp4"},
+                "role": "base_video",
+            },
+        ]
+        assert body["resolution"] == "2K"
+        assert "base_video" not in body
+        assert "base_video_url" not in body
+
     def test_create_request_v2_drops_consumed_aliases_remerged_by_extra_body(self):
         body, _files, _url = self.config.transform_video_create_request(
             model=V2_MODEL,
@@ -407,6 +518,28 @@ class TestMinimaxVideoTransformation:
         assert decoded.get("video_id") == "424010985738629"
         assert decoded.get("custom_llm_provider") == "minimax"
         assert decoded.get("model_id") == "MiniMax-H3"
+
+    def test_create_response_v2_base_video_usage_covers_input_and_output_seconds(self):
+        video = self.config.transform_video_create_response(
+            model=V2_MODEL,
+            raw_response=_response({"task_id": "424010985738629"}, url=f"{API_BASE}/v2/video_generation"),
+            logging_obj=self.logging_obj,
+            custom_llm_provider="minimax",
+            request_data={
+                "duration": 6,
+                "resolution": "2K",
+                "content": [
+                    {"type": "text", "text": "a rocket launch"},
+                    {
+                        "type": "video_url",
+                        "video_url": {"url": "https://video.example.com/source-768p.mp4"},
+                        "role": "base_video",
+                    },
+                ],
+            },
+        )
+        assert video.seconds == "6"
+        assert video.usage["duration_seconds"] == 12.0
 
     def test_create_response_v1_encodes_hailuo_model(self):
         video = self.config.transform_video_create_response(
