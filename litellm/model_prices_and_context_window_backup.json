@@ -16495,10 +16495,13 @@
     "fal_ai/fal-ai/seedvr/upscale/video": {
         "litellm_provider": "fal_ai",
         "mode": "video_generation",
-        "output_cost_per_video_per_second": 0.0498,
+        "output_cost_per_second": 0.0498,
+        "output_cost_per_second_720p": 0.0221,
+        "output_cost_per_second_1080p": 0.0498,
+        "output_cost_per_second_4k": 0.1991,
         "source": "https://fal.ai/models/fal-ai/seedvr/upscale/video",
         "metadata": {
-            "comment": "fal bills $0.001 per output megapixel (width x height x frames); 0.0498/s is the 1080p at 24fps equivalent, callers pass seconds so tracked spend approximates the megapixel bill"
+            "comment": "fal bills $0.001 per output megapixel (width x height x frames). Per-second tiers are that rate at 24fps for the requested target_resolution: 720p 1280x720 -> 0.0221, 1080p 1920x1080 -> 0.0498, 4k 3840x2160 -> 0.1991. output_cost_per_second is the 1080p equivalent, used when the request omits target_resolution"
         },
         "supported_endpoints": [
             "/v1/videos"

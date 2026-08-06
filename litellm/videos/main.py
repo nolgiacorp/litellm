@@ -30,7 +30,7 @@ llm_http_handler: BaseLLMHTTPHandler = BaseLLMHTTPHandler()
 ##### Video Generation #######################
 @client
 async def avideo_generation(
-    prompt: str,
+    prompt: str | None = None,
     model: Optional[str] = None,
     input_reference: Optional[FileTypes] = None,
     seconds: Optional[str] = None,
@@ -49,7 +49,8 @@ async def avideo_generation(
     Asynchronously calls the `video_generation` function with the given arguments and keyword arguments.
 
     Parameters:
-    - `prompt` (str): Text prompt that describes the video to generate
+    - `prompt` (Optional[str]): Text prompt describing the video to generate. May be omitted
+        only for models that accept a promptless creation request (e.g. video restore/upscale)
     - `model` (Optional[str]): The video generation model to use
     - `input_reference` (Optional[FileTypes]): Optional image reference that guides generation
     - `seconds` (Optional[str]): Clip duration in seconds
@@ -118,7 +119,7 @@ async def avideo_generation(
 # Overload for when avideo_generation=True (returns Coroutine)
 @overload
 def video_generation(
-    prompt: str,
+    prompt: str | None = None,
     model: Optional[str] = None,
     input_reference: Optional[FileTypes] = None,
     seconds: Optional[str] = None,
@@ -138,7 +139,7 @@ def video_generation(
 
 @overload
 def video_generation(
-    prompt: str,
+    prompt: str | None = None,
     model: Optional[str] = None,
     input_reference: Optional[FileTypes] = None,
     seconds: Optional[str] = None,
@@ -160,7 +161,7 @@ def video_generation(
 
 @client
 def video_generation(
-    prompt: str,
+    prompt: str | None = None,
     model: Optional[str] = None,
     input_reference: Optional[FileTypes] = None,
     seconds: Optional[str] = None,
@@ -213,6 +214,18 @@ def video_generation(
 
         if video_generation_provider_config is None:
             raise ValueError(f"video generation is not supported for {custom_llm_provider}")
+
+        if not prompt:
+            # Restore/upscale models are driven by the source clip alone; every other
+            # model needs the prompt, and silently sending an empty one would return
+            # unrelated output instead of a clear error.
+            if not video_generation_provider_config.supports_promptless_video_create(model):
+                raise litellm.BadRequestError(
+                    message=f"prompt is required for video generation with model '{model}'",
+                    model=model,
+                    llm_provider=custom_llm_provider,
+                )
+            prompt = ""
 
         local_vars.update(kwargs)
         # Get VideoGenerationOptionalRequestParams with only valid parameters

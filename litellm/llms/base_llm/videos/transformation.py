@@ -64,6 +64,13 @@ class BaseVideoConfig(ABC):
     ) -> Dict:
         pass
 
+    def supports_promptless_video_create(self, model: str) -> bool:
+        """
+        Whether the model accepts a creation request with no text prompt (e.g. an
+        upscale/restore app driven only by the source clip and its controls).
+        """
+        return False
+
     @abstractmethod
     def validate_environment(
         self,

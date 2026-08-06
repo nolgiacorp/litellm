@@ -1,3 +1,5 @@
+import base64
+import io
 from unittest.mock import Mock
 
 import httpx
@@ -244,6 +246,66 @@ class TestFalAIVideoTransformation:
         assert params["target_resolution"] == "1080p"
         assert params["noise_scale"] == 0.2
         assert "extra_body" not in params
+
+    def test_map_openai_params_inlines_uploaded_seedvr_clip_as_data_uri(self):
+        clip = io.BytesIO(b"\x00\x00\x00\x18ftypmp42UPLOADED-CLIP")
+        clip.name = "source.mp4"
+
+        params = self.config.map_openai_params(
+            video_create_optional_params={"input_reference": clip},
+            model=SEEDVR_UPSCALE_MODEL,
+            drop_params=False,
+        )
+
+        expected = base64.b64encode(b"\x00\x00\x00\x18ftypmp42UPLOADED-CLIP").decode("utf-8")
+        assert params["video_url"] == f"data:video/mp4;base64,{expected}"
+
+    def test_map_openai_params_inlines_uploaded_reference_image_as_data_uri(self):
+        params = self.config.map_openai_params(
+            video_create_optional_params={"input_reference": ("frame.png", b"PNG-BYTES", "image/png")},
+            model=KLING_I2V_MODEL,
+            drop_params=False,
+        )
+
+        expected = base64.b64encode(b"PNG-BYTES").decode("utf-8")
+        assert params["start_image_url"] == f"data:image/png;base64,{expected}"
+
+    def test_seedvr_upscale_supports_promptless_create(self):
+        assert self.config.supports_promptless_video_create(SEEDVR_UPSCALE_MODEL) is True
+        assert self.config.supports_promptless_video_create(KLING_MODEL) is False
+
+    def test_transform_video_create_request_omits_prompt_for_seedvr_restore(self):
+        data, _, url = self.config.transform_video_create_request(
+            model=SEEDVR_UPSCALE_MODEL,
+            prompt="",
+            api_base=FAL_API_BASE,
+            video_create_optional_request_params={
+                "video_url": "https://example.com/source.mp4",
+                "target_resolution": "4k",
+            },
+            litellm_params=GenericLiteLLMParams(),
+            headers={},
+        )
+
+        assert url == f"{FAL_API_BASE}/fal-ai/seedvr/upscale/video"
+        assert "prompt" not in data
+        assert data["video_url"] == "https://example.com/source.mp4"
+        assert data["target_resolution"] == "4k"
+
+    def test_transform_video_create_response_reports_requested_resolution(self):
+        mock_response = Mock(spec=httpx.Response)
+        mock_response.json.return_value = {"request_id": "abc-123", "status": "IN_QUEUE"}
+
+        video_obj = self.config.transform_video_create_response(
+            model=SEEDVR_UPSCALE_MODEL,
+            raw_response=mock_response,
+            logging_obj=self.mock_logging_obj,
+            custom_llm_provider="fal_ai",
+            request_data={"duration": "5", "target_resolution": "4K"},
+        )
+
+        assert video_obj.usage["duration_seconds"] == 5.0
+        assert video_obj.usage["video_resolution"] == "4k"
 
     def test_map_openai_params_falls_back_to_colon_replacement(self):
         params = self.config.map_openai_params(
