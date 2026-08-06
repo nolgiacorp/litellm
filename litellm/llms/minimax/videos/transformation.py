@@ -74,7 +74,9 @@ _DEFAULT_T2V_RATIO = "16:9"
 _DEFAULT_V2_DURATION = 6
 _DEFAULT_V2_RESOLUTION = "2K"
 
-_V2_MEDIA_KEYS = frozenset({"first_frame", "last_frame", "reference_images", "reference_videos", "reference_audios"})
+_V2_MEDIA_KEYS = frozenset(
+    {"first_frame", "last_frame", "reference_images", "reference_videos", "reference_audios", "base_video"}
+)
 
 # OpenAI-shaped aliases this config translates into MiniMax fields. The shared video handler merges raw
 # extra_body over the mapped params, so these have to be stripped again before the request goes out.
@@ -89,6 +91,7 @@ _CONSUMED_ALIAS_KEYS = frozenset(
         "image_urls",
         "video_urls",
         "audio_urls",
+        "base_video_url",
         "extra_body",
     }
 )
@@ -173,6 +176,15 @@ class MinimaxVideoConfig(BaseVideoConfig):
             image_url if isinstance(image_url, str) else None
         )
         if _uses_legacy_video_api(model):
+            if params.get("base_video_url") is not None:
+                raise litellm.BadRequestError(
+                    message=(
+                        "MiniMax base_video regeneration is a /v2 (Hailuo 3) flow; legacy Hailuo models do not "
+                        "support base_video_url."
+                    ),
+                    model=model,
+                    llm_provider=litellm.LlmProviders.MINIMAX.value,
+                )
             return dict(self._map_legacy_params(params, duration, resolution, first_frame))
         return dict(
             self._map_v2_params(
@@ -222,6 +234,7 @@ class MinimaxVideoConfig(BaseVideoConfig):
         reference_images = _url_tuple(params.get("image_urls"))
         reference_videos = _url_tuple(params.get("video_urls"))
         reference_audios = _url_tuple(params.get("audio_urls"))
+        base_video = self._v2_base_video(model, params)
         has_frames = bool(first_frame or last_frame)
         has_references = bool(reference_images or reference_videos or reference_audios)
         if last_frame and not first_frame:
@@ -248,7 +261,8 @@ class MinimaxVideoConfig(BaseVideoConfig):
                     "MiniMax H3 bills reference video input seconds (usage.input_seconds) on top of the generated "
                     "output seconds, and a reference clip's length is unknown when the create call is charged, so "
                     "reference videos (video_urls) would be undercharged and are not supported. Use reference images "
-                    "(image_urls) or first/last-frame conditioning instead."
+                    "(image_urls) or first/last-frame conditioning instead. To re-render a known-length source video "
+                    "at a higher resolution, use base_video_url (regeneration)."
                 ),
                 model=model,
                 llm_provider=litellm.LlmProviders.MINIMAX.value,
@@ -257,14 +271,34 @@ class MinimaxVideoConfig(BaseVideoConfig):
             {
                 "duration": duration if duration is not None else _DEFAULT_V2_DURATION,
                 "resolution": str(resolution).upper() if resolution else _DEFAULT_V2_RESOLUTION,
-                "ratio": self._v2_ratio(params, has_frames=has_frames, has_references=has_references),
+                "ratio": self._v2_ratio(
+                    params, has_frames=has_frames, has_references=has_references or base_video is not None
+                ),
                 "first_frame": first_frame,
                 "last_frame": last_frame,
                 "reference_images": reference_images or None,
                 "reference_videos": reference_videos or None,
                 "reference_audios": reference_audios or None,
+                "base_video": (base_video,) if base_video else None,
             }
         )
+
+    @staticmethod
+    def _v2_base_video(model: str, params: Mapping[str, Any]) -> str | None:
+        raw = params.get("base_video_url")
+        if raw is None:
+            return None
+        url = raw.strip() if isinstance(raw, str) else None
+        if not url:
+            raise litellm.BadRequestError(
+                message=(
+                    "MiniMax H3 regeneration requires base_video_url to be a single non-empty video URL pointing at "
+                    "the source video to re-render."
+                ),
+                model=model,
+                llm_provider=litellm.LlmProviders.MINIMAX.value,
+            )
+        return url
 
     @staticmethod
     def _v2_ratio(params: Mapping[str, Any], has_frames: bool, has_references: bool) -> str | None:
@@ -342,6 +376,7 @@ class MinimaxVideoConfig(BaseVideoConfig):
             ("reference_images", "image_url", "reference_image"),
             ("reference_videos", "video_url", "reference_video"),
             ("reference_audios", "audio_url", "reference_audio"),
+            ("base_video", "video_url", "base_video"),
         )
         return tuple(
             {"type": type_key, type_key: {"url": url}, "role": role}
@@ -374,11 +409,22 @@ class MinimaxVideoConfig(BaseVideoConfig):
             status="queued",
             model=model,
             seconds=str(raw_duration) if raw_duration is not None else None,
-            usage=_duration_usage(_safe_float(raw_duration)),
+            usage=_duration_usage(self._create_billed_seconds(request_data)),
         )
         if custom_llm_provider:
             video_obj.id = encode_video_id_with_provider(video_obj.id, custom_llm_provider, model_name)
         return video_obj
+
+    @staticmethod
+    def _create_billed_seconds(request_data: Mapping[str, Any] | None) -> float | None:
+        if not request_data:
+            return None
+        duration = _safe_float(request_data.get("duration"))
+        if duration is None:
+            return None
+        content = request_data.get("content") or ()
+        has_base_video = any(isinstance(item, Mapping) and item.get("role") == "base_video" for item in content)
+        return duration * 2 if has_base_video else duration
 
     def transform_video_status_retrieve_request(
         self,
