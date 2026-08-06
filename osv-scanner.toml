@@ -3,7 +3,3 @@ id = "GHSA-w8v5-vhqr-4h9v"
 ignoreUntil = 2026-09-09
 reason = "diskcache has no fixed release published; remove this entry once one exists"
 
-[[IgnoredVulns]]
-id = "GHSA-g6cj-pr64-35w5"
-ignoreUntil = 2026-10-03
-reason = "Bleichenbacher oracle in PKCS#7 EnvelopedData decryption; unreachable here because nothing in this repo calls pkcs7_decrypt_der/pem/smime. Our cryptography surface is Fernet, AESGCM, RSA/EC keys, hashes, serialization, and x509.load_pem_x509_certificate for JWKS x5c parsing. The fix is cryptography 50.0.0, which the mlflow extra blocks (mlflow 3.15.1, latest, requires cryptography<50); we are on 49.0.0, the highest resolvable. Re-run uv lock to pick up 50.x and delete this entry once mlflow lifts that cap"
