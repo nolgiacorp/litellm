@@ -8763,6 +8763,10 @@ class ProviderConfigManager:
             from litellm.llms.minimax.videos.transformation import MinimaxVideoConfig
 
             return MinimaxVideoConfig()
+        elif LlmProviders.TOPAZ == provider:
+            from litellm.llms.topaz.videos.transformation import TopazVideoConfig
+
+            return TopazVideoConfig()
         return None
 
     @staticmethod

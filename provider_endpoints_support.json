@@ -2405,7 +2405,8 @@
       "display_name": "Topaz (`topaz`)",
       "url": "https://docs.litellm.ai/docs/providers/topaz",
       "endpoints": {
-        "image_variations": true
+        "image_variations": true,
+        "video_generations": true
       }
     },
     "tavily": {

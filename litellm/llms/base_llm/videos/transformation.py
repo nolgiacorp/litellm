@@ -122,6 +122,30 @@ class BaseVideoConfig(ABC):
     ) -> VideoObject:
         pass
 
+    async def async_transform_video_create_response(
+        self,
+        model: str,
+        raw_response: httpx.Response,
+        logging_obj: LiteLLMLoggingObj,
+        custom_llm_provider: Optional[str] = None,
+        request_data: Optional[Dict] = None,
+    ) -> VideoObject:
+        """
+        Async transform of a video create response.
+        Optional method - providers whose submit leg needs a further async call before the
+        job is actually running (e.g. Topaz, which must PUT the source bytes to the presigned
+        upload URL the create response returns) should override this.
+
+        Default implementation falls back to sync transform_video_create_response.
+        """
+        return self.transform_video_create_response(
+            model=model,
+            raw_response=raw_response,
+            logging_obj=logging_obj,
+            custom_llm_provider=custom_llm_provider,
+            request_data=request_data,
+        )
+
     @abstractmethod
     def transform_video_content_request(
         self,
