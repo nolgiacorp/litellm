@@ -4,12 +4,19 @@ from dataclasses import dataclass
 from json import JSONDecodeError
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any  # noqa: TID251  # base video ABC + OpenAI video TypedDict are Any-typed
+from urllib.parse import unquote
 
 import httpx
 from httpx._types import RequestFiles
 
 import litellm
+from litellm.constants import MAX_VIDEO_URL_DOWNLOAD_SIZE_MB
 from litellm.litellm_core_utils.prompt_templates.common_utils import extract_file_data
+from litellm.litellm_core_utils.url_utils import (
+    async_safe_get,
+    encode_url_path_segment,
+    safe_get,
+)
 from litellm.llms.base_llm.videos.transformation import BaseVideoConfig
 from litellm.llms.custom_httpx.http_handler import (
     AsyncHTTPHandler,
@@ -17,7 +24,7 @@ from litellm.llms.custom_httpx.http_handler import (
     _get_httpx_client,
     get_async_httpx_client,
 )
-from litellm.llms.topaz.common_utils import TopazException, TopazModelInfo
+from litellm.llms.topaz.common_utils import TOPAZ_VIDEO_MODELS, TopazException, TopazModelInfo
 from litellm.types.router import GenericLiteLLMParams
 from litellm.types.videos.main import VideoCreateOptionalRequestParams, VideoObject
 from litellm.types.videos.utils import encode_video_id_with_provider, extract_original_video_id
@@ -32,7 +39,6 @@ else:
 
 _SUPPORTED_OPENAI_PARAMS = (
     "model",
-    "prompt",
     "input_reference",
     "seconds",
     "size",
@@ -79,7 +85,6 @@ _OUTPUT_PARAMS = frozenset(
 _CONSUMED_PARAMS = frozenset(
     (
         "model",
-        "prompt",
         "user",
         "extra_headers",
         "extra_body",
@@ -131,48 +136,7 @@ RESOLUTION_ALIASES: Mapping[str, tuple[int, int]] = MappingProxyType(
     }
 )
 
-UPSCALE_MODEL_CODES = frozenset(
-    (
-        "aaa-9",
-        "aaa-10",
-        "ahq-12",
-        "aion-1",
-        "alq-13",
-        "alqs-2",
-        "amq-13",
-        "amqs-2",
-        "color-1",
-        "ddv-3",
-        "dtd-4",
-        "dtds-2",
-        "dtv-4",
-        "dtvs-2",
-        "ganim-1",
-        "gcg-5",
-        "ghq-5",
-        "hyp-1",
-        "hyp-2",
-        "iris-2",
-        "iris-3",
-        "nxf-1",
-        "nxl-1",
-        "nyx-3",
-        "pnat-1",
-        "prob-4",
-        "rhea-1",
-        "sl-1",
-        "slf-1",
-        "slf-2",
-        "slhq-1",
-        "slm-1",
-        "slp-2",
-        "slp-2.5",
-        "thd-3",
-        "thf-4",
-        "thm-2",
-        "wonder-1",
-    )
-)
+UPSCALE_MODEL_CODES = TOPAZ_VIDEO_MODELS
 
 
 def resolve_topaz_api_base(api_base: str | None) -> str:
@@ -184,7 +148,7 @@ def topaz_auth_headers(api_key: str | None) -> Mapping[str, str]:
     resolved = TopazModelInfo.get_api_key(api_key)
     if not resolved:
         raise ValueError("TOPAZ_API_KEY is not set")
-    return {"X-API-Key": resolved, "Content-Type": "application/json"}
+    return {"X-API-Key": resolved, "Content-Type": "application/json"}  # mutable-ok: returned as a Mapping view
 
 
 def strip_topaz_prefix(model: str) -> str:
@@ -203,6 +167,29 @@ def _safe_float(value: object) -> float | None:
         return float(value) if value is not None else None  # pyright: ignore[reportArgumentType]  # guarded by except
     except (TypeError, ValueError):
         return None
+
+
+def _source_too_large(size_bytes: int, model: str) -> Exception:
+    return litellm.BadRequestError(
+        message=(
+            f"Topaz source footage is {size_bytes / (1024 * 1024):.1f}MB, above the "
+            f"{MAX_VIDEO_URL_DOWNLOAD_SIZE_MB}MB per-request limit for relayed source video. Raise "
+            "MAX_VIDEO_URL_DOWNLOAD_SIZE_MB if this proxy is provisioned for larger masters."
+        ),
+        model=model,
+        llm_provider=litellm.LlmProviders.TOPAZ.value,
+    )
+
+
+def _request_id_from_status_url(raw_response: httpx.Response) -> str:
+    """Recover the Topaz request id from a `/video/{id}/status` URL."""
+    request: httpx.Request | None = getattr(raw_response, "request", None)
+    if request is None:
+        return ""
+    segments = tuple(segment for segment in request.url.path.split("/") if segment)
+    if len(segments) < 2 or segments[-1] != "status":
+        return ""
+    return unquote(segments[-2])
 
 
 def _billed_credits(estimates: object) -> int | None:
@@ -241,6 +228,16 @@ class TopazVideoConfig(BaseVideoConfig):
         self._sync_client = sync_client
         self._async_client = async_client
         self._pending_upload: _PendingUpload | None = None
+        self._requested_video_id: str | None = None
+
+    def set_status_lookup_client(self, client: HTTPHandler | AsyncHTTPHandler) -> None:
+        # The source GET, the presigned PUT and the enhanced download must ride the same
+        # client as the leg the handler issued, or a caller's mock transport, proxy,
+        # private CA or ssl_verify setting applies to only part of the request.
+        if isinstance(client, AsyncHTTPHandler):
+            self._async_client = client
+        else:
+            self._sync_client = client
 
     def _http_client(self) -> HTTPHandler:
         return self._sync_client or _get_httpx_client()
@@ -280,7 +277,7 @@ class TopazVideoConfig(BaseVideoConfig):
         extra_body = params.get("extra_body")
         if not isinstance(extra_body, Mapping):
             return params
-        return {**params, **extra_body}
+        return {**params, **extra_body}  # mutable-ok: returned as a Mapping view
 
     @staticmethod
     def _reject_unsupported(params: Mapping[str, Any], model: str) -> None:
@@ -300,6 +297,20 @@ class TopazVideoConfig(BaseVideoConfig):
                 "Topaz is a footage upscaler: it takes source video plus an output resolution, and it accepts no "
                 "prompt, seed, aspect ratio or audio controls. Silently dropping them would bill an enhancement "
                 "that ignored the caller's request."
+            ),
+            model=model,
+            llm_provider=litellm.LlmProviders.TOPAZ.value,
+        )
+
+    @staticmethod
+    def _reject_prompt(prompt: str | None, model: str) -> None:
+        if not prompt or not str(prompt).strip():
+            return
+        raise litellm.BadRequestError(
+            message=(
+                f"Topaz model '{model}' does not support `prompt`. Topaz is a footage upscaler driven by the source "
+                "clip and the requested output resolution alone; billing an enhancement that ignored the caller's "
+                "instructions would be worse than refusing it."
             ),
             model=model,
             llm_provider=litellm.LlmProviders.TOPAZ.value,
@@ -396,6 +407,7 @@ class TopazVideoConfig(BaseVideoConfig):
         headers: Mapping[str, Any],
     ) -> tuple[dict, RequestFiles, str]:  # mutable-ok: BaseVideoConfig contract returns dict body
         params = video_create_optional_request_params
+        self._reject_prompt(prompt, model)
         source = params.get("input_reference")
         if source is None:
             raise litellm.BadRequestError(
@@ -406,19 +418,25 @@ class TopazVideoConfig(BaseVideoConfig):
                 model=model,
                 llm_provider=litellm.LlmProviders.TOPAZ.value,
             )
-        container = str(params.get("container") or "mp4")
+        # extra_body is overlaid onto the mapped params after map_openai_params runs, so an
+        # extra_body container never passed through _container and is revalidated here.
+        container = self._container(params, model)
         width, height = self._resolution(params, model)
         upscale_filter = {  # mutable-ok: request body fragment
             "model": self._model_code(model),
-            **{key: value for key, value in params.items() if key in _FILTER_PARAMS},
+            **{  # mutable-ok: request body fragment
+                key: value for key, value in params.items() if key in _FILTER_PARAMS
+            },
         }
         output = {  # mutable-ok: request body fragment
-            "resolution": {"width": width, "height": height},
-            **{key: value for key, value in params.items() if key in _OUTPUT_PARAMS},
+            "resolution": {"width": width, "height": height},  # mutable-ok: request body fragment
+            **{  # mutable-ok: request body fragment
+                key: value for key, value in params.items() if key in _OUTPUT_PARAMS
+            },
         }
         body = {  # mutable-ok: BaseVideoConfig contract returns dict body
-            "source": {"container": container},
-            "filters": [upscale_filter],
+            "source": {"container": container},  # mutable-ok: request body fragment
+            "filters": [upscale_filter],  # mutable-ok: request body fragment
             "output": output,
         }
         self._pending_upload = _PendingUpload(source=source, container=container, seconds=params.get("seconds"))
@@ -434,11 +452,13 @@ class TopazVideoConfig(BaseVideoConfig):
     ) -> VideoObject:
         request_id, upload_url = self._accepted_create(raw_response)
         pending = self._take_pending_upload()
-        content = self._source_bytes(pending.source)
+        content = self._source_bytes(pending.source, model)
         response = self._http_client().put(
             upload_url,
             content=content,
-            headers={"Content-Type": _CONTAINER_MIME.get(pending.container, "video/mp4")},
+            headers={  # mutable-ok: httpx expects a dict of headers
+                "Content-Type": _CONTAINER_MIME.get(pending.container, "video/mp4")
+            },
         )
         self._raise_for_status(response)
         return self._created_video_object(model, request_id, custom_llm_provider, pending.seconds)
@@ -453,11 +473,13 @@ class TopazVideoConfig(BaseVideoConfig):
     ) -> VideoObject:
         request_id, upload_url = self._accepted_create(raw_response)
         pending = self._take_pending_upload()
-        content = await self._async_source_bytes(pending.source)
+        content = await self._async_source_bytes(pending.source, model)
         response = await self._async_http_client().put(
             upload_url,
             content=content,
-            headers={"Content-Type": _CONTAINER_MIME.get(pending.container, "video/mp4")},
+            headers={  # mutable-ok: httpx expects a dict of headers
+                "Content-Type": _CONTAINER_MIME.get(pending.container, "video/mp4")
+            },
         )
         self._raise_for_status(response)
         return self._created_video_object(model, request_id, custom_llm_provider, pending.seconds)
@@ -510,23 +532,49 @@ class TopazVideoConfig(BaseVideoConfig):
             video_obj.id = encode_video_id_with_provider(request_id, custom_llm_provider, model)
         return video_obj
 
-    def _source_bytes(self, source: object) -> bytes:
+    def _source_bytes(self, source: object, model: str) -> bytes:
         if isinstance(source, str):
-            response = self._http_client().get(source)
+            # Caller-supplied URL: safe_get validates DNS and every redirect hop so the
+            # proxy cannot be pointed at loopback, private-network or metadata endpoints.
+            response: httpx.Response = safe_get(  # pyright: ignore[reportAny]  # safe_get is Any-in/Any-out; it returns the httpx response
+                self._http_client(), source
+            )
             self._raise_for_status(response)
-            return response.content
+            return self._bounded_source_content(response, model)
         return extract_file_data(source)["content"]  # pyright: ignore[reportArgumentType]  # FileTypes union
 
-    async def _async_source_bytes(self, source: object) -> bytes:
+    async def _async_source_bytes(self, source: object, model: str) -> bytes:
         if isinstance(source, str):
-            response = await self._async_http_client().get(source)
+            response: httpx.Response = await async_safe_get(  # pyright: ignore[reportAny]  # async_safe_get is Any-in/Any-out
+                self._async_http_client(), source
+            )
             self._raise_for_status(response)
-            return response.content
+            return self._bounded_source_content(response, model)
         return extract_file_data(source)["content"]  # pyright: ignore[reportArgumentType]  # FileTypes union
 
     @staticmethod
+    def _bounded_source_content(response: httpx.Response, model: str) -> bytes:
+        """
+        Cap the source clip a single request may relay.
+
+        An unbounded remote response would let one delivery-grade clip consume gigabytes of a
+        shared proxy, so the declared length is refused before the body is touched and the
+        body itself is refused when the sender understated it.
+        """
+        max_bytes = int(MAX_VIDEO_URL_DOWNLOAD_SIZE_MB * 1024 * 1024)
+        declared = str(response.headers.get("content-length") or "")
+        if declared.isdigit() and int(declared) > max_bytes:
+            raise _source_too_large(int(declared), model)
+        content = response.content
+        if len(content) > max_bytes:
+            raise _source_too_large(len(content), model)
+        return content
+
+    @staticmethod
     def _status_url(video_id: str, api_base: str) -> str:
-        request_id = extract_original_video_id(video_id)
+        # The decoded Topaz request id is caller-controlled, so it is percent-encoded before
+        # it reaches this credential-bearing URL; `../`, `?` and `#` must not repoint the path.
+        request_id = encode_url_path_segment(extract_original_video_id(video_id), field_name="video_id")
         return f"{resolve_topaz_api_base(api_base)}/video/{request_id}/status"
 
     def transform_video_status_retrieve_request(
@@ -536,7 +584,15 @@ class TopazVideoConfig(BaseVideoConfig):
         litellm_params: GenericLiteLLMParams,
         headers: Mapping[str, Any],
     ) -> tuple[str, dict]:  # mutable-ok: BaseVideoConfig contract returns dict params
+        self._requested_video_id = video_id
         return self._status_url(video_id, api_base), {}  # mutable-ok: BaseVideoConfig contract returns dict params
+
+    def _status_video_id(self, raw_response: httpx.Response) -> str:
+        # Topaz status payloads carry no id, so the requested one is retained: callers that
+        # correlate or persist jobs from a status response need it to reach the content flow.
+        if self._requested_video_id:
+            return self._requested_video_id
+        return _request_id_from_status_url(raw_response)
 
     def transform_video_status_retrieve_response(
         self,
@@ -545,15 +601,16 @@ class TopazVideoConfig(BaseVideoConfig):
         custom_llm_provider: str | None = None,
     ) -> VideoObject:
         self._raise_for_status(raw_response)
+        video_id = self._status_video_id(raw_response)
         try:
             payload = raw_response.json()
         except (ValueError, JSONDecodeError):
-            return VideoObject(id="", object="video", status="in_progress")
+            return VideoObject(id=video_id, object="video", status="in_progress")
         topaz_status = str(payload.get("status") or "")
         status = TOPAZ_STATUS_MAP.get(topaz_status, "in_progress")
         credits = _billed_credits(payload.get("estimates"))
         return VideoObject(
-            id="",
+            id=video_id,
             object="video",
             status=status,
             progress=payload.get("progress"),

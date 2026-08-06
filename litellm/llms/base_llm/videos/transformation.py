@@ -322,11 +322,12 @@ class BaseVideoConfig(ABC):
 
     def set_status_lookup_client(self, client: "HTTPHandler | AsyncHTTPHandler") -> None:
         """
-        Adopt the HTTP client the handler selected for the status request.
+        Adopt the HTTP client the handler selected for the current request.
 
-        No-op by default. Providers whose status transform issues a further lookup
-        (e.g. fal.ai resolving a queue-completed request against its result payload)
-        override this so the follow-up request inherits the caller's client, mock,
+        Called on the create, status and content legs. No-op by default. Providers whose
+        transform issues a further request (e.g. fal.ai resolving a queue-completed request
+        against its result payload, or Topaz relaying source footage to a presigned upload
+        URL) override this so the follow-up request inherits the caller's client, mock,
         transport and ssl_verify settings instead of a fresh default client.
         """
 

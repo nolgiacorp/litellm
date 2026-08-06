@@ -65,6 +65,10 @@ DEFAULT_IMAGE_HEIGHT = int(os.getenv("DEFAULT_IMAGE_HEIGHT", 300))
 # Maps to OpenAI's 50 MB payload limit - requests with images exceeding this size will be rejected
 # Set MAX_IMAGE_URL_DOWNLOAD_SIZE_MB=0 to disable image URL handling entirely
 MAX_IMAGE_URL_DOWNLOAD_SIZE_MB = float(os.getenv("MAX_IMAGE_URL_DOWNLOAD_SIZE_MB", 50))
+# Maximum size, in MB, of a source video a provider will relay from a caller-supplied URL.
+# Video providers that upload source footage upstream buffer the download, so an unbounded
+# remote response would let a single request exhaust a shared proxy.
+MAX_VIDEO_URL_DOWNLOAD_SIZE_MB = float(os.getenv("MAX_VIDEO_URL_DOWNLOAD_SIZE_MB", 512))
 MAX_SIZE_PER_ITEM_IN_MEMORY_CACHE_IN_KB = int(
     os.getenv("MAX_SIZE_PER_ITEM_IN_MEMORY_CACHE_IN_KB", 1024)
 )  # 1MB = 1024KB
