@@ -258,17 +258,16 @@ class TestTopazCreditProbeWindow:
         from litellm.llms.topaz.videos.transformation import (
             _CREDIT_PROBE_ATTEMPTS,
             _CREDIT_PROBE_DELAY_SECS,
-            _CREDIT_PROBE_TIMEOUT_SECS,
         )
 
         measured_delay_secs = 2.6
-        # Worst case each attempt costs its timeout, then sleeps before the next.
-        window = _CREDIT_PROBE_ATTEMPTS * _CREDIT_PROBE_TIMEOUT_SECS + (
-            _CREDIT_PROBE_ATTEMPTS - 1
-        ) * _CREDIT_PROBE_DELAY_SECS
-        assert window > measured_delay_secs * 1.5, (
-            f"probe window {window}s leaves no margin over the measured {measured_delay_secs}s "
-            "delay before Topaz publishes estimates"
+        # The request timeout is an upper bound on each GET, not time the probe
+        # is guaranteed to wait: an estimate-less status comes back immediately,
+        # so the sleeps are the whole guaranteed horizon.
+        horizon = (_CREDIT_PROBE_ATTEMPTS - 1) * _CREDIT_PROBE_DELAY_SECS
+        assert horizon > measured_delay_secs * 1.5, (
+            f"probe polls for only {horizon}s of guaranteed wall clock, which leaves no margin "
+            f"over the measured {measured_delay_secs}s delay before Topaz publishes estimates"
         )
 
     def test_window_stays_bounded_enough_for_a_create_request(self):
@@ -276,13 +275,53 @@ class TestTopazCreditProbeWindow:
         from litellm.llms.topaz.videos.transformation import (
             _CREDIT_PROBE_ATTEMPTS,
             _CREDIT_PROBE_DELAY_SECS,
+            _CREDIT_PROBE_MAX_WALL_SECS,
             _CREDIT_PROBE_TIMEOUT_SECS,
         )
 
-        ceiling = _CREDIT_PROBE_ATTEMPTS * _CREDIT_PROBE_TIMEOUT_SECS + (
+        assert _CREDIT_PROBE_MAX_WALL_SECS <= 15.0
+        nominal = _CREDIT_PROBE_ATTEMPTS * _CREDIT_PROBE_TIMEOUT_SECS + (
             _CREDIT_PROBE_ATTEMPTS - 1
         ) * _CREDIT_PROBE_DELAY_SECS
-        assert ceiling <= 15.0, f"probe could hold the create leg for {ceiling}s"
+        # The nominal schedule must fit inside the enforced deadline, so healthy
+        # jobs spend every attempt rather than being cut short by the guard.
+        assert nominal <= _CREDIT_PROBE_MAX_WALL_SECS, (
+            f"the {nominal}s polling schedule would be truncated by the "
+            f"{_CREDIT_PROBE_MAX_WALL_SECS}s deadline"
+        )
+
+    def test_a_slow_status_endpoint_cannot_hold_the_create_leg_open(self, monkeypatch):
+        """
+        The scalar httpx timeout caps each socket operation, not the whole GET:
+        redirects or a response that keeps trickling within the read timeout can
+        make one attempt outlast it. So the ceiling is enforced with a monotonic
+        deadline rather than inferred from attempts * timeout.
+        """
+        config = TopazVideoConfig()
+        clock = {"now": 1_000.0}
+        started_at = []
+
+        class _Slow:
+            def get(self, *a, **k):
+                started_at.append(clock["now"])
+                clock["now"] += 9.0  # one GET outlasting its per-request timeout
+                return httpx.Response(200, json={"status": "initializing"})
+
+        monkeypatch.setattr(topaz_transformation.time, "monotonic", lambda: clock["now"])
+        monkeypatch.setattr(
+            topaz_transformation.time, "sleep", lambda secs: clock.update(now=clock["now"] + secs)
+        )
+        monkeypatch.setattr(config, "_http_client", lambda: _Slow())
+
+        start = clock["now"]
+        assert config._probe_billed_credits(_create_response(), "req-1") is None
+        assert len(started_at) < topaz_transformation._CREDIT_PROBE_ATTEMPTS, (
+            "the deadline never fired: the probe spent every attempt on a status endpoint "
+            "that burns 9s per call"
+        )
+        assert all(
+            begun - start < topaz_transformation._CREDIT_PROBE_MAX_WALL_SECS for begun in started_at
+        ), "an attempt started after the wall-clock budget was already spent"
 
     def test_probe_keeps_polling_through_the_pre_estimate_statuses(self, monkeypatch):
         """
