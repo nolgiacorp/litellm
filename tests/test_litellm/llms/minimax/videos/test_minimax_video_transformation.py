@@ -401,12 +401,31 @@ class TestMinimaxVideoTransformation:
         )
         assert list(body["content"]) == [
             {"type": "text", "text": "the model walks"},
-            {"type": "image_url", "image_url": {"url": "https://img.example.com/subject.png"}, "role": "reference_image"},
-            {"type": "video_url", "video_url": {"url": "https://video.example.com/motion.mp4"}, "role": "reference_video"},
-            {"type": "audio_url", "audio_url": {"url": "https://audio.example.com/voice.mp3"}, "role": "reference_audio"},
+            {
+                "type": "image_url",
+                "image_url": {"url": "https://img.example.com/subject.png"},
+                "role": "reference_image",
+            },
+            {
+                "type": "video_url",
+                "video_url": {"url": "https://video.example.com/motion.mp4"},
+                "role": "reference_video",
+            },
+            {
+                "type": "audio_url",
+                "audio_url": {"url": "https://audio.example.com/voice.mp3"},
+                "role": "reference_audio",
+            },
         ]
 
-    def test_create_request_v2_base_video_content_item(self):
+    def test_create_request_v2_base_video_goes_to_the_regeneration_endpoint(self):
+        """
+        role="base_video" is absent from /v2/video_generation's role enum; posting it
+        there is what MiniMax rejected with 2013 invalid params,
+        content[1].role="base_video" invalid for type="video_url". It is valid only on
+        /v2/video_regeneration, which also has no duration field (the output inherits
+        the source video's length) and accepts 2K alone.
+        """
         body, _files, url = self.config.transform_video_create_request(
             model=V2_MODEL,
             prompt="a rocket launch",
@@ -420,7 +439,7 @@ class TestMinimaxVideoTransformation:
             litellm_params=GenericLiteLLMParams(),
             headers={},
         )
-        assert url == f"{API_BASE}/v2/video_generation"
+        assert url == f"{API_BASE}/v2/video_regeneration"
         assert list(body["content"]) == [
             {"type": "text", "text": "a rocket launch"},
             {
@@ -430,8 +449,37 @@ class TestMinimaxVideoTransformation:
             },
         ]
         assert body["resolution"] == "2K"
+        assert "duration" not in body, "regeneration has no duration field; sending one is what 2013 flags"
+        assert "ratio" not in body
         assert "base_video" not in body
         assert "base_video_url" not in body
+
+    def test_create_request_v2_without_base_video_stays_on_the_generation_endpoint(self):
+        """The endpoint split is driven by base_video alone; ordinary H3 creates must not move."""
+        _body, _files, url = self.config.transform_video_create_request(
+            model=V2_MODEL,
+            prompt="a rocket launch",
+            api_base=API_BASE,
+            video_create_optional_request_params={"duration": 6, "resolution": "2K"},
+            litellm_params=GenericLiteLLMParams(),
+            headers={},
+        )
+        assert url == f"{API_BASE}/v2/video_generation"
+
+    def test_regeneration_refuses_a_resolution_it_cannot_render(self):
+        """
+        Regeneration renders 2K only. Silently upgrading a requested 768P would bill a
+        2K render for a request that asked for something else.
+        """
+        with pytest.raises(litellm.BadRequestError, match="regeneration only renders at 2K"):
+            self.config.map_openai_params(
+                video_create_optional_params={
+                    "resolution": "768P",
+                    "base_video_url": "https://video.example.com/source-768p.mp4",
+                },
+                model=V2_MODEL,
+                drop_params=False,
+            )
 
     def test_create_request_v2_drops_consumed_aliases_remerged_by_extra_body(self):
         body, _files, _url = self.config.transform_video_create_request(
@@ -519,14 +567,18 @@ class TestMinimaxVideoTransformation:
         assert decoded.get("custom_llm_provider") == "minimax"
         assert decoded.get("model_id") == "MiniMax-H3"
 
-    def test_create_response_v2_base_video_usage_covers_input_and_output_seconds(self):
+    def test_create_response_v2_regeneration_reports_no_billed_seconds(self):
+        """
+        A regeneration request carries no duration, so there is nothing in it to bill
+        from. Reporting a number anyway would mean inventing one; the authoritative
+        figure is usage on the status response.
+        """
         video = self.config.transform_video_create_response(
             model=V2_MODEL,
-            raw_response=_response({"task_id": "424010985738629"}, url=f"{API_BASE}/v2/video_generation"),
+            raw_response=_response({"task_id": "424010985738629"}, url=f"{API_BASE}/v2/video_regeneration"),
             logging_obj=self.logging_obj,
             custom_llm_provider="minimax",
             request_data={
-                "duration": 6,
                 "resolution": "2K",
                 "content": [
                     {"type": "text", "text": "a rocket launch"},
@@ -538,8 +590,8 @@ class TestMinimaxVideoTransformation:
                 ],
             },
         )
-        assert video.seconds == "6"
-        assert video.usage["duration_seconds"] == 12.0
+        assert video.seconds is None
+        assert "duration_seconds" not in video.usage
 
     def test_create_response_v1_encodes_hailuo_model(self):
         video = self.config.transform_video_create_response(
@@ -824,7 +876,5 @@ class TestMinimaxVideoTransformation:
     def test_provider_video_config_registry(self):
         from litellm.utils import ProviderConfigManager
 
-        config = ProviderConfigManager.get_provider_video_config(
-            model=V2_MODEL, provider=litellm.LlmProviders.MINIMAX
-        )
+        config = ProviderConfigManager.get_provider_video_config(model=V2_MODEL, provider=litellm.LlmProviders.MINIMAX)
         assert isinstance(config, MinimaxVideoConfig)
