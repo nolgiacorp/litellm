@@ -40,15 +40,23 @@ else:
 
 
 # NOL-519. How hard the create leg tries to read Topaz's credit quote before
-# giving up and recording no cost. Topaz only produces `estimates` once it has
-# inspected the uploaded source, so the first read can land early. A restore
-# runs for minutes, which makes ~1.5s of polling free; anything longer would be
-# paying latency on the customer's request to improve our own bookkeeping.
-# The per-request timeout is explicit because the probe rides the caller's
-# client, whose default timeout can be 60s: without it the attempt count would
-# bound only the sleeps and a hung status endpoint could hold the create leg
-# until its outer deadline. Worst case is now attempts * timeout + the sleeps.
-_CREDIT_PROBE_ATTEMPTS = 3
+# giving up and recording no cost.
+#
+# The attempt count is MEASURED, not guessed. Against the live API, a job walks
+# accepted -> initializing -> preprocessing after the upload lands, and
+# `estimates` first appears at the preprocessing transition - about 2.6s in.
+# An earlier 3-attempt window sat right on that boundary and missed it on a real
+# prod restore, recording $0 for a job Topaz quoted at 1 credit, so the window
+# is now wide enough that the observed timing is caught with margin rather than
+# raced. Typical cost is still one round trip: the loop exits on the first
+# reading, so the ceiling is only paid when a quote never arrives at all.
+#
+# It stays bounded because this runs on the customer's create request. A restore
+# then runs for MINUTES, so a few seconds here is free in context, but a hung
+# status endpoint must not hold the leg open: hence an explicit per-request
+# timeout as well as the attempt count, since the probe rides the caller's
+# client whose default can be 60s. Hard ceiling is attempts * timeout + sleeps.
+_CREDIT_PROBE_ATTEMPTS = 6
 _CREDIT_PROBE_DELAY_SECS = 0.75
 _CREDIT_PROBE_TIMEOUT_SECS = 1.0
 
