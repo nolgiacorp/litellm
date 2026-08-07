@@ -30,13 +30,13 @@ def cost_calculator(
 
     provider = litellm.LlmProviders.KLING.value
     bare_model = model.split("/")[-1]
-    cost_entry = (
-        litellm.model_cost.get(f"{provider}/{bare_model}")
-        or litellm.model_cost.get(model)
-        or litellm.model_cost.get(bare_model)
-        or {}
-    )
 
-    output_cost_per_image: float = cost_entry.get("output_cost_per_image") or 0.0
+    output_cost_per_image: float = 0.0
+    for cost_key in (f"{provider}/{bare_model}", model, bare_model):
+        cost_entry = litellm.model_cost.get(cost_key)
+        if cost_entry:
+            output_cost_per_image = cost_entry.get("output_cost_per_image") or 0.0
+            break
+
     num_images: int = len(image_response.data) if image_response.data else 0
     return output_cost_per_image * num_images
