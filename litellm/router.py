@@ -136,6 +136,7 @@ from litellm.router_utils.cooldown_handlers import (
 from litellm.router_utils.fallback_event_handlers import (
     _check_non_standard_fallback_format,
     get_fallback_model_group,
+    get_request_transforming_fallbacks,
     is_request_rejection,
     run_async_fallback,
 )
@@ -6161,17 +6162,6 @@ class Router:
         if disable_fallbacks is True or original_model_group is None:
             raise e
 
-        # A rejection of the request itself is terminal: no other deployment can
-        # satisfy it, and falling over to one whose contract happens to differ
-        # substitutes a provider the caller never asked for. See
-        # is_request_rejection.
-        if is_request_rejection(e):
-            verbose_router_logger.debug(
-                f"Not falling back for {original_model_group}: {type(e).__name__} rejects the request itself, "
-                f"so another deployment would either reject it identically or silently serve something else."
-            )
-            raise e
-
         input_kwargs = {
             "litellm_router": self,
             "original_exception": original_exception,
@@ -6184,6 +6174,34 @@ class Router:
             input_kwargs["fallback_depth"] = 0
         if include_fallback_errors:
             input_kwargs["include_fallback_errors"] = True
+
+        # A rejection of the request itself is terminal: no other deployment can
+        # satisfy the same request, and falling over to one whose contract happens
+        # to differ substitutes a provider the caller never asked for. See
+        # is_request_rejection.
+        #
+        # The one exception is a client-side fallback that rewrites the request
+        # (e.g. {"model": "backup", "messages": [...]}). That is a deliberate
+        # request repair, so it sends something different and still gets its turn.
+        if is_request_rejection(e):
+            request_repair_fallbacks = get_request_transforming_fallbacks(fallbacks=fallbacks)
+            if not request_repair_fallbacks:
+                verbose_router_logger.debug(
+                    f"Not falling back for {original_model_group}: {type(e).__name__} rejects the request itself, "
+                    f"so another deployment would either reject it identically or silently serve something else."
+                )
+                raise e
+            verbose_router_logger.debug(
+                f"{type(e).__name__} rejects the request itself for {original_model_group}: only the "
+                f"request-transforming fallbacks may run."
+            )
+            input_kwargs.update(
+                {
+                    "fallback_model_group": request_repair_fallbacks,
+                    "original_model_group": original_model_group,
+                }
+            )
+            return await run_async_fallback(*args, **input_kwargs)
 
         # ORDER-BASED FALLBACKS: prepend higher order levels to the fallback list
         # Skip for error types that have their own dedicated fallback handlers
@@ -6395,6 +6413,11 @@ class Router:
                     ),
                 )
             )
+            # A rejection of the request raised while falling back is terminal, and
+            # it says more than the deployment failure that triggered the fallback:
+            # surface it instead of masking it with the original exception.
+            if is_request_rejection(new_exception):
+                raise new_exception
 
         if hasattr(original_exception, "message") and litellm.expose_router_debug_in_errors:
             # add the available fallbacks to the exception
