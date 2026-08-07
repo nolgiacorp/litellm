@@ -29,6 +29,11 @@ from litellm.types.videos.utils import (
     encode_video_id_with_provider,
     extract_original_video_id,
 )
+from litellm.videos.capabilities import (
+    CapabilityParamSupport,
+    DeclaredCapabilityParams,
+    UndeclaredCapabilityParams,
+)
 
 if TYPE_CHECKING:
     from litellm.litellm_core_utils.litellm_logging import Logging as _LiteLLMLoggingObj
@@ -235,6 +240,43 @@ def _parse_queue_state(payload: Mapping[str, object]) -> _QueueState:
     return _QueuePending("queued", position)
 
 
+_BASE_CAPABILITY_PARAMS = frozenset(
+    (
+        "input_reference",
+        "image_url",
+        "generate_audio",
+    )
+)
+
+_END_FRAME_MODEL_MARKER = "image-to-video"
+
+_REFERENCE_MEDIA_MODEL_MARKER = "reference-to-video"
+
+_END_FRAME_CAPABILITY_PARAMS = frozenset(("end_image_url",))
+
+_REFERENCE_MEDIA_CAPABILITY_PARAMS = frozenset(
+    (
+        "image_urls",
+        "video_urls",
+        "audio_urls",
+        "bitrate_mode",
+    )
+)
+
+# fal is a generic gateway onto arbitrary app schemas, so "declared" here can only
+# mean "this app's published input schema has been read". App families whose schema
+# was audited are listed below; every other app id stays undeclared, which keeps its
+# verbatim passthrough intact rather than 4xx-ing a vocabulary param the app may well
+# accept under a name this transformation has never seen.
+_AUDITED_MODEL_FAMILY_MARKERS: tuple[str, ...] = ("seedance-2.0", "kling-video/v3")
+
+# The upscale/restore lane takes media plus restore controls only: input_reference is
+# its video_url, and it has no start-frame, end-frame or audio surface at all.
+_UPSCALE_MODEL_MARKER = "seedvr/upscale/video"
+
+_UPSCALE_CAPABILITY_PARAMS = frozenset(("input_reference",))
+
+
 class FalAIVideoConfig(BaseVideoConfig):
     """
     fal.ai uses a queue API: POST to /{model_id}, then poll
@@ -281,6 +323,36 @@ class FalAIVideoConfig(BaseVideoConfig):
             "extra_headers",
             "extra_body",
         ]
+
+    def get_capability_param_support(self, model: str) -> CapabilityParamSupport:
+        """
+        fal forwards unrecognized params verbatim to the app, so what an app can
+        execute is a property of the app's own input schema rather than of this
+        transformation. Only app families whose schema was actually audited are
+        declared: within them, every video lane takes a start frame and
+        generate_audio, image-to-video lanes add a top-level end_image_url, and the
+        seedance reference-to-video lane adds the reference-media block (image_urls /
+        video_urls / audio_urls) plus bitrate_mode.
+
+        An unrecognized fal app id stays UNDECLARED rather than being reported as
+        exhaustively known. fal is a gateway, so a custom or newly added app may
+        accept a vocabulary param under a name this transformation has never seen;
+        claiming exhaustiveness from an app-id substring would 400 a request the app
+        would have served.
+
+        The verbatim passthrough is unaffected: the gate only inspects the closed
+        capability vocabulary, so every other param still flows through untouched.
+        """
+        normalized = model.lower()
+        if _UPSCALE_MODEL_MARKER in normalized:
+            return DeclaredCapabilityParams(_UPSCALE_CAPABILITY_PARAMS)
+        if not any(marker in normalized for marker in _AUDITED_MODEL_FAMILY_MARKERS):
+            return UndeclaredCapabilityParams()
+        return DeclaredCapabilityParams(
+            _BASE_CAPABILITY_PARAMS
+            | (_END_FRAME_CAPABILITY_PARAMS if _END_FRAME_MODEL_MARKER in normalized else frozenset())
+            | (_REFERENCE_MEDIA_CAPABILITY_PARAMS if _REFERENCE_MEDIA_MODEL_MARKER in normalized else frozenset())
+        )
 
     def supports_promptless_video_create(self, model: str) -> bool:
         normalized = model.lower()

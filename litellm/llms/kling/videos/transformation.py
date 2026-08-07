@@ -31,6 +31,7 @@ from litellm.types.videos.utils import (
     encode_video_id_with_provider,
     extract_original_video_id,
 )
+from litellm.videos.capabilities import CapabilityParamSupport, DeclaredCapabilityParams
 
 if TYPE_CHECKING:
     from litellm.litellm_core_utils.litellm_logging import Logging as _LiteLLMLoggingObj
@@ -56,6 +57,15 @@ _SIZE_TO_ASPECT_RATIO = {
 }
 
 
+_CAPABILITY_PARAMS = frozenset(
+    (
+        "input_reference",
+        "image_url",
+        "generate_audio",
+    )
+)
+
+
 class KlingVideoConfig(BaseVideoConfig):
     """
     Kling's classic /v1 API is a task API: POST to /v1/videos/text2video (or
@@ -72,6 +82,19 @@ class KlingVideoConfig(BaseVideoConfig):
 
     RESOLUTION_TO_MODE = {"720p": "std", "1080p": "pro", "4k": "4k"}
     DEFAULT_RESOLUTION = "1080p"
+
+    def get_capability_param_support(self, model: str) -> CapabilityParamSupport:
+        """
+        Kling's direct API executes a start frame (image) and generate_audio (sound).
+
+        It has NO end-frame surface here: Kling names that field image_tail, which
+        this transformation never emits, so an end_image_url would be forwarded
+        verbatim and ignored by the provider. Reference media, regeneration and
+        bitrate are likewise unimplemented. Kling's fal-hosted twin does accept an
+        end frame; that difference is exactly why advertisement has to follow the
+        route a model is actually configured on rather than the vendor's catalog.
+        """
+        return DeclaredCapabilityParams(_CAPABILITY_PARAMS)
 
     def get_supported_openai_params(self, model: str) -> list:
         return [
@@ -126,7 +149,10 @@ class KlingVideoConfig(BaseVideoConfig):
         if resolution is not None:
             mapped["mode"] = self._resolution_to_mode(resolution)
 
-        start_image = self._coerce_start_image(params.get("input_reference"))
+        # input_reference and image_url are the same start-frame slot under two names
+        # and both are declared as executable, so both have to reach Kling's image
+        # field; forwarding image_url verbatim would leave it ignored by the provider.
+        start_image = self._coerce_start_image(params.get("input_reference") or params.get("image_url"))
         if start_image:
             mapped["image"] = start_image
 
@@ -135,7 +161,7 @@ class KlingVideoConfig(BaseVideoConfig):
             mapped["sound"] = "on" if generate_audio else "off"
 
         supported = self.get_supported_openai_params(model)
-        handled = {"resolution"}
+        handled = {"resolution", "image_url"}  # mutable-ok: local lookup set, never mutated
         for key, value in params.items():
             if key not in supported and key not in handled and key not in mapped:
                 mapped[key] = value

@@ -28,14 +28,17 @@ from litellm.types.videos.utils import (
 
 if TYPE_CHECKING:
     from litellm.litellm_core_utils.litellm_logging import Logging as _LiteLLMLoggingObj
+    from litellm.videos.capabilities import CapabilityParamSupport as _CapabilityParamSupport
 
     from ...base_llm.chat.transformation import BaseLLMException as _BaseLLMException
 
     LiteLLMLoggingObj = _LiteLLMLoggingObj
     BaseLLMException = _BaseLLMException
+    CapabilityParamSupport = _CapabilityParamSupport
 else:
     LiteLLMLoggingObj = Any
     BaseLLMException = Any
+    CapabilityParamSupport = Any
 
 
 _MAX_REFERENCE_IMAGES = 3
@@ -65,6 +68,31 @@ def _audio_preference(params: Mapping[str, Any]) -> bool | None:
     """
     requested = tuple(params[key] for key in _AUDIO_PARAM_KEYS if params.get(key) is not None)
     return bool(requested[0]) if requested else None
+
+
+def _reject_unrenderable_audio(model: str, wants_audio: bool | None) -> None:
+    """
+    Refuse an audio preference this model cannot render.
+
+    The flag is consumed by the transform rather than forwarded, so an accepted value
+    the model cannot honor would bill a generation whose soundtrack silently differs
+    from what was asked for. Veo 3.x always renders audio and exposes no field to
+    disable it; every other Veo renders silent video and has no field to enable it.
+    """
+    if wants_audio is None:
+        return
+    if wants_audio is False and _is_veo_3x(model):
+        raise ValueError(
+            "generate_audio=false is not supported for Veo 3.x on the Gemini video route: "
+            "audio is generated natively and always on, and the Gemini API exposes no field "
+            "to disable it. Route to a model that renders silent video if you need no audio track."
+        )
+    if wants_audio is True and not _is_veo_3x(model):
+        raise ValueError(
+            f"generate_audio=true is not supported for '{model}' on the Gemini video route: "
+            "only Veo 3.x renders audio, and this model has no audio field to enable. "
+            "Route to a Veo 3.x model if you need an audio track."
+        )
 
 
 def _person_generation_for_request(
@@ -154,6 +182,16 @@ def _usage_video_resolution_from_parameters(
     return str(res).strip().lower()
 
 
+_CAPABILITY_PARAMS = frozenset(
+    (
+        "input_reference",
+        "image_url",
+        "image_urls",
+        "generate_audio",
+    )
+)
+
+
 class GeminiVideoConfig(BaseVideoConfig):
     """
     Configuration class for Gemini (Veo) video generation.
@@ -174,6 +212,25 @@ class GeminiVideoConfig(BaseVideoConfig):
 
     def __init__(self):
         super().__init__()
+
+    def get_capability_param_support(self, model: str) -> "CapabilityParamSupport":
+        """
+        Veo executes a start frame (image / image_url) and up to three reference
+        images ("ingredients", mapped to referenceImages on the instance).
+
+        generate_audio is declared for every Veo model because the transform consumes
+        and validates it per model rather than dropping it: on Veo 3.x audio is native
+        and always on, so True is satisfied and False is refused, while Veo 2.x renders
+        silent video, so False is satisfied and True is refused. Only the value a given
+        model cannot produce is rejected, which keeps a caller that sends a uniform
+        request shape working instead of 4xx-ing a flag the model already honors.
+
+        It has no end-frame, reference-video, reference-audio, regeneration or
+        bitrate surface.
+        """
+        from litellm.videos.capabilities import DeclaredCapabilityParams
+
+        return DeclaredCapabilityParams(_CAPABILITY_PARAMS)
 
     def get_supported_openai_params(self, model: str) -> list:
         """
@@ -418,12 +475,7 @@ class GeminiVideoConfig(BaseVideoConfig):
         wants_audio = _audio_preference(params_copy)
         for audio_key in _AUDIO_PARAM_KEYS:
             params_copy.pop(audio_key, None)
-        if wants_audio is False and _is_veo_3x(model):
-            raise ValueError(
-                "generate_audio=false is not supported for Veo 3.x on the Gemini video route: "
-                "audio is generated natively and always on, and the Gemini API exposes no field "
-                "to disable it. Route to a model that renders silent video if you need no audio track."
-            )
+        _reject_unrenderable_audio(model, wants_audio)
 
         params_copy["personGeneration"] = params_copy.get("personGeneration") or _person_generation_for_request(
             model, instance, params_copy

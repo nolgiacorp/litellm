@@ -4,6 +4,7 @@ import litellm
 from litellm.llms.base_llm.videos.transformation import BaseVideoConfig
 from litellm.types.videos.main import VideoCreateOptionalRequestParams
 from litellm.utils import filter_out_litellm_params
+from litellm.videos.capabilities import check_capability_params, raise_public
 
 
 class VideoGenerationRequestUtils:
@@ -14,18 +15,38 @@ class VideoGenerationRequestUtils:
         model: str,
         video_generation_provider_config: BaseVideoConfig,
         video_generation_optional_params: VideoCreateOptionalRequestParams,
+        custom_llm_provider: str = "",
     ) -> Dict:
         """
         Get optional parameters for the video generation API.
+
+        This is the single choke point every video create passes through, so it is
+        where capability params are checked before any provider mapping can drop
+        them. See litellm/videos/capabilities.py for why the check is scoped to a
+        closed vocabulary rather than made a global drop_params flip.
 
         Args:
             model: The model name
             video_generation_provider_config: The provider configuration for video generation API
             video_generation_optional_params: The optional parameters for video generation
+            custom_llm_provider: The resolved provider, named in the refusal message
 
         Returns:
             A dictionary of supported parameters for the video generation API
+
+        Raises:
+            litellm.BadRequestError: the request carries a capability param this
+                model cannot execute, which would otherwise be silently discarded
         """
+        failure = check_capability_params(
+            model=model,
+            custom_llm_provider=custom_llm_provider,
+            support=video_generation_provider_config.get_capability_param_support(model),
+            requested_params=video_generation_optional_params,
+        )
+        if failure is not None:
+            raise_public(failure)
+
         # Map parameters to provider-specific format
         mapped_params = video_generation_provider_config.map_openai_params(
             video_create_optional_params=video_generation_optional_params,

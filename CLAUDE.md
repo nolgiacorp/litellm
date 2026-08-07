@@ -128,3 +128,31 @@ Ask yourself: "Would a senior engineer say this is overcomplicated?" If yes, sim
   `image_url` (`_image_url_field_for_model`).
 - The deployed config lives in GCP Secret Manager, NOT in the infra repo
   YAML alone — see infra/CLAUDE.md for the drift trap.
+- DEPLOY ORDER IS LOAD-BEARING: this proxy first, nolgia-api's catalog
+  second. Capability EXECUTION lives here; capability ADVERTISEMENT lives
+  in nolgia-api's `internal/generation/models.go` behind `GET /models`.
+  They deploy from different repos with nothing sequencing them, so a
+  catalog that ships first promises inputs this image cannot honor. Land
+  provider support here, build (`infra/images/litellm/build.sh`), bump
+  `litellm_image_tag` and dispatch the prod apply, and only then let the
+  catalog advertise it.
+- Capability params (start/end frames, reference media, generate_audio)
+  are NOT droppable. `litellm/videos/capabilities.py` gates them at
+  `get_optional_params_video_generation`, so a param a provider cannot
+  execute returns a 400 naming the param and model rather than being
+  silently discarded (NOL-471). Declare what a provider really executes in
+  `get_capability_param_support`; leaving it undeclared means "not
+  audited" and keeps the old behavior. The declaration is also what
+  `GET /v1/videos/capabilities` reports, which nolgia-api intersects its
+  catalog against, so declaring a param a provider does not actually
+  consume re-opens the silent-drop hole from the advertisement side. That
+  report is scoped to the calling key's visible models and, when several
+  deployments back one `model_name`, lists every provider
+  (`custom_llm_providers`) but only the capabilities ALL of them execute,
+  because the router may route to any of them.
+- Routing decides capability, not the vendor: `kling-v3-*-i2v` is served
+  by the DIRECT kling provider (no end-frame field; Kling calls it
+  `image_tail`) while `kling-v3-*-i2v-fal` accepts `end_image_url`, and
+  `seedance-v2-pro-r2v` is OpenRouter (no reference-audio or bitrate slot)
+  with a fal twin that has both. Check `litellm-config.yaml` before
+  assuming a model's surface.

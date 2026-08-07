@@ -18355,6 +18355,41 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/videos/capabilities": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Video Capabilities
+         * @description Report the capability params each configured video model can actually execute.
+         *
+         *     Capability advertisement lives outside this proxy, so a catalog can get ahead of
+         *     the deployed image and promise inputs that would be silently discarded. This
+         *     endpoint is the deployed image answering for itself, derived from the same
+         *     provider configs the request path uses.
+         *
+         *     The report is scoped to the models the calling key may route to, resolved through
+         *     the same get_available_models_for_user path /v1/models uses, so a restricted key
+         *     neither sees deployment metadata it has no access to nor receives capabilities for
+         *     models it cannot call.
+         *
+         *     Example:
+         *     ```bash
+         *     curl -X GET "http://localhost:4000/v1/videos/capabilities"         -H "Authorization: Bearer sk-1234"
+         *     ```
+         */
+        get: operations["video_capabilities_v1_videos_capabilities_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/videos/characters": {
         parameters: {
             query?: never;
@@ -19765,6 +19800,41 @@ export interface paths {
          *     ```
          */
         post: operations["video_generation_videos_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/videos/capabilities": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Video Capabilities
+         * @description Report the capability params each configured video model can actually execute.
+         *
+         *     Capability advertisement lives outside this proxy, so a catalog can get ahead of
+         *     the deployed image and promise inputs that would be silently discarded. This
+         *     endpoint is the deployed image answering for itself, derived from the same
+         *     provider configs the request path uses.
+         *
+         *     The report is scoped to the models the calling key may route to, resolved through
+         *     the same get_available_models_for_user path /v1/models uses, so a restricted key
+         *     neither sees deployment metadata it has no access to nor receives capabilities for
+         *     models it cannot call.
+         *
+         *     Example:
+         *     ```bash
+         *     curl -X GET "http://localhost:4000/v1/videos/capabilities"         -H "Authorization: Bearer sk-1234"
+         *     ```
+         */
+        get: operations["video_capabilities_videos_capabilities_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -57394,6 +57464,26 @@ export interface operations {
             };
         };
     };
+    video_capabilities_v1_videos_capabilities_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
     video_create_character_v1_videos_characters_post: {
         parameters: {
             query?: never;
@@ -59602,6 +59692,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    video_capabilities_videos_capabilities_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
                 };
             };
         };

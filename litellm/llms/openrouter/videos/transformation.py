@@ -16,6 +16,7 @@ from litellm.types.videos.utils import (
     encode_video_id_with_provider,
     extract_original_video_id,
 )
+from litellm.videos.capabilities import CapabilityParamSupport, DeclaredCapabilityParams
 
 if TYPE_CHECKING:
     from litellm.litellm_core_utils.litellm_logging import Logging as _LiteLLMLoggingObj
@@ -53,6 +54,17 @@ _PASSTHROUGH_PARAMS = (
 )
 
 
+_CAPABILITY_PARAMS = frozenset(
+    (
+        "input_reference",
+        "image_url",
+        "end_image_url",
+        "image_urls",
+        "generate_audio",
+    )
+)
+
+
 class OpenRouterVideoConfig(BaseVideoConfig):
     """
     OpenRouter exposes an async video API distinct from its chat surface: POST
@@ -68,6 +80,19 @@ class OpenRouterVideoConfig(BaseVideoConfig):
     and the fal-shaped names nolgia-api already sends (image_url / end_image_url /
     image_urls), so swapping Seedance from fal to OpenRouter needs no client change.
     """
+
+    def get_capability_param_support(self, model: str) -> CapabilityParamSupport:
+        """
+        OpenRouter's normalized video schema covers start/end stills (frame_images)
+        and reference-to-video character images (input_references), plus
+        generate_audio via _PASSTHROUGH_PARAMS.
+
+        Reference VIDEOS and reference AUDIO have no slot in that schema, and this
+        transformation deliberately ignores unknown top-level fields rather than
+        forwarding them (OpenRouter rejects them), so video_urls / audio_urls /
+        bitrate_mode would be discarded without a trace. They are not declared.
+        """
+        return DeclaredCapabilityParams(_CAPABILITY_PARAMS)
 
     def get_supported_openai_params(self, model: str) -> list:
         return [

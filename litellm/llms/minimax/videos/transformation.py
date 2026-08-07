@@ -33,6 +33,7 @@ from litellm.types.videos.utils import (
     encode_video_id_with_provider,
     extract_original_video_id,
 )
+from litellm.videos.capabilities import CapabilityParamSupport, DeclaredCapabilityParams
 
 if TYPE_CHECKING:
     from litellm.litellm_core_utils.litellm_logging import Logging as _LiteLLMLoggingObj
@@ -145,7 +146,44 @@ def _duration_usage(value: float | None) -> dict:  # mutable-ok: VideoObject.usa
     return {"duration_seconds": value} if value is not None else {}
 
 
+_LEGACY_CAPABILITY_PARAMS = frozenset(
+    (
+        "input_reference",
+        "image_url",
+    )
+)
+
+_V2_CAPABILITY_PARAMS = frozenset(
+    (
+        "input_reference",
+        "image_url",
+        "end_image_url",
+        "image_urls",
+        "audio_urls",
+        "base_video_url",
+    )
+)
+
+
 class MinimaxVideoConfig(BaseVideoConfig):
+    def get_capability_param_support(self, model: str) -> CapabilityParamSupport:
+        """
+        Hailuo 3 (/v2) executes first/last frame conditioning, reference images and
+        reference audio, plus base_video regeneration. Legacy Hailuo (/v1) has only a
+        first_frame_image slot.
+
+        Neither declares video_urls. H3 does recognize the param, but only to refuse
+        it: a reference clip's length is unknown when the create call is billed, so
+        accepting one would undercharge. Declaring it here would let the catalog
+        advertise a reference-video surface no MiniMax route can serve.
+
+        generate_audio is not declared on either: MiniMax audio is native and has no
+        switch, so a flag would be discarded.
+        """
+        return DeclaredCapabilityParams(
+            _LEGACY_CAPABILITY_PARAMS if _uses_legacy_video_api(model) else _V2_CAPABILITY_PARAMS
+        )
+
     def get_supported_openai_params(self, model: str) -> list:  # mutable-ok: BaseVideoConfig contract returns list
         return [
             "model",

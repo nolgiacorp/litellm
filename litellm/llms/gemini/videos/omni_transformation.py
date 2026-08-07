@@ -7,10 +7,12 @@ from httpx._types import RequestFiles
 
 import litellm
 from litellm.constants import DEFAULT_GOOGLE_VIDEO_DURATION_SECONDS
+from litellm.litellm_core_utils.prompt_templates.common_utils import extract_file_data
 from litellm.llms.base_llm.videos.transformation import BaseVideoConfig
 from litellm.secret_managers.main import get_secret_str
 from litellm.types.interactions import InteractionsAPIResponse
 from litellm.types.router import GenericLiteLLMParams
+from litellm.types.utils import FileTypes
 from litellm.types.videos.main import VideoCreateOptionalRequestParams, VideoObject
 from litellm.types.videos.utils import (
     encode_video_id_with_provider,
@@ -21,14 +23,17 @@ from .transformation import fetch_image_as_base64
 
 if TYPE_CHECKING:
     from litellm.litellm_core_utils.litellm_logging import Logging as _LiteLLMLoggingObj
+    from litellm.videos.capabilities import CapabilityParamSupport as _CapabilityParamSupport
 
     from ...base_llm.chat.transformation import BaseLLMException as _BaseLLMException
 
     LiteLLMLoggingObj = _LiteLLMLoggingObj
     BaseLLMException = _BaseLLMException
+    CapabilityParamSupport = _CapabilityParamSupport
 else:
     LiteLLMLoggingObj = Any
     BaseLLMException = Any
+    CapabilityParamSupport = Any
 
 INTERACTIONS_API_REVISION = "2026-05-20"
 
@@ -63,6 +68,39 @@ def _find_video_part(interaction: InteractionsAPIResponse) -> dict[str, Any] | N
     return None
 
 
+_CAPABILITY_PARAMS = frozenset(
+    (
+        "input_reference",
+        "image_url",
+    )
+)
+
+
+def _start_frame_part(start_frame: FileTypes) -> dict[str, str]:
+    """
+    Encode the start frame as an Omni image input part.
+
+    input_reference and image_url are the same slot under two names and both are
+    declared as executable, so both are honored here. A hosted URL is fetched (via
+    the SSRF-checked helper), while a multipart /v1/videos upload arrives as bytes or
+    a file-like object and is inlined directly; ignoring either would send the
+    interaction as text-to-video and bill for a result without the requested frame.
+    """
+    if isinstance(start_frame, str):
+        base64_data, mime_type = fetch_image_as_base64(start_frame)
+        # mutable-ok: request part dict, handed straight to the JSON body
+        return {"type": "image", "data": base64_data, "mime_type": mime_type}
+    extracted = extract_file_data(start_frame)
+    content_type = extracted.get("content_type") or ""
+    if not content_type or content_type == "application/octet-stream":
+        content_type = "image/png"
+    return {  # mutable-ok: request part dict, handed straight to the JSON body
+        "type": "image",
+        "data": base64.b64encode(extracted["content"]).decode("utf-8"),
+        "mime_type": content_type,
+    }
+
+
 class GeminiOmniVideoConfig(BaseVideoConfig):
     """
     Video generation for Gemini Omni models (e.g. gemini-omni-flash-preview).
@@ -77,6 +115,17 @@ class GeminiOmniVideoConfig(BaseVideoConfig):
     prompt guide both are expressed in the prompt text, which is what
     transform_video_create_request does with ``seconds`` and ``negative_prompt``.
     """
+
+    def get_capability_param_support(self, model: str) -> "CapabilityParamSupport":
+        """
+        Omni executes a start frame: transform_video_create_request reads image_url
+        and switches the interaction to image_to_video. It has no end-frame,
+        reference-media, regeneration or bitrate surface, and its audio is native
+        with no generate_audio switch.
+        """
+        from litellm.videos.capabilities import DeclaredCapabilityParams
+
+        return DeclaredCapabilityParams(_CAPABILITY_PARAMS)
 
     def get_supported_openai_params(self, model: str) -> list:
         return ["model", "prompt", "seconds", "size"]
@@ -156,7 +205,7 @@ class GeminiOmniVideoConfig(BaseVideoConfig):
         seconds = params.get("seconds") or params.get("duration_seconds")
         negative_prompt = params.get("negative_prompt")
         aspect_ratio = params.get("aspect_ratio")
-        image_url = params.get("image_url")
+        start_frame = params.get("image_url") or params.get("input_reference")
 
         prompt_parts: list[str] = [prompt]
         if seconds:
@@ -177,10 +226,9 @@ class GeminiOmniVideoConfig(BaseVideoConfig):
             "store": True,
         }
 
-        if image_url:
-            base64_data, mime_type = fetch_image_as_base64(image_url)
+        if start_frame:
             request_data["input"] = [
-                {"type": "image", "data": base64_data, "mime_type": mime_type},
+                _start_frame_part(start_frame),
                 {"type": "text", "text": full_prompt},
             ]
             request_data["generation_config"] = {"video_config": {"task": "image_to_video"}}

@@ -33,6 +33,7 @@ from litellm.types.videos.utils import (
     encode_video_id_with_provider,
     extract_original_video_id,
 )
+from litellm.videos.capabilities import CapabilityParamSupport, DeclaredCapabilityParams
 
 if TYPE_CHECKING:
     from litellm.litellm_core_utils.litellm_logging import Logging as _LiteLLMLoggingObj
@@ -88,6 +89,17 @@ _SUPPORTED_OPENAI_PARAMS = (
     "user",
     "extra_headers",
     "extra_body",
+)
+
+_CAPABILITY_PARAMS = frozenset(
+    (
+        "input_reference",
+        "image_url",
+        "end_image_url",
+        "image_urls",
+        "video_urls",
+        "generate_audio",
+    )
 )
 
 _OPENAI_ONLY_PARAMS = frozenset(
@@ -161,6 +173,16 @@ class BflVideoConfig(BaseVideoConfig):
 
     def _async_http_client(self) -> AsyncHTTPHandler:
         return self._async_client or get_async_httpx_client(llm_provider=litellm.LlmProviders.BLACK_FOREST_LABS)
+
+    def get_capability_param_support(self, model: str) -> CapabilityParamSupport:
+        """
+        FLUX 3 assembles start/element/end images into BFL's positional keyframes
+        array, maps a reference video to start_video (mode v2v) and forwards
+        generate_audio. It has no reference-audio, preset-voice, regeneration or
+        bitrate surface; those params reach _merged_params and would be passed
+        through to BFL verbatim, which ignores them.
+        """
+        return DeclaredCapabilityParams(_CAPABILITY_PARAMS)
 
     def get_supported_openai_params(self, model: str) -> list:  # mutable-ok: BaseVideoConfig contract returns list
         return list(_SUPPORTED_OPENAI_PARAMS)  # mutable-ok: BaseVideoConfig contract returns list
