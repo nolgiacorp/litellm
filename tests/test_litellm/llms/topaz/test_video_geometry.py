@@ -79,10 +79,40 @@ def _mp4(
     return _box(b"ftyp", b"isom" + bytes(4) + b"isomiso2") + moov
 
 
+def _mp4_audio_track_first(video: tuple[int, int] = (1920, 1080)) -> bytes:
+    """
+    Real footage usually carries an audio track, and it is often the FIRST trak
+    in the moov. Selecting by handler rather than by position is the only thing
+    that keeps this parsing the picture instead of the soundtrack.
+    """
+    audio_stbl = _box(b"stbl", _stts(1300) + _stsd(0, 0))
+    audio = _box(
+        b"trak",
+        _tkhd(0, 0) + _box(b"mdia", _mdhd(44100, 1323000) + _hdlr(b"soun") + _box(b"minf", audio_stbl)),
+    )
+    video_stbl = _box(b"stbl", _stts(750) + _stsd(*video))
+    video_trak = _box(
+        b"trak",
+        _tkhd(*video) + _box(b"mdia", _mdhd(25000, 750000) + _hdlr(b"vide") + _box(b"minf", video_stbl)),
+    )
+    return _box(b"moov", _mvhd() + audio + video_trak)
+
+
 class TestParsesRealGeometry:
     def test_reads_every_field(self):
         geometry = parse_video_geometry(_mp4())
         assert geometry == SourceGeometry(width=640, height=360, duration_seconds=13.0, frame_rate=24.0)
+
+    def test_video_track_is_selected_past_a_leading_audio_track(self):
+        """
+        Cross-checked against ffmpeg output: a 1920x1080 25fps 30s clip muxed
+        with an AAC track parses to the picture's geometry, not the audio's.
+        Taking the first trak instead of the one whose handler is `vide` would
+        read a soundtrack as footage and quote a restore that does not exist.
+        """
+        geometry = parse_video_geometry(_mp4_audio_track_first())
+        assert geometry == SourceGeometry(width=1920, height=1080, duration_seconds=30.0, frame_rate=25.0)
+        assert geometry.frame_count == 750
 
     def test_frame_count_is_what_topaz_bills_for(self):
         """Topaz bills per frame processed, so this is the quantity that prices the job."""
