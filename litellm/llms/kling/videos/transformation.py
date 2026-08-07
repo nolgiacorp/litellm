@@ -84,6 +84,33 @@ _KLING_BODY_CODE_STATUS: Mapping[int, int] = MappingProxyType(
 _KLING_DEFAULT_BODY_ERROR_STATUS = 400
 
 
+def kling_error_response(status_code: int, error_message: str) -> httpx.Response:
+    """
+    A response whose BODY carries the vendor's message.
+
+    `_handle_error` in the shared HTTP handler re-derives an error's text from
+    `e.response.text` whenever the exception carries a response, and BOTH
+    BaseLLMException and RateLimitError synthesise one with an EMPTY body. So
+    any Kling error re-wrapped on that path - which is every error raised from a
+    response transform - arrived at the caller with a BLANK message.
+
+    That erases the vendor's own words, including the "parallel task over
+    resource pack limit" text nolgia-api matches as its NOL-526 fallback. The
+    429 status is now the primary signal, but a fallback that silently cannot
+    fire is worse than no fallback. Putting the message in the body makes the
+    handler's re-derivation a no-op instead of an erasure.
+
+    Deliberately carries no headers: `_handle_error` prefers the exception's own
+    headers and only falls back to the response's, and a vendor is not allowed
+    to inject headers that a downstream serializer might forward to a client.
+    """
+    return httpx.Response(
+        status_code=status_code,
+        text=error_message,
+        request=httpx.Request(method="POST", url=resolve_kling_api_base(None)),
+    )
+
+
 def kling_rate_limit_error(
     error_message: str,
     headers: Mapping[str, object] | httpx.Headers | None,
@@ -98,13 +125,17 @@ def kling_rate_limit_error(
     dropped.
     """
     resolved = dict(headers) if headers else {}  # mutable-ok: RateLimitError contract takes a dict of headers
-    return litellm.RateLimitError(
+    error = litellm.RateLimitError(
         message=error_message,
         llm_provider=litellm.LlmProviders.KLING.value,
         model=model,
         category=litellm.RateLimitErrorCategory.VENDOR_RATE_LIMIT,
         headers={str(key): str(value) for key, value in resolved.items()},
     )
+    # Assigned after construction because RateLimitError.__init__ overwrites
+    # self.response unconditionally, ignoring any response handed to it.
+    error.response = kling_error_response(_KLING_RATE_LIMIT_STATUS, error_message)
+    return error
 
 
 class KlingVideoConfig(BaseVideoConfig):
@@ -577,6 +608,7 @@ class KlingVideoConfig(BaseVideoConfig):
             status_code=status_code,
             message=error_message,
             headers=headers,
+            response=kling_error_response(status_code, error_message),
         )
 
     def _raise_for_kling_error(self, response_data: dict[str, Any]) -> None:

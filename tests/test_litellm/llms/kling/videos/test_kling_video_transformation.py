@@ -638,3 +638,62 @@ class TestKlingErrorMapping:
             exception_status=500,
             exception_str=str(excinfo.value),
         )
+
+
+class TestKlingErrorMessageSurvivesRewrapping:
+    """
+    Every error raised from a response transform is re-wrapped by
+    `_handle_error` in the shared HTTP handler, which re-derives the text from
+    `e.response.text`. Both BaseLLMException and RateLimitError synthesise a
+    response with an EMPTY body, so that re-derivation used to ERASE the vendor's
+    message rather than preserve it.
+
+    That matters beyond readability: nolgia-api's NOL-526 classifier matches the
+    "parallel task over resource pack limit" text as its fallback. The 429 is
+    the primary signal now, but a fallback that silently cannot fire is worse
+    than no fallback at all.
+    """
+
+    def setup_method(self):
+        self.config = KlingVideoConfig()
+        self.handler = None
+
+    def _rewrap(self, error):
+        from litellm.llms.custom_httpx.llm_http_handler import BaseLLMHTTPHandler
+
+        with pytest.raises(Exception) as excinfo:
+            BaseLLMHTTPHandler()._handle_error(e=error, provider_config=self.config)
+        return excinfo.value
+
+    def test_rate_limit_message_survives(self, monkeypatch):
+        monkeypatch.setattr(litellm, "suppress_debug_info", True)
+        with pytest.raises(litellm.RateLimitError) as excinfo:
+            self.config._raise_for_kling_error({"code": 1303, "message": "parallel task over resource pack limit"})
+
+        rewrapped = self._rewrap(excinfo.value)
+
+        assert isinstance(rewrapped, litellm.RateLimitError)
+        assert rewrapped.status_code == 429
+        assert "parallel task over resource pack limit" in str(rewrapped)
+
+    def test_client_error_message_survives(self, monkeypatch):
+        monkeypatch.setattr(litellm, "suppress_debug_info", True)
+        with pytest.raises(Exception) as excinfo:
+            self.config._raise_for_kling_error({"code": 1201, "message": "invalid parameter"})
+
+        rewrapped = self._rewrap(excinfo.value)
+
+        assert rewrapped.status_code == 400
+        assert "invalid parameter" in str(rewrapped)
+
+    def test_the_carrying_response_leaks_no_vendor_headers(self):
+        """
+        _handle_error falls back to the RESPONSE's headers when the exception
+        carries none. A vendor must not be able to inject headers that a
+        downstream serializer might forward to a client on our origin.
+        """
+        from litellm.llms.kling.videos.transformation import kling_error_response
+
+        response = kling_error_response(429, "slow down")
+        assert response.text == "slow down"
+        assert "set-cookie" not in {key.lower() for key in response.headers}
