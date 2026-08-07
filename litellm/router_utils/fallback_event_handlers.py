@@ -1,3 +1,4 @@
+from collections.abc import Sequence
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
 
@@ -22,7 +23,7 @@ else:
 # Keys the router itself puts on a fallback entry when it re-points the same
 # request at another deployment or order level. Anything beyond these means the
 # caller rewrote the request in the fallback.
-_ROUTER_FALLBACK_ENTRY_KEYS = {"model", "_target_order", "_excluded_deployment_ids"}
+_ROUTER_FALLBACK_ENTRY_KEYS = frozenset(("model", "_target_order", "_excluded_deployment_ids"))
 
 
 def is_router_availability_error(error: Exception) -> bool:
@@ -56,7 +57,7 @@ def fallback_transforms_request(fallback: Any) -> bool:
     return any(key not in _ROUTER_FALLBACK_ENTRY_KEYS for key in fallback)
 
 
-def get_request_transforming_fallbacks(fallbacks: list[Any] | None) -> list[Any]:
+def get_request_transforming_fallbacks(fallbacks: Sequence[Any] | None) -> tuple[Any, ...]:
     """
     The client-side fallbacks that repair the request itself, if any.
 
@@ -64,8 +65,8 @@ def get_request_transforming_fallbacks(fallbacks: list[Any] | None) -> list[Any]
     overrides; the standard {model_group: [...]} mapping never does.
     """
     if not _check_non_standard_fallback_format(fallbacks=fallbacks):
-        return []
-    return [fallback for fallback in fallbacks or [] if fallback_transforms_request(fallback)]
+        return ()
+    return tuple(fallback for fallback in fallbacks or () if fallback_transforms_request(fallback))
 
 
 def is_request_rejection(error: Exception) -> bool:
@@ -316,7 +317,7 @@ async def log_failure_fallback_event(original_model_group: str, kwargs: dict, or
             verbose_router_logger.error(f"Error in log_failure_fallback_event: {str(e)}")
 
 
-def _check_non_standard_fallback_format(fallbacks: Optional[List[Any]]) -> bool:
+def _check_non_standard_fallback_format(fallbacks: Optional[Sequence[Any]]) -> bool:
     """
     Checks if the fallbacks list is a list of strings or a list of dictionaries.
 

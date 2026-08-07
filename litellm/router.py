@@ -6195,12 +6195,8 @@ class Router:
                 f"{type(e).__name__} rejects the request itself for {original_model_group}: only the "
                 f"request-transforming fallbacks may run."
             )
-            input_kwargs.update(
-                {
-                    "fallback_model_group": request_repair_fallbacks,
-                    "original_model_group": original_model_group,
-                }
-            )
+            input_kwargs["fallback_model_group"] = request_repair_fallbacks
+            input_kwargs["original_model_group"] = original_model_group
             return await run_async_fallback(*args, **input_kwargs)
 
         # ORDER-BASED FALLBACKS: prepend higher order levels to the fallback list
