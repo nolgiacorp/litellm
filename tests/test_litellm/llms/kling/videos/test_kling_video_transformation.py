@@ -548,10 +548,35 @@ class TestKlingErrorMapping:
         assert error.category == litellm.RateLimitErrorCategory.VENDOR_RATE_LIMIT.value
 
     def test_retry_after_survives_onto_the_error(self):
-        """RateLimitError does not copy response headers, so an unpassed Retry-After is lost."""
+        """
+        RateLimitError does not copy response headers, so an unpassed Retry-After
+        is lost. Lower-cased on the way through because that is how litellm reads
+        it back (`_get_retry_after_from_exception_header`).
+        """
         error = self.config.get_error_class(error_message="slow down", status_code=429, headers={"Retry-After": "30"})
         assert error.headers is not None
-        assert error.headers.get("Retry-After") == "30"
+        assert error.headers.get("retry-after") == "30"
+
+    def test_only_rate_limit_headers_are_forwarded(self):
+        """
+        The proxy emits `e.headers` on its own response, so an upstream
+        Content-Length would corrupt the framing and a Set-Cookie would leak a
+        vendor cookie onto our reply.
+        """
+        upstream = httpx.Headers(
+            {
+                "Retry-After": "12",
+                "X-RateLimit-Remaining": "0",
+                "Content-Length": "9999",
+                "Content-Type": "application/json",
+                "Set-Cookie": "session=abc",
+                "Access-Control-Allow-Origin": "*",
+            }
+        )
+
+        error = self.config.get_error_class(error_message="slow down", status_code=429, headers=upstream)
+
+        assert error.headers == {"retry-after": "12", "x-ratelimit-remaining": "0"}
 
     def test_body_code_1303_maps_to_429_not_400(self):
         """
@@ -616,7 +641,7 @@ class TestKlingErrorMapping:
             exception_str=str(error),
         )
 
-    def test_a_bare_base_llm_exception_would_still_regress(self):
+    def test_a_bare_base_llm_exception_would_still_regress(self, monkeypatch):
         """
         Pins WHY the fix has to change the exception type rather than just the
         status. This is exactly what the old code produced for code 1303, and it
@@ -626,7 +651,7 @@ class TestKlingErrorMapping:
         from litellm.llms.base_llm.chat.transformation import BaseLLMException
         from litellm.router_utils.cooldown_handlers import _is_cooldown_required
 
-        litellm.suppress_debug_info = True
+        monkeypatch.setattr(litellm, "suppress_debug_info", True)
         old_shape = BaseLLMException(status_code=400, message="parallel task over limit", headers={})
 
         with pytest.raises(litellm.APIConnectionError) as excinfo:
