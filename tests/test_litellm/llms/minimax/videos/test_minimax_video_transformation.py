@@ -254,6 +254,79 @@ class TestMinimaxVideoTransformation:
                 drop_params=False,
             )
 
+    @pytest.mark.parametrize("seconds", [0, "0", -6, 0.4])
+    def test_map_v2_base_video_requires_a_positive_source_length(self, seconds):
+        """
+        A non-positive length passes an int conversion and is then reported as
+        usage.duration_seconds, which prices the 2K regeneration at nothing or less.
+        """
+        with pytest.raises(litellm.BadRequestError, match="regeneration requires seconds"):
+            self.config.map_openai_params(
+                video_create_optional_params={
+                    "seconds": seconds,
+                    "base_video_url": "https://video.example.com/source-768p.mp4",
+                },
+                model=V2_MODEL,
+                drop_params=False,
+            )
+
+    def test_map_v2_native_base_video_is_held_to_the_regeneration_rules(self):
+        """
+        extra_body's provider-native base_video is merged over the mapped params, so the
+        request transform treats it as a regeneration; skipping these checks for it would
+        bill the default six seconds, or a ratio that is then stripped from the body.
+        """
+        with pytest.raises(litellm.BadRequestError, match="regeneration requires seconds"):
+            self.config.map_openai_params(
+                video_create_optional_params={
+                    "extra_body": {"base_video": ["https://video.example.com/source-768p.mp4"]},
+                },
+                model=V2_MODEL,
+                drop_params=False,
+            )
+        with pytest.raises(litellm.BadRequestError, match="keeps the source's aspect ratio"):
+            self.config.map_openai_params(
+                video_create_optional_params={
+                    "seconds": 6,
+                    "extra_body": {"base_video": ["https://video.example.com/source-768p.mp4"], "ratio": "9:16"},
+                },
+                model=V2_MODEL,
+                drop_params=False,
+            )
+
+    def test_map_v2_native_base_video_maps_like_base_video_url(self):
+        mapped = self.config.map_openai_params(
+            video_create_optional_params={
+                "seconds": 6,
+                "extra_body": {"base_video": ["https://video.example.com/source-768p.mp4"]},
+            },
+            model=V2_MODEL,
+            drop_params=False,
+        )
+        assert mapped["base_video"] == ("https://video.example.com/source-768p.mp4",)
+        assert mapped["duration"] == 6
+        assert "ratio" not in mapped
+
+    @pytest.mark.parametrize("bad", ["", ["", "  "], ["https://a.mp4", "https://b.mp4"], 42])
+    def test_map_v2_native_base_video_must_resolve_to_one_url(self, bad):
+        with pytest.raises(litellm.BadRequestError, match="requires base_video to be a single"):
+            self.config.map_openai_params(
+                video_create_optional_params={"seconds": 6, "extra_body": {"base_video": bad}},
+                model=V2_MODEL,
+                drop_params=False,
+            )
+
+    def test_map_legacy_rejects_native_base_video(self):
+        with pytest.raises(litellm.BadRequestError, match="legacy Hailuo models do not"):
+            self.config.map_openai_params(
+                video_create_optional_params={
+                    "seconds": 6,
+                    "extra_body": {"base_video": ["https://video.example.com/source-768p.mp4"]},
+                },
+                model=V1_MODEL,
+                drop_params=False,
+            )
+
     def test_map_v2_base_video_allows_original_reference_media(self):
         mapped = self.config.map_openai_params(
             video_create_optional_params={

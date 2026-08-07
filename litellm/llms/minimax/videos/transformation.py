@@ -143,6 +143,16 @@ def _coerce_media_url(value: FileTypes | str | None) -> str | None:
     return f"data:{content_type};base64,{encoded}"
 
 
+def _asks_for_regeneration(params: Mapping[str, Any]) -> bool:
+    """
+    base_video is the provider-native spelling of base_video_url. The shared video handler
+    merges raw extra_body over the mapped params, so a raw base_video reaches the request
+    transform as a regeneration exactly as base_video_url does; both spellings are
+    recognized so the regeneration rules cannot be sidestepped by spelling.
+    """
+    return params.get("base_video_url") is not None or params.get("base_video") is not None
+
+
 def _url_tuple(value: Any) -> tuple[str, ...]:
     if isinstance(value, str) and value.strip():
         return (value.strip(),)
@@ -245,7 +255,7 @@ class MinimaxVideoConfig(BaseVideoConfig):
             image_url if isinstance(image_url, str) else None
         )
         if _uses_legacy_video_api(model):
-            if params.get("base_video_url") is not None:
+            if _asks_for_regeneration(params):
                 raise litellm.BadRequestError(
                     message=(
                         "MiniMax base_video regeneration is a /v2 (Hailuo 3) flow; legacy Hailuo models do not "
@@ -348,13 +358,14 @@ class MinimaxVideoConfig(BaseVideoConfig):
             )
         if base_video is not None:
             self._reject_regeneration_ratio(model, params)
-            if duration is None:
+            if duration is None or duration <= 0:
                 raise litellm.BadRequestError(
                     message=(
-                        "MiniMax H3 regeneration requires seconds: the source video's length. Its request has no "
-                        "duration field, since the output inherits the source's length, so seconds does not change "
-                        "the output; it is the only number available to price the regeneration, and without it the "
-                        "created video would be billed nothing."
+                        "MiniMax H3 regeneration requires seconds: the source video's length, as a positive number of "
+                        "seconds. Its request has no duration field, since the output inherits the source's length, so "
+                        "seconds does not change the output; it is the only number available to price the "
+                        f"regeneration, and a missing or non-positive length (got {duration}) would bill the created "
+                        "video nothing."
                     ),
                     model=model,
                     llm_provider=litellm.LlmProviders.MINIMAX.value,
@@ -390,22 +401,34 @@ class MinimaxVideoConfig(BaseVideoConfig):
             llm_provider=litellm.LlmProviders.MINIMAX.value,
         )
 
-    @staticmethod
-    def _v2_base_video(model: str, params: Mapping[str, Any]) -> str | None:
+    @classmethod
+    def _v2_base_video(cls, model: str, params: Mapping[str, Any]) -> str | None:
         raw = params.get("base_video_url")
-        if raw is None:
+        if raw is not None:
+            url = raw.strip() if isinstance(raw, str) else None
+            if not url:
+                raise cls._base_video_error(model, "base_video_url")
+            return url
+        # The provider-native spelling, a list of one URL, normalized so a raw extra_body
+        # base_video is held to the same regeneration rules as base_video_url.
+        native = params.get("base_video")
+        if native is None:
             return None
-        url = raw.strip() if isinstance(raw, str) else None
-        if not url:
-            raise litellm.BadRequestError(
-                message=(
-                    "MiniMax H3 regeneration requires base_video_url to be a single non-empty video URL pointing at "
-                    "the source video to re-render."
-                ),
-                model=model,
-                llm_provider=litellm.LlmProviders.MINIMAX.value,
-            )
-        return url
+        urls = _url_tuple(native)
+        if len(urls) != 1:
+            raise cls._base_video_error(model, "base_video")
+        return urls[0]
+
+    @staticmethod
+    def _base_video_error(model: str, param: str) -> litellm.BadRequestError:
+        return litellm.BadRequestError(
+            message=(
+                f"MiniMax H3 regeneration requires {param} to be a single non-empty video URL pointing at the source "
+                "video to re-render."
+            ),
+            model=model,
+            llm_provider=litellm.LlmProviders.MINIMAX.value,
+        )
 
     @staticmethod
     def _v2_ratio(params: Mapping[str, Any], has_frames: bool, has_references: bool) -> str | None:
