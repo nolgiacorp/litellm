@@ -30,6 +30,7 @@ from litellm.llms.topaz.cost_calculator import (
     cost_calculator,
     cost_per_credit,
 )
+from litellm.llms.topaz.videos import transformation as topaz_transformation
 from litellm.llms.topaz.videos.transformation import TopazVideoConfig
 
 MODEL = "topaz/prob-4"
@@ -52,6 +53,14 @@ class TestTopazCreditRate:
         """
         assert DEFAULT_USD_PER_CREDIT == 0.12
 
+    def test_rate_is_visible_through_get_model_info(self):
+        """
+        Billing and /v1/model/info consumers read the standard model metadata,
+        so the credit rate must survive the ModelInfo copy path and not stay
+        private to this calculator's direct read of litellm.model_cost.
+        """
+        assert litellm.get_model_info(model=MODEL).get("output_cost_per_credit") == pytest.approx(0.12)
+
     def test_every_configured_topaz_engine_is_priced(self):
         """The 12 engines routed in litellm-config.yaml must all resolve a rate."""
         configured = [
@@ -72,6 +81,8 @@ class TestTopazCostCalculator:
             (2, 0.24),   # the live quote for a 5s 720p -> 1080p prob-4 restore
             (6, 0.72),
             (10, 1.20),
+            (0.25, 0.03),   # measured: 5s from a 960x720 source, 720p out
+            (9.67, 1.1604),  # measured: the same 720p tier from 7680x4320
         ],
     )
     def test_credits_price_at_the_starter_rate(self, credits, expected):
@@ -119,21 +130,84 @@ class TestTopazCreditProbe:
         config = TopazVideoConfig()
         assert config._credits_from_status(httpx.Response(200, json=payload)) is None
 
+    @pytest.mark.parametrize("credits,expected", [(0.25, 0.25), (9.67, 9.67), (2, 2.0)])
+    def test_fractional_quotes_are_read_at_full_precision(self, credits, expected):
+        """
+        Topaz quotes fractions for small jobs: 0.25 truncated to int would record
+        $0 for exactly the cheap end of the range, and 9.67 would bill as 9.
+        """
+        config = TopazVideoConfig()
+        resp = httpx.Response(200, json={"status": "processing", "estimates": {"cost": [credits, 12]}})
+        assert config._credits_from_status(resp) == pytest.approx(expected)
+
     def test_non_200_and_unparseable_status_yield_no_credits(self):
         config = TopazVideoConfig()
         assert config._credits_from_status(httpx.Response(503, text="upstream down")) is None
         assert config._credits_from_status(httpx.Response(200, text="not json")) is None
 
+    @pytest.mark.parametrize("body", ["null", "[]", '"queued"', "3"])
+    def test_non_object_status_json_reads_as_a_failed_probe(self, body):
+        """
+        A 200 carrying valid non-object JSON must not raise: this runs after the
+        upload succeeded, so it would turn accepted footage into a create error.
+        """
+        config = TopazVideoConfig()
+        assert config._credits_from_status(httpx.Response(200, text=body)) is None
+
     def test_probe_gives_up_quietly_when_the_status_endpoint_is_unreachable(self, monkeypatch):
         """A bookkeeping probe must never fail a job the customer already paid for."""
         config = TopazVideoConfig()
+        attempts = []
 
         class _Boom:
             def get(self, *a, **k):
+                attempts.append(k.get("timeout"))
                 raise httpx.ConnectError("topaz unreachable")
 
+        monkeypatch.setattr(topaz_transformation.time, "sleep", lambda _: None)
         monkeypatch.setattr(config, "_http_client", lambda: _Boom())
         assert config._probe_billed_credits(_create_response(), "req-1") is None
+        assert len(attempts) == topaz_transformation._CREDIT_PROBE_ATTEMPTS
+
+    def test_transport_blip_is_retried_rather_than_ending_the_probe(self, monkeypatch):
+        """
+        The create leg is the only chance to record spend, so a transient
+        ConnectError must spend the remaining attempts instead of returning None.
+        """
+        config = TopazVideoConfig()
+        timeouts = []
+
+        class _Flaky:
+            def get(self, *a, **k):
+                timeouts.append(k.get("timeout"))
+                if len(timeouts) == 1:
+                    raise httpx.ConnectError("transient blip")
+                return httpx.Response(200, json={"estimates": {"cost": [2, 3]}})
+
+        monkeypatch.setattr(topaz_transformation.time, "sleep", lambda _: None)
+        monkeypatch.setattr(config, "_http_client", lambda: _Flaky())
+        assert config._probe_billed_credits(_create_response(), "req-1") == pytest.approx(2)
+        assert len(timeouts) == 2
+
+    def test_every_probe_request_carries_its_own_timeout(self, monkeypatch):
+        """
+        The probe rides the caller's client, whose default timeout can be 60s.
+        Without an explicit per-request timeout the attempt count would bound
+        only the sleeps, not the network wait.
+        """
+        config = TopazVideoConfig()
+        timeouts = []
+
+        class _Silent:
+            def get(self, *a, **k):
+                timeouts.append(k.get("timeout"))
+                return httpx.Response(200, json={"status": "processing"})
+
+        monkeypatch.setattr(topaz_transformation.time, "sleep", lambda _: None)
+        monkeypatch.setattr(config, "_http_client", lambda: _Silent())
+        assert config._probe_billed_credits(_create_response(), "req-1") is None
+        assert timeouts == [topaz_transformation._CREDIT_PROBE_TIMEOUT_SECS] * len(timeouts)
+        assert timeouts and timeouts[0] is not None
 
 
 class TestTopazCreatedVideoObject:
