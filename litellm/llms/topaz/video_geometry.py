@@ -24,7 +24,9 @@ videos/transformation.py) for callers that already know their footage exactly,
 and for containers this parser does not read.
 
 Scope: ISO base media file format - `mp4` and `mov`, 2 of Topaz's 3 accepted
-source containers. Matroska (`mkv`) is a different container format entirely
+source containers, including the fragmented variant whose sample tables live in
+`moof` boxes rather than the initialization `moov`. Matroska (`mkv`) is a
+different container format entirely
 (EBML) and is not parsed; it returns None and falls back to the override, which
 is honest rather than guessed.
 
@@ -35,7 +37,7 @@ able to fail a job whose footage Topaz has already accepted.
 from __future__ import annotations
 
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 # ISO/IEC 14496-12 box header: a 32-bit size followed by a 4-character type.
 _HEADER_BYTES = 8
@@ -57,12 +59,35 @@ _TKHD_DIMENSION_OFFSET = {  # mutable-ok: frozen constant lookup table, never mu
     1: 32 + 16 + 36,
 }
 
+# Offsets from the end of a tkhd full-box prefix to its track_ID, which is what
+# ties a track to the movie fragments carrying its samples.
+_TKHD_TRACK_ID_OFFSET = {  # mutable-ok: frozen constant lookup table, never mutated after definition
+    0: 8,
+    1: 16,
+}
+
 # Offsets from the end of an mvhd/mdhd full-box prefix to its timescale. Both
 # boxes share this layout, which is why one reader serves both.
 _TIMESCALE_OFFSET = {  # mutable-ok: frozen constant lookup table, never mutated after definition
     0: 8,
     1: 16,
 }
+
+# tfhd/trun flag bits (ISO/IEC 14496-12 8.8.7 and 8.8.8). Both boxes are
+# variable-length: every optional field present shifts the ones after it.
+_TFHD_BASE_DATA_OFFSET = 0x000001
+_TFHD_SAMPLE_DESCRIPTION_INDEX = 0x000002
+_TFHD_DEFAULT_SAMPLE_DURATION = 0x000008
+
+_TRUN_DATA_OFFSET = 0x000001
+_TRUN_FIRST_SAMPLE_FLAGS = 0x000004
+_TRUN_SAMPLE_DURATION = 0x000100
+_TRUN_OPTIONAL_SAMPLE_FIELDS = (
+    _TRUN_SAMPLE_DURATION,
+    0x000200,  # sample_size
+    0x000400,  # sample_flags
+    0x000800,  # sample_composition_time_offset
+)
 
 # Width/height in a visual sample entry, measured from the entry's start: an
 # 8-byte box header, 6 reserved bytes, a 2-byte data-reference index, then
@@ -87,17 +112,25 @@ class SourceGeometry:
     height: int
     duration_seconds: float
     frame_rate: float
+    # The exact total read out of the sample tables, when it was read. Not part
+    # of the geometry's identity, so it stays out of equality.
+    sample_count: int | None = field(default=None, compare=False)
 
     @property
     def frame_count(self) -> int:
         """
         Frames Topaz's engine will process - the quantity it bills for.
 
-        Floored at 1: a sub-frame duration still costs a frame, and a zero here
-        would quote a job that processes nothing.
+        The parsed total wins over the derived product because duration * rate
+        is not exactly representable: timescale 1000, duration 1025 and 25
+        samples multiply out to 24.999999999999996, which would quote 24 frames
+        of footage that has 25. Rounded rather than floored for the same reason
+        when it has to be derived, and never below 1 - a sub-frame clip still
+        costs a frame, and a zero would quote a job that processes nothing.
         """
-        frames = int(self.duration_seconds * self.frame_rate)
-        return frames if frames >= 1 else 1
+        if self.sample_count is not None and self.sample_count >= 1:
+            return self.sample_count
+        return max(round(self.duration_seconds * self.frame_rate), 1)
 
 
 def _read_uint(data: bytes, start: int, width: int) -> int:
@@ -160,6 +193,9 @@ def _timescale_and_duration(data: bytes, start: int, end: int) -> tuple[int, int
     Both are full boxes whose creation/modification times widen from 32 to 64
     bits at version 1, moving the timescale by a fixed amount and widening the
     duration that follows it.
+
+    A zero duration is returned rather than refused: a fragmented file declares
+    it there and carries the real one in its movie fragments.
     """
     if start + _FULL_BOX_PREFIX > end:
         return None
@@ -173,7 +209,7 @@ def _timescale_and_duration(data: bytes, start: int, end: int) -> tuple[int, int
         return None
     timescale = _read_uint(data, base, 4)
     duration = _read_uint(data, base + 4, duration_width)
-    if timescale <= 0 or duration <= 0:
+    if timescale <= 0:
         return None
     return timescale, duration
 
@@ -261,6 +297,106 @@ def _sample_count(data: bytes, trak_start: int, trak_end: int) -> int | None:
     return total if total > 0 else None
 
 
+def _track_id(data: bytes, trak_start: int, trak_end: int) -> int | None:
+    tkhd = _find_box(data, trak_start, trak_end, b"tkhd")
+    if tkhd is None:
+        return None
+    start, end = tkhd
+    if start + _FULL_BOX_PREFIX > end:
+        return None
+    track_id_offset = _TKHD_TRACK_ID_OFFSET.get(data[start])
+    if track_id_offset is None:
+        return None
+    base = start + _FULL_BOX_PREFIX + track_id_offset
+    if base + 4 > end:
+        return None
+    return _read_uint(data, base, 4) or None
+
+
+def _box_flags(data: bytes, payload_start: int) -> int:
+    """The 24-bit flags field a full box carries after its version byte."""
+    return _read_uint(data, payload_start + 1, 3)
+
+
+def _tfhd_defaults(data: bytes, traf_start: int, traf_end: int) -> tuple[int, int] | None:
+    """The fragment's (track_ID, default_sample_duration); the duration is 0 when absent."""
+    tfhd = _find_box(data, traf_start, traf_end, b"tfhd")
+    if tfhd is None:
+        return None
+    start, end = tfhd
+    cursor = start + _FULL_BOX_PREFIX
+    if cursor + 4 > end:
+        return None
+    flags = _box_flags(data, start)
+    track_id = _read_uint(data, cursor, 4)
+    cursor += 4
+    if flags & _TFHD_BASE_DATA_OFFSET:
+        cursor += 8
+    if flags & _TFHD_SAMPLE_DESCRIPTION_INDEX:
+        cursor += 4
+    if not flags & _TFHD_DEFAULT_SAMPLE_DURATION:
+        return track_id, 0
+    if cursor + 4 > end:
+        return None
+    return track_id, _read_uint(data, cursor, 4)
+
+
+def _trun_totals(data: bytes, start: int, end: int, default_duration: int) -> tuple[int, int] | None:
+    """One run's (samples, duration in media timescale)."""
+    cursor = start + _FULL_BOX_PREFIX
+    if cursor + 4 > end:
+        return None
+    flags = _box_flags(data, start)
+    sample_count = _read_uint(data, cursor, 4)
+    cursor += 4
+    if flags & _TRUN_DATA_OFFSET:
+        cursor += 4
+    if flags & _TRUN_FIRST_SAMPLE_FLAGS:
+        cursor += 4
+    per_sample = 4 * sum(1 for field_flag in _TRUN_OPTIONAL_SAMPLE_FIELDS if flags & field_flag)
+    if cursor + sample_count * per_sample > end:
+        return None
+    if not flags & _TRUN_SAMPLE_DURATION:
+        return sample_count, sample_count * default_duration
+    # sample_duration is the first per-sample field when present.
+    duration = sum(_read_uint(data, cursor + index * per_sample, 4) for index in range(sample_count))
+    return sample_count, duration
+
+
+def _fragment_timing(data: bytes, track_id: int) -> tuple[int, int] | None:
+    """
+    A track's (samples, duration in media timescale) summed over the movie
+    fragments that follow the moov.
+
+    A fragmented MP4 ships an INITIALIZATION moov: its stts is empty and its
+    mdhd duration is commonly 0, because the samples live in the moof/traf/trun
+    boxes after it. Without reading those, a perfectly valid supported file
+    quotes nothing and the restore records $0.
+    """
+    samples = 0
+    duration = 0
+    for kind, _box_start, moof_start, moof_end in _boxes(data, 0, len(data)):
+        if kind != b"moof":
+            continue
+        for traf_kind, _traf_box_start, traf_start, traf_end in _boxes(data, moof_start, moof_end):
+            if traf_kind != b"traf":
+                continue
+            defaults = _tfhd_defaults(data, traf_start, traf_end)
+            if defaults is None or defaults[0] != track_id:
+                continue
+            for run_kind, _run_box_start, run_start, run_end in _boxes(data, traf_start, traf_end):
+                if run_kind != b"trun":
+                    continue
+                run = _trun_totals(data, run_start, run_end, defaults[1])
+                if run is None:
+                    return None
+                samples += run[0]
+                duration += run[1]
+    if samples <= 0:
+        return None
+    return samples, duration
+
+
 def _video_trak(data: bytes, moov_start: int, moov_end: int) -> tuple[int, int] | None:
     for kind, _box_start, payload_start, payload_end in _boxes(data, moov_start, moov_end):
         if kind == b"trak" and _track_handler(data, payload_start, payload_end) == b"vide":
@@ -295,11 +431,22 @@ def parse_video_geometry(data: bytes) -> SourceGeometry | None:
     media_time = _timescale_and_duration(data, media[0], media[1])
     if media_time is None:
         return None
-    duration_seconds = media_time[1] / media_time[0]
+    timescale, media_duration = media_time
 
     samples = _sample_count(data, trak[0], trak[1])
-    if samples is None or duration_seconds <= 0:
+    if samples is None or media_duration <= 0:
+        # Either half can be missing on a fragmented file, so fill in only the
+        # half the initialization moov did not answer.
+        track_id = _track_id(data, trak[0], trak[1])
+        fragments = _fragment_timing(data, track_id) if track_id is not None else None
+        if fragments is None:
+            return None
+        samples = samples if samples is not None else fragments[0]
+        media_duration = media_duration if media_duration > 0 else fragments[1]
+
+    if media_duration <= 0:
         return None
+    duration_seconds = media_duration / timescale
     frame_rate = samples / duration_seconds
     if frame_rate < _MIN_PLAUSIBLE_FPS or frame_rate > _MAX_PLAUSIBLE_FPS:
         return None
@@ -309,4 +456,5 @@ def parse_video_geometry(data: bytes) -> SourceGeometry | None:
         height=dimensions[1],
         duration_seconds=duration_seconds,
         frame_rate=frame_rate,
+        sample_count=samples,
     )

@@ -21,6 +21,10 @@ returned `{"estimates": {"cost": [2, 3], "time": [299, 316]}}` for a 5s
 is polled after upload rather than read off the create response.
 """
 
+import asyncio
+import threading
+import time
+
 import httpx
 import pytest
 
@@ -348,6 +352,19 @@ class TestTopazGeometryPrecedence:
             is None
         )
 
+    @pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf"), "nan", "Infinity"])
+    @pytest.mark.parametrize("field", ["source_width", "source_frame_rate", "seconds"])
+    def test_non_finite_declared_values_are_refused(self, bad, field):
+        """
+        NaN survives every ordering guard (`nan <= 0` is False) and only fails
+        later - at int(), or once frame_count is evaluated after the upload,
+        turning a bookkeeping value into a 500 for accepted footage.
+        """
+        declared = {"source_width": 1920, "source_height": 1080, "source_frame_rate": 30, "seconds": 5}
+        declared[field] = bad
+
+        assert TopazVideoConfig._declared_geometry(declared) is None
+
 
 class TestTopazEstimateFailuresAreSilent:
     """
@@ -408,6 +425,55 @@ class TestTopazEstimateFailuresAreSilent:
         credits = config._estimate_billed_credits(_create_response(), _pending(config, None), _mp4())
         assert credits == pytest.approx(0.25)
         assert cost_calculator(model=MODEL, topaz_credits=credits) == pytest.approx(0.03)
+
+
+class _StalledClient:
+    """A vendor endpoint that does answer, but not inside the deadline."""
+
+    def __init__(self, released):
+        self._released = released
+
+    def post(self, url, json=None, headers=None, timeout=None):
+        self._released.wait(30)
+        return httpx.Response(200, json={"estimates": {"cost": [9, 9]}}, request=httpx.Request("POST", url))
+
+
+class _StalledAsyncClient:
+    async def post(self, url, json=None, headers=None, timeout=None):
+        await asyncio.sleep(30)
+        return httpx.Response(200, json={"estimates": {"cost": [9, 9]}}, request=httpx.Request("POST", url))
+
+
+class TestTopazEstimateDeadline:
+    """
+    httpx times each socket operation separately - connect, each redirect and
+    each read - so a server delivering one byte inside every read window never
+    trips the scalar timeout. Topaz has already accepted the footage by this
+    point, so a slow quote has to be abandoned rather than held onto.
+    """
+
+    def test_a_stalled_quote_degrades_to_no_credits(self, monkeypatch):
+        monkeypatch.setattr(topaz_transformation, "_ESTIMATE_DEADLINE_SECS", 0.05)
+        released = threading.Event()
+        config = TopazVideoConfig(sync_client=_StalledClient(released))
+
+        try:
+            started = time.monotonic()
+            credits = config._estimate_billed_credits(_create_response(), _pending(config, None), _mp4())
+            elapsed = time.monotonic() - started
+        finally:
+            released.set()
+
+        assert credits is None
+        assert elapsed < 5.0
+
+    async def test_the_async_twin_is_bounded_too(self, monkeypatch):
+        monkeypatch.setattr(topaz_transformation, "_ESTIMATE_DEADLINE_SECS", 0.05)
+        config = TopazVideoConfig(async_client=_StalledAsyncClient())
+
+        credits = await config._async_estimate_billed_credits(_create_response(), _pending(config, None), _mp4())
+
+        assert credits is None
 
 
 class TestTopazCreatedVideoObject:

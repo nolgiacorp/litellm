@@ -44,8 +44,11 @@ def _hdlr(handler: bytes = b"vide") -> bytes:
     return _full_box(b"hdlr", bytes(4) + handler + bytes(12))
 
 
-def _tkhd(width: int, height: int, version: int = 0) -> bytes:
-    header = bytes(20) if version == 0 else bytes(32)
+def _tkhd(width: int, height: int, version: int = 0, track_id: int = 1) -> bytes:
+    if version == 1:
+        header = bytes(16) + track_id.to_bytes(4, "big") + bytes(12)
+    else:
+        header = bytes(8) + track_id.to_bytes(4, "big") + bytes(8)
     fixed = (width << 16).to_bytes(4, "big") + (height << 16).to_bytes(4, "big")
     return _full_box(b"tkhd", header + bytes(16) + bytes(36) + fixed, version=version)
 
@@ -55,9 +58,34 @@ def _stsd(width: int, height: int) -> bytes:
     return _full_box(b"stsd", (1).to_bytes(4, "big") + entry)
 
 
-def _stts(sample_count: int, delta: int = 1) -> bytes:
+def _stts(sample_count: int | None, delta: int = 1) -> bytes:
+    """None builds the EMPTY table a fragmented file's initialization moov carries."""
+    if sample_count is None:
+        return _full_box(b"stts", (0).to_bytes(4, "big"))
     table = sample_count.to_bytes(4, "big") + delta.to_bytes(4, "big")
     return _full_box(b"stts", (1).to_bytes(4, "big") + table)
+
+
+def _tfhd(track_id: int = 1, default_sample_duration: int | None = 1000) -> bytes:
+    flags = 0x000008 if default_sample_duration is not None else 0
+    payload = track_id.to_bytes(4, "big")
+    if default_sample_duration is not None:
+        payload += default_sample_duration.to_bytes(4, "big")
+    return _box(b"tfhd", bytes(1) + flags.to_bytes(3, "big") + payload)
+
+
+def _trun(sample_count: int, durations: tuple[int, ...] | None = None) -> bytes:
+    """A run of samples; per-sample durations override the tfhd default when present."""
+    flags = 0x000101 if durations else 0x000001  # data_offset, plus sample_duration when given
+    payload = sample_count.to_bytes(4, "big") + bytes(4)
+    for duration in durations or ():
+        payload += duration.to_bytes(4, "big")
+    return _box(b"trun", bytes(1) + flags.to_bytes(3, "big") + payload)
+
+
+def _moof(runs: bytes, track_id: int = 1, default_sample_duration: int | None = 1000) -> bytes:
+    traf = _box(b"traf", _tfhd(track_id, default_sample_duration) + runs)
+    return _box(b"moof", _full_box(b"mfhd", (1).to_bytes(4, "big")) + traf)
 
 
 def _mp4(
@@ -65,9 +93,10 @@ def _mp4(
     display: tuple[int, int] = (640, 360),
     timescale: int = 24000,
     duration: int = 312000,
-    samples: int = 312,
+    samples: int | None = 312,
     handler: bytes = b"vide",
     mdhd_version: int = 0,
+    fragments: bytes = b"",
 ) -> bytes:
     """A minimal but structurally valid ISO-BMFF file carrying one track."""
     stbl_children = _stts(samples) + (_stsd(*coded) if coded is not None else b"")
@@ -76,7 +105,7 @@ def _mp4(
     mdia = _box(b"mdia", _mdhd(timescale, duration, version=mdhd_version) + _hdlr(handler) + minf)
     trak = _box(b"trak", _tkhd(*display) + mdia)
     moov = _box(b"moov", _mvhd() + trak)
-    return _box(b"ftyp", b"isom" + bytes(4) + b"isomiso2") + moov
+    return _box(b"ftyp", b"isom" + bytes(4) + b"isomiso2") + moov + fragments
 
 
 def _mp4_audio_track_first(video: tuple[int, int] = (1920, 1080)) -> bytes:
@@ -150,6 +179,71 @@ class TestParsesRealGeometry:
         assert geometry.frame_rate == pytest.approx(24.0)
 
 
+class TestFragmentedMp4:
+    """
+    A fragmented MP4 is a supported .mp4: its initialization moov carries an
+    EMPTY stts and a zero mdhd duration, because both live in the moof boxes
+    that follow. Reading only the moov leaves every such restore at $0.
+    """
+
+    def test_sample_tables_are_read_out_of_the_fragments(self):
+        clip = _mp4(
+            timescale=24000,
+            duration=0,
+            samples=None,
+            fragments=_moof(_trun(24), default_sample_duration=1000) + _moof(_trun(24), default_sample_duration=1000),
+        )
+
+        geometry = parse_video_geometry(clip)
+
+        assert geometry is not None
+        assert geometry.duration_seconds == pytest.approx(2.0)
+        assert geometry.frame_rate == pytest.approx(24.0)
+        assert geometry.frame_count == 48
+
+    def test_per_sample_durations_win_over_the_fragment_default(self):
+        """trun may carry its own durations; a variable-rate fragment is priced on those."""
+        clip = _mp4(
+            timescale=24000,
+            duration=0,
+            samples=None,
+            fragments=_moof(_trun(3, durations=(1000, 2000, 3000)), default_sample_duration=1000),
+        )
+
+        geometry = parse_video_geometry(clip)
+
+        assert geometry is not None
+        assert geometry.duration_seconds == pytest.approx(0.25)
+        assert geometry.frame_count == 3
+
+    def test_a_declared_movie_duration_is_not_overwritten(self):
+        """Only the half the moov left unanswered comes from the fragments."""
+        clip = _mp4(timescale=24000, duration=48000, samples=None, fragments=_moof(_trun(48)))
+
+        geometry = parse_video_geometry(clip)
+
+        assert geometry is not None
+        assert geometry.duration_seconds == pytest.approx(2.0)
+        assert geometry.frame_count == 48
+
+    def test_another_tracks_fragments_are_not_counted(self):
+        """tfhd track_ID is what ties a fragment to a track; an audio run must not inflate the quote."""
+        clip = _mp4(
+            timescale=24000,
+            duration=0,
+            samples=None,
+            fragments=_moof(_trun(24), track_id=1) + _moof(_trun(9999), track_id=2),
+        )
+
+        geometry = parse_video_geometry(clip)
+
+        assert geometry is not None
+        assert geometry.frame_count == 24
+
+    def test_a_file_with_neither_a_sample_table_nor_fragments_is_still_refused(self):
+        assert parse_video_geometry(_mp4(duration=0, samples=None)) is None
+
+
 class TestRefusesWhatItCannotRead:
     """
     Every one of these must yield None, never a guess. A wrong number produces a
@@ -195,3 +289,20 @@ class TestFrameCount:
 
     def test_tracks_duration_and_rate(self):
         assert SourceGeometry(width=16, height=16, duration_seconds=10.0, frame_rate=60.0).frame_count == 600
+
+    def test_the_parsed_count_is_not_re_derived(self):
+        """
+        timescale 1000, duration 1025, 25 samples: 1.025 * (25/1.025) is
+        24.999999999999996 in binary floating point, so re-deriving the count
+        would quote 24 frames of footage that has 25.
+        """
+        geometry = parse_video_geometry(_mp4(timescale=1000, duration=1025, samples=25))
+
+        assert geometry.sample_count == 25
+        assert geometry.frame_count == 25
+
+    def test_a_derived_count_is_rounded_rather_than_floored(self):
+        """Declared geometry has no sample table behind it, so the product is all there is."""
+        derived = SourceGeometry(width=16, height=16, duration_seconds=1.025, frame_rate=25 / 1.025)
+
+        assert derived.frame_count == 25

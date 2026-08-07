@@ -1,5 +1,8 @@
+import asyncio
+import math
+import threading
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from json import JSONDecodeError
 from types import MappingProxyType
@@ -64,13 +67,14 @@ else:
 # geometry it needs is read from the source bytes this leg has already
 # downloaded for the upload PUT, so the quote costs no extra network I/O.
 #
-# The timeout is short and deliberate: this sits inline on the customer's create
-# request, and a slow vendor endpoint must yield "no quote" rather than hold the
-# leg open. httpx applies a scalar timeout per socket operation rather than to
-# the whole request, so the bound is enforced by the timeout AND by there being
-# exactly one attempt - there is nothing to retry, since a deterministic
-# endpoint that failed once will fail again for the same input.
-_ESTIMATE_TIMEOUT_SECS = 6.0
+# The deadline is short and deliberate: this sits inline on the customer's
+# create request, and a slow vendor endpoint must yield "no quote" rather than
+# hold the leg open. It is a WALL-CLOCK bound, not just the httpx timeout, which
+# applies per socket operation - connect, each redirect and each read are timed
+# separately, so a server dribbling one byte inside every read window would keep
+# an already-accepted create open indefinitely. Only one attempt is made: a
+# deterministic endpoint that failed once will fail again for the same input.
+_ESTIMATE_DEADLINE_SECS = 6.0
 
 # Topaz's estimate schema requires a source byte size, but it provably does not
 # affect the quote - verified against the live endpoint, where 1MB, 24MB and
@@ -245,10 +249,19 @@ class _PendingUpload:
 
 
 def _safe_float(value: object) -> float | None:
+    """
+    Non-finite values are refused alongside unparseable ones. NaN passes every
+    ordering comparison a caller might guard with (`nan <= 0` is False) and only
+    fails later, at `int()` or on the way into a request body - which would turn
+    a bookkeeping value into a 500 for a job Topaz has already accepted.
+    """
     try:
-        return float(value) if value is not None else None  # pyright: ignore[reportArgumentType]  # guarded by except
+        number = float(value) if value is not None else None  # pyright: ignore[reportArgumentType]  # guarded by except
     except (TypeError, ValueError):
         return None
+    if number is None or not math.isfinite(number):
+        return None
+    return number
 
 
 def _progress_percent(value: object) -> int | None:
@@ -300,6 +313,31 @@ def _billed_credits(estimates: object) -> float | None:
     if not isinstance(cost, (list, tuple)) or not cost:
         return None
     return _safe_float(cost[0])
+
+
+def _quote_within_deadline(quote: Callable[[], httpx.Response]) -> httpx.Response | None:
+    """
+    Run the blocking quote under `_ESTIMATE_DEADLINE_SECS` of wall clock.
+
+    httpx has no whole-request timeout, so the deadline is imposed from outside
+    the call. The worker is a daemon and is abandoned rather than joined when it
+    overruns: an unresponsive vendor endpoint may cost a stranded socket, but it
+    may not hold up a create request Topaz has already accepted, nor block
+    interpreter shutdown. A missed deadline reads as "no quote", like every
+    other estimate failure.
+    """
+    completed: list[httpx.Response] = []  # mutable-ok: the worker's only way to hand the response back
+
+    def run() -> None:
+        try:
+            completed.append(quote())
+        except Exception:  # noqa: BLE001  # a bookkeeping failure must never escape onto the create leg
+            return
+
+    worker = threading.Thread(target=run, name="topaz-estimate", daemon=True)
+    worker.start()
+    worker.join(_ESTIMATE_DEADLINE_SECS)
+    return completed[0] if completed else None
 
 
 class TopazVideoConfig(BaseVideoConfig):
@@ -827,18 +865,15 @@ class TopazVideoConfig(BaseVideoConfig):
         geometry = self._resolve_geometry(pending, content)
         if geometry is None:
             return None
-        try:
-            response = self._http_client().post(
+        response = _quote_within_deadline(
+            lambda: self._http_client().post(
                 self._estimate_url(raw_response),
                 json=self._estimate_body(pending, geometry, len(content)),
                 headers=self._estimate_headers(raw_response),
-                timeout=_ESTIMATE_TIMEOUT_SECS,
+                timeout=_ESTIMATE_DEADLINE_SECS,
             )
-        except (httpx.HTTPError, litellm.Timeout):
-            # The handler re-raises a non-2xx as MaskedHTTPStatusError (an
-            # httpx.HTTPError) but converts a read timeout into litellm.Timeout,
-            # which is not one. Both mean "no quote", and neither may escape:
-            # Topaz has already accepted the footage by this point.
+        )
+        if response is None:
             return None
         return self._credits_from_estimate(response)
 
@@ -853,17 +888,21 @@ class TopazVideoConfig(BaseVideoConfig):
         if geometry is None:
             return None
         try:
-            response = await self._async_http_client().post(
-                self._estimate_url(raw_response),
-                json=self._estimate_body(pending, geometry, len(content)),
-                headers=self._estimate_headers(raw_response),
-                timeout=_ESTIMATE_TIMEOUT_SECS,
+            response = await asyncio.wait_for(
+                self._async_http_client().post(
+                    self._estimate_url(raw_response),
+                    json=self._estimate_body(pending, geometry, len(content)),
+                    headers=self._estimate_headers(raw_response),
+                    timeout=_ESTIMATE_DEADLINE_SECS,
+                ),
+                timeout=_ESTIMATE_DEADLINE_SECS,
             )
-        except (httpx.HTTPError, litellm.Timeout):
+        except (httpx.HTTPError, litellm.Timeout, asyncio.TimeoutError):
             # The handler re-raises a non-2xx as MaskedHTTPStatusError (an
             # httpx.HTTPError) but converts a read timeout into litellm.Timeout,
-            # which is not one. Both mean "no quote", and neither may escape:
-            # Topaz has already accepted the footage by this point.
+            # which is not one; wait_for enforces the wall clock the scalar
+            # httpx timeout does not. All three mean "no quote", and none may
+            # escape: Topaz has already accepted the footage by this point.
             return None
         return self._credits_from_estimate(response)
 
