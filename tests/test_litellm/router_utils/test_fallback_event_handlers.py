@@ -151,9 +151,7 @@ def test_get_fallback_model_group_does_not_mutate_fallbacks():
     fallbacks list, which is the live router config shared across requests."""
     fallbacks = [{"gpt-3.5-turbo": ["claude-3-haiku"]}, "gpt-4o-mini"]
 
-    fallback_model_group, _ = get_fallback_model_group(
-        fallbacks=fallbacks, model_group="unmatched-model"
-    )
+    fallback_model_group, _ = get_fallback_model_group(fallbacks=fallbacks, model_group="unmatched-model")
 
     assert fallback_model_group == ["gpt-4o-mini"]
     assert fallbacks == [{"gpt-3.5-turbo": ["claude-3-haiku"]}, "gpt-4o-mini"]
@@ -185,6 +183,20 @@ def test_get_fallback_model_group_does_not_mutate_fallbacks():
         (litellm.InternalServerError(message="500", model="m", llm_provider="p"), False),
         (litellm.Timeout(message="timeout", model="m", llm_provider="p"), False),
         (litellm.ServiceUnavailableError(message="503", model="m", llm_provider="p"), False),
+        # Router-generated 400s: the router's own availability/config failures carry
+        # no provider, and a healthy backup group is exactly what they need.
+        (
+            litellm.BadRequestError(
+                message="You passed in model=primary. There are no healthy deployments for this model",
+                model="primary",
+                llm_provider="",
+            ),
+            False,
+        ),
+        # A provider param validator that does not name its provider: the type says
+        # the request is at fault, so the missing llm_provider must not read as a
+        # router failure.
+        (litellm.UnsupportedParamsError(message="size is not supported for model m", model="m"), True),
     ),
     ids=lambda v: type(v).__name__ if isinstance(v, Exception) else str(v),
 )
@@ -292,3 +304,184 @@ async def test_rate_limit_still_falls_over_to_the_twin():
 
     assert response["served_by"] == "twin"
     assert attempted == ["primary", "twin"]
+
+
+@pytest.mark.asyncio
+async def test_router_availability_error_still_falls_over_to_the_twin():
+    """
+    The router reuses BadRequestError for its own outages ("no healthy deployments").
+    The request is fine there, so a configured fallback to a healthy group must run.
+    """
+    router = _two_group_router()
+    unavailable = litellm.BadRequestError(
+        message="You passed in model=primary. There are no healthy deployments for this model",
+        model="primary",
+        llm_provider="",
+    )
+
+    response, attempted = await _call(router, unavailable)
+
+    assert response["served_by"] == "twin"
+    assert attempted == ["primary", "twin"]
+
+
+@pytest.mark.asyncio
+async def test_rejection_stops_the_outer_fallback_loop_before_the_second_twin():
+    """
+    Primary fails retryably, so failover is correct; the first twin then rejects the
+    request. That rejection is terminal: continuing to the second twin would find a
+    contract that happens to accept the request and bill for it.
+    """
+    router = Router(
+        model_list=[
+            {"model_name": "primary", "litellm_params": {"model": "openai/gpt-4o", "api_key": "sk-fake"}},
+            {"model_name": "twin_a", "litellm_params": {"model": "openai/gpt-4o-mini", "api_key": "sk-fake"}},
+            {"model_name": "twin_b", "litellm_params": {"model": "openai/gpt-4.1-mini", "api_key": "sk-fake"}},
+        ],
+        fallbacks=[{"primary": ["twin_a", "twin_b"]}],
+        num_retries=0,
+    )
+
+    attempted: list = []  # mutable-ok: test recorder
+
+    async def original_function(**kwargs):
+        model = kwargs.get("model")
+        attempted.append(model)
+        if model == "primary":
+            raise litellm.InternalServerError(message="upstream exploded", model=model, llm_provider="openai")
+        if model == "twin_a":
+            raise litellm.BadRequestError(message="bad param", model=model, llm_provider="openai")
+        return {"served_by": model}
+
+    with pytest.raises(litellm.BadRequestError, match="bad param"):
+        await router.async_function_with_fallbacks(
+            model="primary",
+            original_function=original_function,
+            messages=[{"role": "user", "content": "hi"}],
+            metadata={},
+        )
+
+    assert attempted == ["primary", "twin_a"], f"the second twin ran after a request rejection: {attempted}"
+
+
+@pytest.mark.asyncio
+async def test_request_transforming_client_fallback_still_repairs_a_rejection():
+    """
+    A client-side fallback that rewrites the request is a deliberate repair, not a
+    silent provider substitution, so a 400 on the original request must not skip it.
+    """
+    router = _two_group_router()
+
+    attempted: list = []  # mutable-ok: test recorder
+
+    async def original_function(**kwargs):
+        attempted.append((kwargs.get("model"), kwargs["messages"][0]["content"]))
+        if kwargs["messages"][0]["content"] == "rejected":
+            raise litellm.BadRequestError(message="bad param", model=kwargs.get("model"), llm_provider="openai")
+        return {"served_by": kwargs.get("model")}
+
+    response = await router.async_function_with_fallbacks(
+        model="primary",
+        original_function=original_function,
+        messages=[{"role": "user", "content": "rejected"}],
+        metadata={},
+        fallbacks=[{"model": "twin", "messages": [{"role": "user", "content": "repaired"}]}],
+    )
+
+    assert response["served_by"] == "twin"
+    assert attempted == [("primary", "rejected"), ("twin", "repaired")]
+
+
+@pytest.mark.asyncio
+async def test_plain_client_side_fallback_list_does_not_run_after_a_rejection():
+    """
+    A bare client-side list re-points the same request, so it is the substitution
+    this change prevents, not a repair.
+    """
+    router = _two_group_router()
+
+    attempted: list = []  # mutable-ok: test recorder
+
+    async def original_function(**kwargs):
+        attempted.append(kwargs.get("model"))
+        if kwargs.get("model") == "primary":
+            raise litellm.BadRequestError(message="bad param", model="primary", llm_provider="openai")
+        return {"served_by": kwargs.get("model")}
+
+    with pytest.raises(litellm.BadRequestError, match="bad param"):
+        await router.async_function_with_fallbacks(
+            model="primary",
+            original_function=original_function,
+            messages=[{"role": "user", "content": "hi"}],
+            metadata={},
+            fallbacks=["twin"],
+        )
+
+    assert attempted == ["primary"]
+
+
+@pytest.mark.asyncio
+async def test_connection_only_client_fallback_does_not_run_after_a_rejection():
+    """
+    api_key/api_base/timeout reconfigure the call but leave the payload alone, so an
+    entry carrying only those resends the rejected request: not a repair.
+    """
+    router = _two_group_router()
+
+    attempted: list = []  # mutable-ok: test recorder
+
+    async def original_function(**kwargs):
+        attempted.append(kwargs.get("model"))
+        if kwargs.get("model") == "primary":
+            raise litellm.BadRequestError(message="bad param", model="primary", llm_provider="openai")
+        return {"served_by": kwargs.get("model")}
+
+    with pytest.raises(litellm.BadRequestError, match="bad param"):
+        await router.async_function_with_fallbacks(
+            model="primary",
+            original_function=original_function,
+            messages=[{"role": "user", "content": "hi"}],
+            metadata={},
+            fallbacks=[{"model": "twin", "api_key": "sk-other", "api_base": "https://other", "timeout": 5}],
+        )
+
+    assert attempted == ["primary"]
+
+
+@pytest.mark.asyncio
+async def test_run_async_fallback_skips_plain_entries_but_keeps_a_later_repair_entry():
+    """
+    twin_a rejects the unchanged request, which rules out every later entry that
+    resends it (twin_c), but not the repair entry that follows: that one sends a
+    different payload, so the rejection says nothing about it.
+    """
+    attempted: list = []  # mutable-ok: test recorder
+
+    class RejectingRouter:
+        def log_retry(self, kwargs, e):
+            return kwargs
+
+        async def async_function_with_fallbacks(self, *args, **kwargs):
+            content = kwargs["messages"][0]["content"]
+            attempted.append((kwargs["model"], content))
+            if content == "rejected":
+                raise litellm.BadRequestError(message="bad param", model=kwargs["model"], llm_provider="openai")
+            return {"served_by": kwargs["model"]}
+
+    response = await run_async_fallback(
+        litellm_router=RejectingRouter(),
+        fallback_model_group=[
+            {"model": "twin_a"},
+            {"model": "twin_c"},
+            {"model": "twin_b", "messages": [{"role": "user", "content": "repaired"}]},
+        ],
+        original_model_group="primary",
+        original_exception=litellm.InternalServerError(message="500", model="primary", llm_provider="openai"),
+        max_fallbacks=5,
+        fallback_depth=0,
+        model="primary",
+        messages=[{"role": "user", "content": "rejected"}],
+    )
+
+    assert response["served_by"] == "twin_b"
+    assert attempted == [("twin_a", "rejected"), ("twin_b", "repaired")]

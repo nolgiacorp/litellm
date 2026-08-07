@@ -33,6 +33,10 @@ Five leak sites are gated in `litellm/router.py`:
 Site 5 is the broadest — it fires for every failing call that goes
 through the fallback orchestrator with any non-context-window /
 non-content-policy error, regardless of whether `fallbacks` is set.
+
+Independently of the flag, a request rejection raised while falling
+back is surfaced to the caller in place of the original exception, so
+that provider message is scrubbed on the way out too.
 """
 
 from __future__ import annotations
@@ -388,17 +392,13 @@ async def test_flag_on_masks_fallback_credentials():
     assert "api_key" in msg, msg
 
 
-@pytest.mark.asyncio
-async def test_flag_on_scrubs_credential_from_inner_fallback_exception_string():
-    """If the fallback attempt itself raises an exception whose message embeds a
-    raw provider credential (e.g. a provider SDK echoing back the api_key it was
-    called with), that string is re-embedded via `Error doing the fallback: ...`
-    on the terminal raise. The router must scrub known secret patterns from it.
-    The primary fails with a benign rate-limit; the fallback deployment fails
-    with an exception whose text contains the secret."""
-    litellm.expose_router_debug_in_errors = True
-    inner_secret = "sk-INNERFALLBACKEXCEPTIONSECRET1234"
-    router = Router(
+_INNER_SECRET = "sk-INNERFALLBACKEXCEPTIONSECRET1234"
+
+
+def _router_with_failing_fallback(fallback_mock_response: object) -> Router:
+    """Primary fails with a benign rate-limit and falls over to a second group whose
+    deployment fails with `fallback_mock_response`."""
+    return Router(
         model_list=[
             {
                 "model_name": _INTERNAL_MODEL_GROUP_NAME,
@@ -414,7 +414,7 @@ async def test_flag_on_scrubs_credential_from_inner_fallback_exception_string():
                 "litellm_params": {
                     "model": "gpt-4o",
                     "api_key": "key",
-                    "mock_response": f"Exception: content_filter_policy - api_key={inner_secret}",
+                    "mock_response": fallback_mock_response,
                 },
                 "model_info": {"id": "fallback-deployment-id"},
             },
@@ -422,6 +422,19 @@ async def test_flag_on_scrubs_credential_from_inner_fallback_exception_string():
         fallbacks=[{_INTERNAL_MODEL_GROUP_NAME: ["fallback-group"]}],
         num_retries=0,
     )
+
+
+@pytest.mark.asyncio
+async def test_flag_on_scrubs_credential_from_inner_fallback_exception_string():
+    """If the fallback attempt itself raises an exception whose message embeds a
+    raw provider credential (e.g. a provider SDK echoing back the api_key it was
+    called with), that string is re-embedded via `Error doing the fallback: ...`
+    on the terminal raise. The router must scrub known secret patterns from it.
+    The primary fails with a benign rate-limit; the fallback deployment fails
+    with a retryable exception whose text contains the secret."""
+    litellm.expose_router_debug_in_errors = True
+    router = _router_with_failing_fallback(Exception(f"upstream exploded - api_key={_INNER_SECRET}"))
+
     with pytest.raises(litellm.RateLimitError) as excinfo:
         await router.acompletion(
             model=_INTERNAL_MODEL_GROUP_NAME,
@@ -429,5 +442,25 @@ async def test_flag_on_scrubs_credential_from_inner_fallback_exception_string():
         )
     msg = excinfo.value.message
     assert "Error doing the fallback:" in msg, msg
-    assert inner_secret not in msg, msg
+    assert _INNER_SECRET not in msg, msg
     assert "REDACTED" in msg, msg
+
+
+@pytest.mark.asyncio
+async def test_surfaced_fallback_rejection_is_scrubbed():
+    """A request rejection raised while falling back is surfaced to the caller
+    instead of the deployment failure that triggered the fallback, so it becomes a
+    leak site of its own: it carries a provider message from a deployment the
+    caller never addressed. The router must scrub it before raising."""
+    litellm.expose_router_debug_in_errors = True
+    router = _router_with_failing_fallback(f"Exception: content_filter_policy - api_key={_INNER_SECRET}")
+
+    with pytest.raises(litellm.BadRequestError) as excinfo:
+        await router.acompletion(
+            model=_INTERNAL_MODEL_GROUP_NAME,
+            messages=[{"role": "user", "content": "hi"}],
+        )
+    msg = excinfo.value.message
+    assert _INNER_SECRET not in msg, msg
+    assert "REDACTED" in msg, msg
+    assert _INNER_SECRET not in str(excinfo.value), str(excinfo.value)
