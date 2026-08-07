@@ -121,6 +121,24 @@ class KlingVideoConfig(BaseVideoConfig):
         ]
 
     @classmethod
+    def _mode_to_resolution(cls, mode: Any) -> str | None:
+        """
+        Inverse of _resolution_to_mode, for cost attribution (NOL-519).
+
+        Returns the public resolution label (720p|1080p|4k) for Kling's classic
+        mode field (std|pro|4k), or None when the mode is absent/unrecognised -
+        the caller then omits video_resolution rather than guessing a tier, so a
+        mispriced row is never invented.
+        """
+        if mode is None:
+            return None
+        key = str(mode).strip().lower()
+        for resolution, mapped_mode in cls.RESOLUTION_TO_MODE.items():
+            if mapped_mode == key:
+                return resolution
+        return None
+
+    @classmethod
     def _resolution_to_mode(cls, resolution: Any) -> str:
         key = str(resolution).strip().lower()
         mode = cls.RESOLUTION_TO_MODE.get(key)
@@ -285,6 +303,15 @@ class KlingVideoConfig(BaseVideoConfig):
                 usage["duration_seconds"] = float(seconds)
             except (ValueError, TypeError):
                 pass
+
+        # NOL-519: Kling prices per SECOND and per RESOLUTION TIER, but one model
+        # id (kling/kling-v3) serves all three tiers - the tier is a per-request
+        # knob, not part of the model name. Without the resolution on usage the
+        # shared video cost path has no way to pick between the 720p/1080p/4k
+        # rates in the price map, so every generation resolved to $0.
+        resolution = self._mode_to_resolution(request_data.get("mode") if request_data else None)
+        if resolution is not None:
+            usage["video_resolution"] = resolution
 
         video_obj = VideoObject(
             id=task_id,
