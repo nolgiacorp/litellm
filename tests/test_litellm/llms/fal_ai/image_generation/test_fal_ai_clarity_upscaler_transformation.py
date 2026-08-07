@@ -249,6 +249,25 @@ class TestClarityUpscalerCogs:
         resp = ImageResponse(data=[ImageObject(url=f"https://cdn/{i}.png") for i in range(2)])
         assert cost_calculator(model="fal-ai/flux/schnell", image_response=resp) == pytest.approx(0.006)
 
+    @pytest.mark.parametrize(
+        "model, expected",
+        [
+            ("fal-ai/CLARITY-Upscaler", 2048 * 2048 * 3e-08),
+            ("FAL-AI/FLUX/SCHNELL", 0.003),
+        ],
+    )
+    def test_mixed_case_model_names_still_price(self, model, expected):
+        """fal's config selector and endpoint are case-insensitive, so a mixed-case
+        model name generates and bills normally; the price lookup must match the
+        lowercase map key or those routes record $0 COGS again."""
+        from litellm.llms.fal_ai.cost_calculator import cost_calculator
+        from litellm.types.utils import ImageObject
+
+        resp = ImageResponse(
+            data=[ImageObject(url="https://cdn/u.png", provider_specific_fields={"width": 2048, "height": 2048})]
+        )
+        assert cost_calculator(model=model, image_response=resp) == pytest.approx(expected)
+
     def test_unmapped_model_degrades_to_zero(self):
         from litellm.llms.fal_ai.cost_calculator import cost_calculator
         from litellm.types.utils import ImageObject

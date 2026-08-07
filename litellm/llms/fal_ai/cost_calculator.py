@@ -1,5 +1,6 @@
 import litellm
 from litellm.types.utils import ImageObject, ImageResponse
+from litellm.utils import _get_model_cost_key
 
 
 def _cost_entry(model: str) -> "dict | None":  # mutable-ok: litellm.model_cost stores raw dict entries
@@ -12,10 +13,16 @@ def _cost_entry(model: str) -> "dict | None":  # mutable-ok: litellm.model_cost 
     the map directly also keeps the degrade-to-0.0 behaviour on a miss - this
     runs after the image has been generated and paid for, so raising would turn
     a pricing gap into a failed generation for the caller.
+
+    Keys are resolved through _get_model_cost_key so a differently cased but
+    otherwise valid model name (fal's config selector and endpoint are
+    case-insensitive) still finds its lowercase price-map entry, as the previous
+    get_model_info() path did.
     """
     provider = litellm.LlmProviders.FAL_AI.value
     for cost_key in (f"{provider}/{model}", model, model.split("/")[-1]):
-        entry = litellm.model_cost.get(cost_key)
+        matched_key = _get_model_cost_key(cost_key)
+        entry = litellm.model_cost.get(matched_key) if matched_key is not None else None
         if entry:
             return entry
     return None
