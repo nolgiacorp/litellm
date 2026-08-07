@@ -40,17 +40,35 @@ else:
 
 
 # NOL-519. How hard the create leg tries to read Topaz's credit quote before
-# giving up and recording no cost. Topaz only produces `estimates` once it has
-# inspected the uploaded source, so the first read can land early. A restore
-# runs for minutes, which makes ~1.5s of polling free; anything longer would be
-# paying latency on the customer's request to improve our own bookkeeping.
-# The per-request timeout is explicit because the probe rides the caller's
-# client, whose default timeout can be 60s: without it the attempt count would
-# bound only the sleeps and a hung status endpoint could hold the create leg
-# until its outer deadline. Worst case is now attempts * timeout + the sleeps.
-_CREDIT_PROBE_ATTEMPTS = 3
-_CREDIT_PROBE_DELAY_SECS = 0.75
+# giving up and recording no cost.
+#
+# The attempt count is MEASURED, not guessed. Against the live API, a job walks
+# accepted -> initializing -> preprocessing after the upload lands, and
+# `estimates` first appears at the preprocessing transition - about 2.6s in.
+# An earlier 3-attempt window sat right on that boundary and missed it on a real
+# prod restore, recording $0 for a job Topaz quoted at 1 credit, so the window
+# is now wide enough that the observed timing is caught with margin rather than
+# raced. Typical cost is still one round trip: the loop exits on the first
+# reading, so the ceiling is only paid when a quote never arrives at all.
+#
+# The delay carries the window on its own: an estimate-less status returns
+# immediately, so the sleeps - not the request timeout - are the only wait the
+# probe is GUARANTEED to spend. (attempts - 1) * delay must therefore clear the
+# measured 2.6s with margin.
+#
+# It stays bounded because this runs on the customer's create request. A restore
+# then runs for MINUTES, so a few seconds here is free in context, but a hung
+# status endpoint must not hold the leg open: hence an explicit per-request
+# timeout as well as the attempt count, since the probe rides the caller's
+# client whose default can be 60s. That timeout is scalar - httpx applies it per
+# socket operation, not to the whole GET - so redirects or a trickling response
+# can outlast it, and attempts * timeout + sleeps is NOT a real wall-clock bound.
+# The bound is enforced instead: a monotonic deadline stops the probe from
+# starting another attempt once the budget is spent.
+_CREDIT_PROBE_ATTEMPTS = 6
+_CREDIT_PROBE_DELAY_SECS = 0.8
 _CREDIT_PROBE_TIMEOUT_SECS = 1.0
+_CREDIT_PROBE_MAX_WALL_SECS = 15.0
 
 _SUPPORTED_OPENAI_PARAMS = (
     "model",
@@ -651,14 +669,21 @@ class TopazVideoConfig(BaseVideoConfig):
         here rather than a read of the create payload.
 
         Deliberately bounded and deliberately silent on failure: a restore takes
-        minutes, so ~1.5s is free, but a slow or unhappy status endpoint must
-        never fail a job the customer has already been charged for. Missing
+        minutes, so a few seconds is free, but a slow or unhappy status endpoint
+        must never fail a job the customer has already been charged for. Missing
         credits means no cost is recorded, which is the pre-existing behaviour;
         the NOL-535 ledger guard is what catches a model that never records.
+
+        The bound is a monotonic deadline, not arithmetic over the attempt count:
+        the per-request timeout is scalar and so caps each socket operation
+        rather than the whole GET.
         """
         url = self._create_status_url(raw_response, request_id)
         headers = self._probe_headers(raw_response)
+        deadline = time.monotonic() + _CREDIT_PROBE_MAX_WALL_SECS
         for attempt in range(_CREDIT_PROBE_ATTEMPTS):
+            if time.monotonic() >= deadline:
+                break
             try:
                 credits = self._credits_from_status(
                     self._http_client().get(url, headers=headers, timeout=_CREDIT_PROBE_TIMEOUT_SECS)
@@ -680,7 +705,10 @@ class TopazVideoConfig(BaseVideoConfig):
 
         url = self._create_status_url(raw_response, request_id)
         headers = self._probe_headers(raw_response)
+        deadline = time.monotonic() + _CREDIT_PROBE_MAX_WALL_SECS
         for attempt in range(_CREDIT_PROBE_ATTEMPTS):
+            if time.monotonic() >= deadline:
+                break
             try:
                 credits = self._credits_from_status(
                     await self._async_http_client().get(url, headers=headers, timeout=_CREDIT_PROBE_TIMEOUT_SECS)

@@ -241,3 +241,110 @@ class TestTopazCreatedVideoObject:
         assert cheap.usage["duration_seconds"] == dear.usage["duration_seconds"]
         assert cheap._hidden_params["response_cost"] == pytest.approx(0.12)
         assert dear._hidden_params["response_cost"] == pytest.approx(4.68)
+
+
+class TestTopazCreditProbeWindow:
+    """
+    The probe window is sized from a live measurement, not a guess.
+
+    Against api.topazlabs.com a job walks accepted -> initializing ->
+    preprocessing once the upload lands, and `estimates` first appears at the
+    preprocessing transition, ~2.6s in. A 3-attempt window sat on that boundary
+    and missed it on a real prod restore, recording $0 for a job Topaz quoted at
+    1 credit. These pin the shape of the fix so it cannot silently narrow again.
+    """
+
+    def test_window_outlasts_the_measured_estimate_delay(self):
+        from litellm.llms.topaz.videos.transformation import (
+            _CREDIT_PROBE_ATTEMPTS,
+            _CREDIT_PROBE_DELAY_SECS,
+        )
+
+        measured_delay_secs = 2.6
+        # The request timeout is an upper bound on each GET, not time the probe
+        # is guaranteed to wait: an estimate-less status comes back immediately,
+        # so the sleeps are the whole guaranteed horizon.
+        horizon = (_CREDIT_PROBE_ATTEMPTS - 1) * _CREDIT_PROBE_DELAY_SECS
+        assert horizon > measured_delay_secs * 1.5, (
+            f"probe polls for only {horizon}s of guaranteed wall clock, which leaves no margin "
+            f"over the measured {measured_delay_secs}s delay before Topaz publishes estimates"
+        )
+
+    def test_window_stays_bounded_enough_for_a_create_request(self):
+        """A restore runs for minutes, but this sits on the customer's request."""
+        from litellm.llms.topaz.videos.transformation import (
+            _CREDIT_PROBE_ATTEMPTS,
+            _CREDIT_PROBE_DELAY_SECS,
+            _CREDIT_PROBE_MAX_WALL_SECS,
+            _CREDIT_PROBE_TIMEOUT_SECS,
+        )
+
+        assert _CREDIT_PROBE_MAX_WALL_SECS <= 15.0
+        nominal = _CREDIT_PROBE_ATTEMPTS * _CREDIT_PROBE_TIMEOUT_SECS + (
+            _CREDIT_PROBE_ATTEMPTS - 1
+        ) * _CREDIT_PROBE_DELAY_SECS
+        # The nominal schedule must fit inside the enforced deadline, so healthy
+        # jobs spend every attempt rather than being cut short by the guard.
+        assert nominal <= _CREDIT_PROBE_MAX_WALL_SECS, (
+            f"the {nominal}s polling schedule would be truncated by the "
+            f"{_CREDIT_PROBE_MAX_WALL_SECS}s deadline"
+        )
+
+    def test_a_slow_status_endpoint_cannot_hold_the_create_leg_open(self, monkeypatch):
+        """
+        The scalar httpx timeout caps each socket operation, not the whole GET:
+        redirects or a response that keeps trickling within the read timeout can
+        make one attempt outlast it. So the ceiling is enforced with a monotonic
+        deadline rather than inferred from attempts * timeout.
+        """
+        config = TopazVideoConfig()
+        clock = {"now": 1_000.0}
+        started_at = []
+
+        class _Slow:
+            def get(self, *a, **k):
+                started_at.append(clock["now"])
+                clock["now"] += 9.0  # one GET outlasting its per-request timeout
+                return httpx.Response(200, json={"status": "initializing"})
+
+        monkeypatch.setattr(topaz_transformation.time, "monotonic", lambda: clock["now"])
+        monkeypatch.setattr(
+            topaz_transformation.time, "sleep", lambda secs: clock.update(now=clock["now"] + secs)
+        )
+        monkeypatch.setattr(config, "_http_client", lambda: _Slow())
+
+        start = clock["now"]
+        assert config._probe_billed_credits(_create_response(), "req-1") is None
+        assert len(started_at) < topaz_transformation._CREDIT_PROBE_ATTEMPTS, (
+            "the deadline never fired: the probe spent every attempt on a status endpoint "
+            "that burns 9s per call"
+        )
+        assert all(
+            begun - start < topaz_transformation._CREDIT_PROBE_MAX_WALL_SECS for begun in started_at
+        ), "an attempt started after the wall-clock budget was already spent"
+
+    def test_probe_keeps_polling_through_the_pre_estimate_statuses(self, monkeypatch):
+        """
+        accepted and initializing carry no estimates; the quote lands at
+        preprocessing. The probe must ride through the first two rather than
+        treating an estimate-less 200 as a final answer.
+        """
+        config = TopazVideoConfig()
+        pages = [
+            {"status": "accepted"},
+            {"status": "initializing"},
+            {"status": "preprocessing", "estimates": {"cost": [1, 2]}},
+        ]
+        seen = []
+
+        class _Staged:
+            def get(self, *a, **k):
+                payload = pages[min(len(seen), len(pages) - 1)]
+                seen.append(payload["status"])
+                return httpx.Response(200, json=payload)
+
+        monkeypatch.setattr(topaz_transformation.time, "sleep", lambda _: None)
+        monkeypatch.setattr(config, "_http_client", lambda: _Staged())
+
+        assert config._probe_billed_credits(_create_response(), "req-1") == pytest.approx(1.0)
+        assert seen == ["accepted", "initializing", "preprocessing"]
