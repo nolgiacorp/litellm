@@ -133,7 +133,13 @@ EXECUTED_CAPABILITIES = (
         "MiniMax-H3",
         {"image_urls": ["https://example.com/a.png"], "audio_urls": ["https://example.com/a.mp3"]},
     ),
-    (MinimaxVideoConfig(), "MiniMax-H3", {"base_video_url": "https://example.com/src.mp4"}),
+    # Regeneration carries seconds as the source video's declared length: it is a price
+    # input, not a control, and the request is refused without it.
+    (
+        MinimaxVideoConfig(),
+        "MiniMax-H3",
+        {"base_video_url": "https://example.com/src.mp4", "seconds": 6},
+    ),
     # fal's kling twin does take an end frame, unlike the direct kling route.
     (FalAIVideoConfig(), "fal_ai/fal-ai/kling-video/v3/pro/image-to-video", {"end_image_url": "https://e.com/e.png"}),
     # negative_prompt on the surfaces that do carry one. fal's non-turbo
