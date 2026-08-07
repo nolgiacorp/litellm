@@ -376,7 +376,15 @@ class TopazVideoConfig(BaseVideoConfig):
         self._reject_unsupported(params, model)
         seconds = params.get("seconds") if params.get("seconds") is not None else params.get("duration_seconds")
         width, height = self._resolution(params, model)
-        carried = tuple((key, value) for key, value in params.items() if key in _FILTER_PARAMS or key in _OUTPUT_PARAMS)
+        # Source geometry is carried, not consumed here: it never reaches Topaz's
+        # create body, which describes the job rather than the footage, but the
+        # create leg needs it to quote a container this proxy cannot parse.
+        # Dropping it here would leave the override silently inert.
+        carried = tuple(
+            (key, value)
+            for key, value in params.items()
+            if key in _FILTER_PARAMS or key in _OUTPUT_PARAMS or key in _SOURCE_GEOMETRY_PARAMS
+        )
         mapped = (
             ("input_reference", params.get("input_reference")),
             ("container", self._container(params, model)),

@@ -290,6 +290,45 @@ class TestTopazGeometryPrecedence:
         assert credits == pytest.approx(1.0)
         assert client.post_calls[0]["json"]["source"]["frameCount"] == 150
 
+    def test_declared_geometry_survives_the_real_param_mapping(self):
+        """
+        map_openai_params forwards only what it recognises, so geometry that is
+        neither a filter nor an output param is dropped before the create leg
+        ever sees it. That left the override inert through the actual proxy
+        flow while every direct-construction test still passed.
+        """
+        config = TopazVideoConfig()
+        mapped = config.map_openai_params(
+            {
+                "input_reference": "https://example.test/clip.mkv",
+                "resolution": "1920x1080",
+                "container": "mkv",
+                "source_width": 1920,
+                "source_height": 1080,
+                "source_frame_rate": 30,
+                "source_duration_seconds": 5,
+            },
+            MODEL,
+            False,
+        )
+        assert mapped["source_width"] == 1920
+
+        body, _files, _url = config.transform_video_create_request(
+            model=MODEL,
+            prompt="",
+            api_base=None,
+            video_create_optional_request_params=mapped,
+            litellm_params=None,
+            headers={},
+        )
+        assert config._pending_upload.declared_geometry == SourceGeometry(
+            width=1920, height=1080, duration_seconds=5.0, frame_rate=30.0
+        )
+        # It describes the footage, so it must not leak into the job body.
+        assert "source_width" not in body["output"]
+        assert "source_width" not in body["source"]
+        assert not any("source_" in key for key in body["filters"][0])
+
     def test_partial_declared_geometry_is_refused(self):
         """Completing a declaration with defaults produces a plausible quote that is quietly wrong."""
         assert TopazVideoConfig._declared_geometry({"source_width": 1920, "source_height": 1080}) is None
