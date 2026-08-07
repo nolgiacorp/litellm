@@ -21230,7 +21230,7 @@
         "max_input_tokens": 32768,
         "max_tokens": 32768,
         "mode": "video_generation",
-        "output_cost_per_second": 0.10,
+        "output_cost_per_second": 0.1,
         "rpm": 100000,
         "tpm": 8000000,
         "source": "https://ai.google.dev/gemini-api/docs/pricing",
@@ -46852,6 +46852,348 @@
         "supported_endpoints": [
             "/v1/videos",
             "/v1/images/generations"
+        ]
+    },
+    "topaz/aaa-10": {
+        "litellm_provider": "topaz",
+        "mode": "video_generation",
+        "output_cost_per_credit": 0.12,
+        "source": "https://www.topazlabs.com/enhance-api",
+        "supported_endpoints": [
+            "/v1/videos"
+        ]
+    },
+    "topaz/aaa-9": {
+        "litellm_provider": "topaz",
+        "mode": "video_generation",
+        "output_cost_per_credit": 0.12,
+        "source": "https://www.topazlabs.com/enhance-api",
+        "supported_endpoints": [
+            "/v1/videos"
+        ]
+    },
+    "topaz/ahq-12": {
+        "litellm_provider": "topaz",
+        "mode": "video_generation",
+        "output_cost_per_credit": 0.12,
+        "source": "https://www.topazlabs.com/enhance-api",
+        "supported_endpoints": [
+            "/v1/videos"
+        ]
+    },
+    "topaz/aion-1": {
+        "litellm_provider": "topaz",
+        "mode": "video_generation",
+        "output_cost_per_credit": 0.12,
+        "source": "https://www.topazlabs.com/enhance-api",
+        "supported_endpoints": [
+            "/v1/videos"
+        ]
+    },
+    "topaz/alq-13": {
+        "litellm_provider": "topaz",
+        "mode": "video_generation",
+        "output_cost_per_credit": 0.12,
+        "source": "https://www.topazlabs.com/enhance-api",
+        "supported_endpoints": [
+            "/v1/videos"
+        ]
+    },
+    "topaz/alqs-2": {
+        "litellm_provider": "topaz",
+        "mode": "video_generation",
+        "output_cost_per_credit": 0.12,
+        "source": "https://www.topazlabs.com/enhance-api",
+        "supported_endpoints": [
+            "/v1/videos"
+        ]
+    },
+    "topaz/amq-13": {
+        "litellm_provider": "topaz",
+        "mode": "video_generation",
+        "output_cost_per_credit": 0.12,
+        "source": "https://www.topazlabs.com/enhance-api",
+        "supported_endpoints": [
+            "/v1/videos"
+        ]
+    },
+    "topaz/amqs-2": {
+        "litellm_provider": "topaz",
+        "mode": "video_generation",
+        "output_cost_per_credit": 0.12,
+        "source": "https://www.topazlabs.com/enhance-api",
+        "supported_endpoints": [
+            "/v1/videos"
+        ]
+    },
+    "topaz/color-1": {
+        "litellm_provider": "topaz",
+        "mode": "video_generation",
+        "output_cost_per_credit": 0.12,
+        "source": "https://www.topazlabs.com/enhance-api",
+        "supported_endpoints": [
+            "/v1/videos"
+        ]
+    },
+    "topaz/ddv-3": {
+        "litellm_provider": "topaz",
+        "mode": "video_generation",
+        "output_cost_per_credit": 0.12,
+        "source": "https://www.topazlabs.com/enhance-api",
+        "supported_endpoints": [
+            "/v1/videos"
+        ]
+    },
+    "topaz/dtd-4": {
+        "litellm_provider": "topaz",
+        "mode": "video_generation",
+        "output_cost_per_credit": 0.12,
+        "source": "https://www.topazlabs.com/enhance-api",
+        "supported_endpoints": [
+            "/v1/videos"
+        ]
+    },
+    "topaz/dtds-2": {
+        "litellm_provider": "topaz",
+        "mode": "video_generation",
+        "output_cost_per_credit": 0.12,
+        "source": "https://www.topazlabs.com/enhance-api",
+        "supported_endpoints": [
+            "/v1/videos"
+        ]
+    },
+    "topaz/dtv-4": {
+        "litellm_provider": "topaz",
+        "mode": "video_generation",
+        "output_cost_per_credit": 0.12,
+        "source": "https://www.topazlabs.com/enhance-api",
+        "supported_endpoints": [
+            "/v1/videos"
+        ]
+    },
+    "topaz/dtvs-2": {
+        "litellm_provider": "topaz",
+        "mode": "video_generation",
+        "output_cost_per_credit": 0.12,
+        "source": "https://www.topazlabs.com/enhance-api",
+        "supported_endpoints": [
+            "/v1/videos"
+        ]
+    },
+    "topaz/ganim-1": {
+        "litellm_provider": "topaz",
+        "mode": "video_generation",
+        "output_cost_per_credit": 0.12,
+        "source": "https://www.topazlabs.com/enhance-api",
+        "supported_endpoints": [
+            "/v1/videos"
+        ]
+    },
+    "topaz/gcg-5": {
+        "litellm_provider": "topaz",
+        "mode": "video_generation",
+        "output_cost_per_credit": 0.12,
+        "source": "https://www.topazlabs.com/enhance-api",
+        "supported_endpoints": [
+            "/v1/videos"
+        ]
+    },
+    "topaz/ghq-5": {
+        "litellm_provider": "topaz",
+        "mode": "video_generation",
+        "output_cost_per_credit": 0.12,
+        "source": "https://www.topazlabs.com/enhance-api",
+        "supported_endpoints": [
+            "/v1/videos"
+        ]
+    },
+    "topaz/hyp-1": {
+        "litellm_provider": "topaz",
+        "mode": "video_generation",
+        "output_cost_per_credit": 0.12,
+        "source": "https://www.topazlabs.com/enhance-api",
+        "supported_endpoints": [
+            "/v1/videos"
+        ]
+    },
+    "topaz/hyp-2": {
+        "litellm_provider": "topaz",
+        "mode": "video_generation",
+        "output_cost_per_credit": 0.12,
+        "source": "https://www.topazlabs.com/enhance-api",
+        "supported_endpoints": [
+            "/v1/videos"
+        ]
+    },
+    "topaz/iris-2": {
+        "litellm_provider": "topaz",
+        "mode": "video_generation",
+        "output_cost_per_credit": 0.12,
+        "source": "https://www.topazlabs.com/enhance-api",
+        "supported_endpoints": [
+            "/v1/videos"
+        ]
+    },
+    "topaz/iris-3": {
+        "litellm_provider": "topaz",
+        "mode": "video_generation",
+        "output_cost_per_credit": 0.12,
+        "source": "https://www.topazlabs.com/enhance-api",
+        "supported_endpoints": [
+            "/v1/videos"
+        ]
+    },
+    "topaz/nxf-1": {
+        "litellm_provider": "topaz",
+        "mode": "video_generation",
+        "output_cost_per_credit": 0.12,
+        "source": "https://www.topazlabs.com/enhance-api",
+        "supported_endpoints": [
+            "/v1/videos"
+        ]
+    },
+    "topaz/nxl-1": {
+        "litellm_provider": "topaz",
+        "mode": "video_generation",
+        "output_cost_per_credit": 0.12,
+        "source": "https://www.topazlabs.com/enhance-api",
+        "supported_endpoints": [
+            "/v1/videos"
+        ]
+    },
+    "topaz/nyx-3": {
+        "litellm_provider": "topaz",
+        "mode": "video_generation",
+        "output_cost_per_credit": 0.12,
+        "source": "https://www.topazlabs.com/enhance-api",
+        "supported_endpoints": [
+            "/v1/videos"
+        ]
+    },
+    "topaz/pnat-1": {
+        "litellm_provider": "topaz",
+        "mode": "video_generation",
+        "output_cost_per_credit": 0.12,
+        "source": "https://www.topazlabs.com/enhance-api",
+        "supported_endpoints": [
+            "/v1/videos"
+        ]
+    },
+    "topaz/prob-4": {
+        "litellm_provider": "topaz",
+        "mode": "video_generation",
+        "output_cost_per_credit": 0.12,
+        "source": "https://www.topazlabs.com/enhance-api",
+        "supported_endpoints": [
+            "/v1/videos"
+        ]
+    },
+    "topaz/rhea-1": {
+        "litellm_provider": "topaz",
+        "mode": "video_generation",
+        "output_cost_per_credit": 0.12,
+        "source": "https://www.topazlabs.com/enhance-api",
+        "supported_endpoints": [
+            "/v1/videos"
+        ]
+    },
+    "topaz/sl-1": {
+        "litellm_provider": "topaz",
+        "mode": "video_generation",
+        "output_cost_per_credit": 0.12,
+        "source": "https://www.topazlabs.com/enhance-api",
+        "supported_endpoints": [
+            "/v1/videos"
+        ]
+    },
+    "topaz/slf-1": {
+        "litellm_provider": "topaz",
+        "mode": "video_generation",
+        "output_cost_per_credit": 0.12,
+        "source": "https://www.topazlabs.com/enhance-api",
+        "supported_endpoints": [
+            "/v1/videos"
+        ]
+    },
+    "topaz/slf-2": {
+        "litellm_provider": "topaz",
+        "mode": "video_generation",
+        "output_cost_per_credit": 0.12,
+        "source": "https://www.topazlabs.com/enhance-api",
+        "supported_endpoints": [
+            "/v1/videos"
+        ]
+    },
+    "topaz/slhq-1": {
+        "litellm_provider": "topaz",
+        "mode": "video_generation",
+        "output_cost_per_credit": 0.12,
+        "source": "https://www.topazlabs.com/enhance-api",
+        "supported_endpoints": [
+            "/v1/videos"
+        ]
+    },
+    "topaz/slm-1": {
+        "litellm_provider": "topaz",
+        "mode": "video_generation",
+        "output_cost_per_credit": 0.12,
+        "source": "https://www.topazlabs.com/enhance-api",
+        "supported_endpoints": [
+            "/v1/videos"
+        ]
+    },
+    "topaz/slp-2": {
+        "litellm_provider": "topaz",
+        "mode": "video_generation",
+        "output_cost_per_credit": 0.12,
+        "source": "https://www.topazlabs.com/enhance-api",
+        "supported_endpoints": [
+            "/v1/videos"
+        ]
+    },
+    "topaz/slp-2.5": {
+        "litellm_provider": "topaz",
+        "mode": "video_generation",
+        "output_cost_per_credit": 0.12,
+        "source": "https://www.topazlabs.com/enhance-api",
+        "supported_endpoints": [
+            "/v1/videos"
+        ]
+    },
+    "topaz/thd-3": {
+        "litellm_provider": "topaz",
+        "mode": "video_generation",
+        "output_cost_per_credit": 0.12,
+        "source": "https://www.topazlabs.com/enhance-api",
+        "supported_endpoints": [
+            "/v1/videos"
+        ]
+    },
+    "topaz/thf-4": {
+        "litellm_provider": "topaz",
+        "mode": "video_generation",
+        "output_cost_per_credit": 0.12,
+        "source": "https://www.topazlabs.com/enhance-api",
+        "supported_endpoints": [
+            "/v1/videos"
+        ]
+    },
+    "topaz/thm-2": {
+        "litellm_provider": "topaz",
+        "mode": "video_generation",
+        "output_cost_per_credit": 0.12,
+        "source": "https://www.topazlabs.com/enhance-api",
+        "supported_endpoints": [
+            "/v1/videos"
+        ]
+    },
+    "topaz/wonder-1": {
+        "litellm_provider": "topaz",
+        "mode": "video_generation",
+        "output_cost_per_credit": 0.12,
+        "source": "https://www.topazlabs.com/enhance-api",
+        "supported_endpoints": [
+            "/v1/videos"
         ]
     }
 }

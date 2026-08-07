@@ -26072,6 +26072,8 @@ export interface components {
             output_cost_per_character?: number | null;
             /** Output Cost Per Character Above 128K Tokens */
             output_cost_per_character_above_128k_tokens?: number | null;
+            /** Output Cost Per Credit */
+            output_cost_per_credit?: number | null;
             /** Output Cost Per Image */
             output_cost_per_image?: number | null;
             /** Output Cost Per Image Token */
@@ -34210,6 +34212,8 @@ export interface components {
             output_cost_per_character?: number | null;
             /** Output Cost Per Character Above 128K Tokens */
             output_cost_per_character_above_128k_tokens?: number | null;
+            /** Output Cost Per Credit */
+            output_cost_per_credit?: number | null;
             /** Output Cost Per Image */
             output_cost_per_image?: number | null;
             /** Output Cost Per Image Token */

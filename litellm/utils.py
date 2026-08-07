@@ -5552,6 +5552,7 @@ def _get_model_info_helper(
                 web_search_billing_unit=_model_info.get("web_search_billing_unit", None),
                 tpm=_model_info.get("tpm", None),
                 rpm=_model_info.get("rpm", None),
+                output_cost_per_credit=_model_info.get("output_cost_per_credit", None),
                 ocr_cost_per_page=_model_info.get("ocr_cost_per_page", None),
                 ocr_cost_per_credit=_model_info.get("ocr_cost_per_credit", None),
                 annotation_cost_per_page=_model_info.get("annotation_cost_per_page", None),

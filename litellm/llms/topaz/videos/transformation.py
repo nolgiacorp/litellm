@@ -25,6 +25,7 @@ from litellm.llms.custom_httpx.http_handler import (
     get_async_httpx_client,
 )
 from litellm.llms.topaz.common_utils import TOPAZ_VIDEO_MODELS, TopazException, TopazModelInfo
+from litellm.llms.topaz.cost_calculator import cost_calculator as topaz_cost_calculator
 from litellm.types.router import GenericLiteLLMParams
 from litellm.types.videos.main import VideoCreateOptionalRequestParams, VideoObject
 from litellm.types.videos.utils import encode_video_id_with_provider, extract_original_video_id
@@ -37,6 +38,19 @@ if TYPE_CHECKING:
 else:
     LiteLLMLoggingObj = Any
 
+
+# NOL-519. How hard the create leg tries to read Topaz's credit quote before
+# giving up and recording no cost. Topaz only produces `estimates` once it has
+# inspected the uploaded source, so the first read can land early. A restore
+# runs for minutes, which makes ~1.5s of polling free; anything longer would be
+# paying latency on the customer's request to improve our own bookkeeping.
+# The per-request timeout is explicit because the probe rides the caller's
+# client, whose default timeout can be 60s: without it the attempt count would
+# bound only the sleeps and a hung status endpoint could hold the create leg
+# until its outer deadline. Worst case is now attempts * timeout + the sleeps.
+_CREDIT_PROBE_ATTEMPTS = 3
+_CREDIT_PROBE_DELAY_SECS = 0.75
+_CREDIT_PROBE_TIMEOUT_SECS = 1.0
 
 _SUPPORTED_OPENAI_PARAMS = (
     "model",
@@ -210,14 +224,17 @@ def _request_id_from_status_url(raw_response: httpx.Response) -> str:
     return unquote(segments[-2])
 
 
-def _billed_credits(estimates: object) -> int | None:
+def _billed_credits(estimates: object) -> float | None:
+    # The lower bound is kept as a float: Topaz quotes fractional credits for
+    # small jobs (0.25 for a 5s 960x720 restore), so truncating to int would
+    # record $0 for exactly the cheap end of the range this pricing exists to
+    # capture, and shave the fraction off every larger quote.
     if not isinstance(estimates, Mapping):
         return None
     cost = estimates.get("cost")
     if not isinstance(cost, (list, tuple)) or not cost:
         return None
-    lower = _safe_float(cost[0])
-    return int(lower) if lower is not None else None
+    return _safe_float(cost[0])
 
 
 class TopazVideoConfig(BaseVideoConfig):
@@ -494,7 +511,8 @@ class TopazVideoConfig(BaseVideoConfig):
             },
         )
         self._raise_for_status(response)
-        return self._created_video_object(model, request_id, custom_llm_provider, pending.seconds)
+        credits = self._probe_billed_credits(raw_response, request_id)
+        return self._created_video_object(model, request_id, custom_llm_provider, pending.seconds, credits)
 
     async def async_transform_video_create_response(
         self,
@@ -515,7 +533,8 @@ class TopazVideoConfig(BaseVideoConfig):
             },
         )
         self._raise_for_status(response)
-        return self._created_video_object(model, request_id, custom_llm_provider, pending.seconds)
+        credits = await self._async_probe_billed_credits(raw_response, request_id)
+        return self._created_video_object(model, request_id, custom_llm_provider, pending.seconds, credits)
 
     def _take_pending_upload(self) -> _PendingUpload:
         pending = self._pending_upload
@@ -550,8 +569,15 @@ class TopazVideoConfig(BaseVideoConfig):
         request_id: str,
         custom_llm_provider: str | None,
         seconds: object,
+        topaz_credits: float | None = None,
     ) -> VideoObject:
         duration = _safe_float(seconds)
+        usage: dict[str, Any] = {}  # mutable-ok: usage expects a dict
+        if duration is not None:
+            usage["duration_seconds"] = duration
+        if topaz_credits is not None:
+            usage["topaz_credits"] = topaz_credits
+
         video_obj = VideoObject(
             id=request_id,
             object="video",
@@ -559,11 +585,113 @@ class TopazVideoConfig(BaseVideoConfig):
             model=model,
             seconds=str(seconds) if seconds is not None else None,
             created_at=int(time.time()),
-            usage={"duration_seconds": duration} if duration is not None else {},  # mutable-ok: usage expects a dict
+            usage=usage,
         )
+
+        # NOL-519. The create leg is the ONLY leg that writes a spend row, and
+        # Topaz cost cannot be derived from anything on it: it bills credits for
+        # frames processed, non-monotonically in source/output geometry. So the
+        # cost is computed here from the credits Topaz itself quoted and handed
+        # over as an explicit response_cost, which the logging path prefers over
+        # its own per-second calculation. Without this the shared video cost path
+        # sees only duration_seconds and records $0.
+        if topaz_credits is not None:
+            cost = topaz_cost_calculator(model=model, topaz_credits=topaz_credits)
+            if cost > 0:
+                video_obj._hidden_params = {"response_cost": cost}  # mutable-ok: hidden params expects a dict
+
         if custom_llm_provider:
             video_obj.id = encode_video_id_with_provider(request_id, custom_llm_provider, model)
         return video_obj
+
+    @staticmethod
+    def _create_status_url(raw_response: httpx.Response, request_id: str) -> str:
+        """
+        Status URL for a request we just created, derived from the create URL so
+        any TOPAZ_API_BASE override is preserved. The request id came from
+        Topaz's own response here (not from a caller), but it is still
+        percent-encoded before it reaches this credential-bearing URL.
+        """
+        create_url = str(raw_response.request.url)
+        marker = "/video/express"
+        # rsplit returns the input unchanged when the marker is absent, which
+        # would silently build a status URL under the wrong path. Fall back to
+        # the resolved base instead of guessing from an unexpected create URL.
+        base = create_url.rsplit(marker, 1)[0] if marker in create_url else resolve_topaz_api_base(None)
+        return f"{base}/video/{encode_url_path_segment(request_id, field_name='video_id')}/status"
+
+    @staticmethod
+    def _probe_headers(raw_response: httpx.Response) -> dict:  # mutable-ok: httpx expects a dict of headers
+        api_key = raw_response.request.headers.get("X-API-Key", "")
+        return {"X-API-Key": api_key} if api_key else {}  # mutable-ok: httpx expects a dict of headers
+
+    def _credits_from_status(self, response: httpx.Response) -> float | None:
+        if response.status_code != 200:
+            return None
+        try:
+            payload = response.json()
+        except (ValueError, JSONDecodeError):
+            return None
+        # A 200 carrying valid JSON that is not an object (null, a list, a
+        # string from an intermediary) must read as a failed probe: .get() on it
+        # would raise past the fail-silent handling and turn a bookkeeping
+        # hiccup into a create error for footage Topaz has already accepted.
+        if not isinstance(payload, Mapping):
+            return None
+        return _billed_credits(payload.get("estimates"))
+
+    def _probe_billed_credits(self, raw_response: httpx.Response, request_id: str) -> float | None:
+        """
+        Read the credit quote Topaz attaches to the job, right after the source
+        upload completes.
+
+        Topaz cannot quote at create time - the express create body carries no
+        source geometry, so `estimates` is absent from that response and only
+        appears once Topaz has inspected the uploaded file. Hence a short poll
+        here rather than a read of the create payload.
+
+        Deliberately bounded and deliberately silent on failure: a restore takes
+        minutes, so ~1.5s is free, but a slow or unhappy status endpoint must
+        never fail a job the customer has already been charged for. Missing
+        credits means no cost is recorded, which is the pre-existing behaviour;
+        the NOL-535 ledger guard is what catches a model that never records.
+        """
+        url = self._create_status_url(raw_response, request_id)
+        headers = self._probe_headers(raw_response)
+        for attempt in range(_CREDIT_PROBE_ATTEMPTS):
+            try:
+                credits = self._credits_from_status(
+                    self._http_client().get(url, headers=headers, timeout=_CREDIT_PROBE_TIMEOUT_SECS)
+                )
+            except httpx.HTTPError:
+                # A transport blip counts as a failed attempt, not as the end of
+                # the probe: the create leg is the only chance to record spend,
+                # so the remaining attempts are worth spending on a retry.
+                credits = None
+            if credits is not None:
+                return credits
+            if attempt + 1 < _CREDIT_PROBE_ATTEMPTS:
+                time.sleep(_CREDIT_PROBE_DELAY_SECS)
+        return None
+
+    async def _async_probe_billed_credits(self, raw_response: httpx.Response, request_id: str) -> float | None:
+        """Async twin of _probe_billed_credits; see that docstring."""
+        import asyncio
+
+        url = self._create_status_url(raw_response, request_id)
+        headers = self._probe_headers(raw_response)
+        for attempt in range(_CREDIT_PROBE_ATTEMPTS):
+            try:
+                credits = self._credits_from_status(
+                    await self._async_http_client().get(url, headers=headers, timeout=_CREDIT_PROBE_TIMEOUT_SECS)
+                )
+            except httpx.HTTPError:
+                credits = None
+            if credits is not None:
+                return credits
+            if attempt + 1 < _CREDIT_PROBE_ATTEMPTS:
+                await asyncio.sleep(_CREDIT_PROBE_DELAY_SECS)
+        return None
 
     def _source_bytes(self, source: object, model: str) -> bytes:
         if isinstance(source, str):
