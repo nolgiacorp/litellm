@@ -83,8 +83,13 @@ _GENERATION_PATH = "/v2/video_generation"
 _REGENERATION_PATH = "/v2/video_regeneration"
 _REGENERATION_RESOLUTION = "2K"
 # resolution is not omitted: _map_v2_params already pins it to 2K for regeneration,
-# refusing anything else rather than silently upgrading it.
+# refusing anything else rather than silently upgrading it. duration is omitted from the
+# body but not from billing: the declared source length is what the create call charges.
+# ratio never reaches here once _map_v2_params refuses an explicit one, and stays listed
+# so a raw extra_body ratio cannot slip into a body that has no such field.
 _REGENERATION_UNSUPPORTED_KEYS = frozenset(("duration", "ratio"))
+# An aspect ratio asked for by any name; regeneration inherits the source video's.
+_REGENERATION_RATIO_KEYS = ("size", "aspect_ratio", "ratio")
 
 _V2_MEDIA_KEYS = frozenset(
     {"first_frame", "last_frame", "reference_images", "reference_videos", "reference_audios", "base_video"}
@@ -138,6 +143,16 @@ def _coerce_media_url(value: FileTypes | str | None) -> str | None:
     return f"data:{content_type};base64,{encoded}"
 
 
+def _asks_for_regeneration(params: Mapping[str, Any]) -> bool:
+    """
+    base_video is the provider-native spelling of base_video_url. The shared video handler
+    merges raw extra_body over the mapped params, so a raw base_video reaches the request
+    transform as a regeneration exactly as base_video_url does; both spellings are
+    recognized so the regeneration rules cannot be sidestepped by spelling.
+    """
+    return params.get("base_video_url") is not None or params.get("base_video") is not None
+
+
 def _url_tuple(value: Any) -> tuple[str, ...]:
     if isinstance(value, str) and value.strip():
         return (value.strip(),)
@@ -177,6 +192,14 @@ _V2_CAPABILITY_PARAMS = frozenset(
 
 
 class MinimaxVideoConfig(BaseVideoConfig):
+    def __init__(self) -> None:
+        super().__init__()
+        # Regeneration's body carries no duration, so the source length the caller declared
+        # is held here between this request's transform and its response transform. A config
+        # instance is built per call (ProviderConfigManager.get_provider_video_config), so
+        # this never spans two requests.
+        self._regeneration_seconds: Any = None
+
     def get_capability_param_support(self, model: str) -> CapabilityParamSupport:
         """
         Hailuo 3 (/v2) executes first/last frame conditioning, reference images and
@@ -232,7 +255,7 @@ class MinimaxVideoConfig(BaseVideoConfig):
             image_url if isinstance(image_url, str) else None
         )
         if _uses_legacy_video_api(model):
-            if params.get("base_video_url") is not None:
+            if _asks_for_regeneration(params):
                 raise litellm.BadRequestError(
                     message=(
                         "MiniMax base_video regeneration is a /v2 (Hailuo 3) flow; legacy Hailuo models do not "
@@ -333,6 +356,20 @@ class MinimaxVideoConfig(BaseVideoConfig):
                 model=model,
                 llm_provider=litellm.LlmProviders.MINIMAX.value,
             )
+        if base_video is not None:
+            self._reject_regeneration_ratio(model, params)
+            if duration is None or duration <= 0:
+                raise litellm.BadRequestError(
+                    message=(
+                        "MiniMax H3 regeneration requires seconds: the source video's length, as a positive number of "
+                        "seconds. Its request has no duration field, since the output inherits the source's length, so "
+                        "seconds does not change the output; it is the only number available to price the "
+                        f"regeneration, and a missing or non-positive length (got {duration}) would bill the created "
+                        "video nothing."
+                    ),
+                    model=model,
+                    llm_provider=litellm.LlmProviders.MINIMAX.value,
+                )
         return drop_none_values(
             {
                 "duration": duration if duration is not None else _DEFAULT_V2_DURATION,
@@ -350,21 +387,48 @@ class MinimaxVideoConfig(BaseVideoConfig):
         )
 
     @staticmethod
-    def _v2_base_video(model: str, params: Mapping[str, Any]) -> str | None:
+    def _reject_regeneration_ratio(model: str, params: Mapping[str, Any]) -> None:
+        requested = tuple(key for key in _REGENERATION_RATIO_KEYS if params.get(key) is not None)
+        if not requested:
+            return
+        raise litellm.BadRequestError(
+            message=(
+                "MiniMax H3 regeneration re-renders the source video, so the output keeps the source's aspect ratio "
+                f"and its request has no ratio field to ask for another. Requested {', '.join(requested)} cannot be "
+                "honored; drop it, or crop the source video before regenerating."
+            ),
+            model=model,
+            llm_provider=litellm.LlmProviders.MINIMAX.value,
+        )
+
+    @classmethod
+    def _v2_base_video(cls, model: str, params: Mapping[str, Any]) -> str | None:
         raw = params.get("base_video_url")
-        if raw is None:
+        if raw is not None:
+            url = raw.strip() if isinstance(raw, str) else None
+            if not url:
+                raise cls._base_video_error(model, "base_video_url")
+            return url
+        # The provider-native spelling, a list of one URL, normalized so a raw extra_body
+        # base_video is held to the same regeneration rules as base_video_url.
+        native = params.get("base_video")
+        if native is None:
             return None
-        url = raw.strip() if isinstance(raw, str) else None
-        if not url:
-            raise litellm.BadRequestError(
-                message=(
-                    "MiniMax H3 regeneration requires base_video_url to be a single non-empty video URL pointing at "
-                    "the source video to re-render."
-                ),
-                model=model,
-                llm_provider=litellm.LlmProviders.MINIMAX.value,
-            )
-        return url
+        urls = _url_tuple(native)
+        if len(urls) != 1:
+            raise cls._base_video_error(model, "base_video")
+        return urls[0]
+
+    @staticmethod
+    def _base_video_error(model: str, param: str) -> litellm.BadRequestError:
+        return litellm.BadRequestError(
+            message=(
+                f"MiniMax H3 regeneration requires {param} to be a single non-empty video URL pointing at the source "
+                "video to re-render."
+            ),
+            model=model,
+            llm_provider=litellm.LlmProviders.MINIMAX.value,
+        )
 
     @staticmethod
     def _v2_ratio(params: Mapping[str, Any], has_frames: bool, has_references: bool) -> str | None:
@@ -424,6 +488,7 @@ class MinimaxVideoConfig(BaseVideoConfig):
             *self._reference_items(mapped),
         )
         is_regeneration = bool(mapped.get("base_video"))
+        self._regeneration_seconds = mapped.get("duration") if is_regeneration else None
         omitted = _V2_MEDIA_KEYS | (_REGENERATION_UNSUPPORTED_KEYS if is_regeneration else frozenset())
         passthrough = drop_none_values({key: value for key, value in mapped.items() if key not in omitted})
         request_data = {"model": model_name, "content": content, **passthrough}
@@ -470,36 +535,34 @@ class MinimaxVideoConfig(BaseVideoConfig):
         if not task_id:
             raise ValueError(f"MiniMax video submit response is missing task_id: {response_data}")
 
-        raw_duration = request_data.get("duration") if request_data else None
+        raw_duration = self._billed_duration(request_data)
         video_obj = VideoObject(
             id=str(task_id),
             object="video",
             status="queued",
             model=model,
             seconds=str(raw_duration) if raw_duration is not None else None,
-            usage=_duration_usage(self._create_billed_seconds(request_data)),
+            usage=_duration_usage(_safe_float(raw_duration)),
         )
         if custom_llm_provider:
             video_obj.id = encode_video_id_with_provider(video_obj.id, custom_llm_provider, model_name)
         return video_obj
 
-    @staticmethod
-    def _create_billed_seconds(request_data: Mapping[str, Any] | None) -> float | None:
+    def _billed_duration(self, request_data: Mapping[str, Any] | None) -> Any:
         """
-        Seconds to bill from the create call alone.
+        The seconds the create call reports and bills.
 
-        Regeneration reports nothing here. Its endpoint has no duration field, since
-        the output inherits the source video's length, so there is no number in the
-        request to charge from and inventing one would be a guess in whichever
-        direction the guess happens to lean. The authoritative figure is usage on the
-        status response, which _v2_status_video_object already reads.
+        Regeneration has to read it off the config instead of the request: its
+        endpoint has no duration field, so the declared source length was stripped
+        from the body. Create time is the only point where video spend is priced,
+        because polling is logged as CallTypes.video_retrieve and the video cost
+        calculator prices create, edit and remix alone, so usage on the status
+        response never becomes spend. Reporting nothing here would make every
+        regeneration free rather than merely mispriced.
         """
-        if not request_data:
-            return None
-        content = request_data.get("content") or ()
-        if any(isinstance(item, Mapping) and item.get("role") == "base_video" for item in content):
-            return None
-        return _safe_float(request_data.get("duration"))
+        if self._regeneration_seconds is not None:
+            return self._regeneration_seconds
+        return request_data.get("duration") if request_data else None
 
     def transform_video_status_retrieve_request(
         self,

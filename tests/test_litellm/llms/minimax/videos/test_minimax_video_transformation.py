@@ -219,17 +219,113 @@ class TestMinimaxVideoTransformation:
         assert mapped["resolution"] == "2K"
         assert "ratio" not in mapped
 
-    def test_map_v2_base_video_keeps_explicit_ratio(self):
+    @pytest.mark.parametrize(
+        "ratio_param",
+        [{"aspect_ratio": "9:16"}, {"size": "720x1280"}, {"ratio": "9:16"}],
+    )
+    def test_map_v2_base_video_refuses_a_ratio_it_cannot_honor(self, ratio_param):
+        """
+        Regeneration keeps the source video's aspect ratio and its request has no ratio
+        field, so an explicit one used to be mapped and then dropped: the caller would
+        be billed for a video in a ratio they did not ask for.
+        """
+        with pytest.raises(litellm.BadRequestError, match="keeps the source's aspect ratio"):
+            self.config.map_openai_params(
+                video_create_optional_params={
+                    "seconds": 6,
+                    "base_video_url": "https://video.example.com/source-768p.mp4",
+                    **ratio_param,
+                },
+                model=V2_MODEL,
+                drop_params=False,
+            )
+
+    def test_map_v2_base_video_requires_the_source_length(self):
+        """
+        Create time is the only point where video spend is priced, so a regeneration
+        with no declared source length would be free rather than mispriced.
+        """
+        with pytest.raises(litellm.BadRequestError, match="regeneration requires seconds"):
+            self.config.map_openai_params(
+                video_create_optional_params={
+                    "base_video_url": "https://video.example.com/source-768p.mp4",
+                },
+                model=V2_MODEL,
+                drop_params=False,
+            )
+
+    @pytest.mark.parametrize("seconds", [0, "0", -6, 0.4])
+    def test_map_v2_base_video_requires_a_positive_source_length(self, seconds):
+        """
+        A non-positive length passes an int conversion and is then reported as
+        usage.duration_seconds, which prices the 2K regeneration at nothing or less.
+        """
+        with pytest.raises(litellm.BadRequestError, match="regeneration requires seconds"):
+            self.config.map_openai_params(
+                video_create_optional_params={
+                    "seconds": seconds,
+                    "base_video_url": "https://video.example.com/source-768p.mp4",
+                },
+                model=V2_MODEL,
+                drop_params=False,
+            )
+
+    def test_map_v2_native_base_video_is_held_to_the_regeneration_rules(self):
+        """
+        extra_body's provider-native base_video is merged over the mapped params, so the
+        request transform treats it as a regeneration; skipping these checks for it would
+        bill the default six seconds, or a ratio that is then stripped from the body.
+        """
+        with pytest.raises(litellm.BadRequestError, match="regeneration requires seconds"):
+            self.config.map_openai_params(
+                video_create_optional_params={
+                    "extra_body": {"base_video": ["https://video.example.com/source-768p.mp4"]},
+                },
+                model=V2_MODEL,
+                drop_params=False,
+            )
+        with pytest.raises(litellm.BadRequestError, match="keeps the source's aspect ratio"):
+            self.config.map_openai_params(
+                video_create_optional_params={
+                    "seconds": 6,
+                    "extra_body": {"base_video": ["https://video.example.com/source-768p.mp4"], "ratio": "9:16"},
+                },
+                model=V2_MODEL,
+                drop_params=False,
+            )
+
+    def test_map_v2_native_base_video_maps_like_base_video_url(self):
         mapped = self.config.map_openai_params(
             video_create_optional_params={
                 "seconds": 6,
-                "base_video_url": "https://video.example.com/source-768p.mp4",
-                "aspect_ratio": "9:16",
+                "extra_body": {"base_video": ["https://video.example.com/source-768p.mp4"]},
             },
             model=V2_MODEL,
             drop_params=False,
         )
-        assert mapped["ratio"] == "9:16"
+        assert mapped["base_video"] == ("https://video.example.com/source-768p.mp4",)
+        assert mapped["duration"] == 6
+        assert "ratio" not in mapped
+
+    @pytest.mark.parametrize("bad", ["", ["", "  "], ["https://a.mp4", "https://b.mp4"], 42])
+    def test_map_v2_native_base_video_must_resolve_to_one_url(self, bad):
+        with pytest.raises(litellm.BadRequestError, match="requires base_video to be a single"):
+            self.config.map_openai_params(
+                video_create_optional_params={"seconds": 6, "extra_body": {"base_video": bad}},
+                model=V2_MODEL,
+                drop_params=False,
+            )
+
+    def test_map_legacy_rejects_native_base_video(self):
+        with pytest.raises(litellm.BadRequestError, match="legacy Hailuo models do not"):
+            self.config.map_openai_params(
+                video_create_optional_params={
+                    "seconds": 6,
+                    "extra_body": {"base_video": ["https://video.example.com/source-768p.mp4"]},
+                },
+                model=V1_MODEL,
+                drop_params=False,
+            )
 
     def test_map_v2_base_video_allows_original_reference_media(self):
         mapped = self.config.map_openai_params(
@@ -567,31 +663,67 @@ class TestMinimaxVideoTransformation:
         assert decoded.get("custom_llm_provider") == "minimax"
         assert decoded.get("model_id") == "MiniMax-H3"
 
-    def test_create_response_v2_regeneration_reports_no_billed_seconds(self):
+    def test_create_response_v2_regeneration_bills_the_declared_source_length(self):
         """
-        A regeneration request carries no duration, so there is nothing in it to bill
-        from. Reporting a number anyway would mean inventing one; the authoritative
-        figure is usage on the status response.
+        The regeneration body carries no duration, but create time is the only point
+        where video spend is priced: polling is logged as CallTypes.video_retrieve and
+        the cost calculator prices create/edit/remix alone. So the declared source
+        length has to survive the strip and be reported here, or the video is free.
         """
+        request_data, _files, _url = self.config.transform_video_create_request(
+            model=V2_MODEL,
+            prompt="a rocket launch",
+            api_base=API_BASE,
+            video_create_optional_request_params={
+                "duration": 6,
+                "resolution": "2K",
+                "base_video": ("https://video.example.com/source-768p.mp4",),
+                "base_video_url": "https://video.example.com/source-768p.mp4",
+            },
+            litellm_params=GenericLiteLLMParams(),
+            headers={},
+        )
+        assert "duration" not in request_data
         video = self.config.transform_video_create_response(
             model=V2_MODEL,
             raw_response=_response({"task_id": "424010985738629"}, url=f"{API_BASE}/v2/video_regeneration"),
             logging_obj=self.logging_obj,
             custom_llm_provider="minimax",
-            request_data={
-                "resolution": "2K",
-                "content": [
-                    {"type": "text", "text": "a rocket launch"},
-                    {
-                        "type": "video_url",
-                        "video_url": {"url": "https://video.example.com/source-768p.mp4"},
-                        "role": "base_video",
-                    },
-                ],
-            },
+            request_data=request_data,
         )
-        assert video.seconds is None
-        assert "duration_seconds" not in video.usage
+        assert video.seconds == "6"
+        assert video.usage["duration_seconds"] == 6.0
+
+    def test_create_request_v2_generation_after_regeneration_does_not_inherit_its_seconds(self):
+        """A carried regeneration length must not leak into the next create on the config."""
+        self.config.transform_video_create_request(
+            model=V2_MODEL,
+            prompt="a rocket launch",
+            api_base=API_BASE,
+            video_create_optional_request_params={
+                "duration": 6,
+                "base_video": ("https://video.example.com/source-768p.mp4",),
+                "base_video_url": "https://video.example.com/source-768p.mp4",
+            },
+            litellm_params=GenericLiteLLMParams(),
+            headers={},
+        )
+        request_data, _files, _url = self.config.transform_video_create_request(
+            model=V2_MODEL,
+            prompt="a rocket launch",
+            api_base=API_BASE,
+            video_create_optional_request_params={"duration": 4, "resolution": "2K"},
+            litellm_params=GenericLiteLLMParams(),
+            headers={},
+        )
+        video = self.config.transform_video_create_response(
+            model=V2_MODEL,
+            raw_response=_response({"task_id": "424010985738629"}, url=f"{API_BASE}/v2/video_generation"),
+            logging_obj=self.logging_obj,
+            custom_llm_provider="minimax",
+            request_data=request_data,
+        )
+        assert video.usage["duration_seconds"] == 4.0
 
     def test_create_response_v1_encodes_hailuo_model(self):
         video = self.config.transform_video_create_response(
