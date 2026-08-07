@@ -519,3 +519,122 @@ def test_get_llm_provider_routes_kling():
     model, provider, _, _ = get_llm_provider("kling/kling-v3")
     assert model == "kling-v3"
     assert provider == "kling"
+
+
+class TestKlingErrorMapping:
+    """
+    NOL-530. Kling's concurrency wall used to surface as a 500 APIConnectionError.
+
+    Three defects made that happen: get_error_class had no status discrimination
+    and raised instead of returning, every body-level code became a hardcoded
+    400, and neither shape is in LITELLM_EXCEPTION_TYPES, so exception_type fell
+    through to its terminal generic branch. The consequence was worse than the
+    status: cooldown_handlers skips any exception whose string contains
+    "APIConnectionError", so a saturated deployment could never be cooled down.
+    """
+
+    def setup_method(self):
+        self.config = KlingVideoConfig()
+
+    def test_get_error_class_returns_rather_than_raises(self):
+        """Call sites do `raise self.get_error_class(...)`; raising here made that unreachable."""
+        returned = self.config.get_error_class(error_message="boom", status_code=400, headers={})
+        assert isinstance(returned, Exception)
+
+    def test_http_429_becomes_a_rate_limit_error(self):
+        error = self.config.get_error_class(error_message="slow down", status_code=429, headers={})
+        assert isinstance(error, litellm.RateLimitError)
+        assert error.status_code == 429
+        assert error.category == litellm.RateLimitErrorCategory.VENDOR_RATE_LIMIT.value
+
+    def test_retry_after_survives_onto_the_error(self):
+        """RateLimitError does not copy response headers, so an unpassed Retry-After is lost."""
+        error = self.config.get_error_class(error_message="slow down", status_code=429, headers={"Retry-After": "30"})
+        assert error.headers is not None
+        assert error.headers.get("Retry-After") == "30"
+
+    def test_body_code_1303_maps_to_429_not_400(self):
+        """
+        The concurrency wall arrives as HTTP 200 carrying {"code": 1303}. As a
+        400 it was unretryable (litellm._should_retry(400) is False) and never
+        cooled the deployment down.
+        """
+        with pytest.raises(litellm.RateLimitError) as excinfo:
+            self.config._raise_for_kling_error({"code": 1303, "message": "parallel task over resource pack limit"})
+        assert excinfo.value.status_code == 429
+        assert litellm._should_retry(429) is True
+
+    def test_other_body_codes_stay_client_errors(self):
+        """A refused request is not a saturation signal; only known codes are remapped."""
+        with pytest.raises(Exception) as excinfo:
+            self.config._raise_for_kling_error({"code": 1201, "message": "invalid parameter"})
+        assert not isinstance(excinfo.value, litellm.RateLimitError)
+        assert excinfo.value.status_code == 400
+
+    def test_success_code_does_not_raise(self):
+        assert self.config._raise_for_kling_error({"code": 0, "data": {"task_id": "t-1"}}) is None
+        assert self.config._raise_for_kling_error({"data": {"task_id": "t-1"}}) is None
+
+    @pytest.mark.parametrize("raised_by", ("status", "body"))
+    def test_rate_limit_survives_exception_type_untouched(self, raised_by, monkeypatch):
+        """
+        The regression that mattered: exception_type() returns members of
+        LITELLM_EXCEPTION_TYPES unchanged and converts everything else to
+        APIConnectionError(500). A bare BaseLLMException took the second path.
+        """
+        from litellm.litellm_core_utils.exception_mapping_utils import exception_type
+
+        monkeypatch.setattr(litellm, "suppress_debug_info", True)
+        if raised_by == "status":
+            original = self.config.get_error_class(error_message="429 slow down", status_code=429, headers={})
+        else:
+            with pytest.raises(litellm.RateLimitError) as excinfo:
+                self.config._raise_for_kling_error({"code": 1303, "message": "parallel task over limit"})
+            original = excinfo.value
+
+        mapped = exception_type(model=MODEL, original_exception=original, custom_llm_provider="kling")
+
+        assert isinstance(mapped, litellm.RateLimitError)
+        assert mapped.status_code == 429
+        assert "APIConnectionError" not in str(mapped)
+
+    def test_rate_limit_is_eligible_for_router_cooldown(self):
+        """
+        cooldown_handlers._is_cooldown_required drops anything whose string
+        contains "APIConnectionError", and APIConnectionError.message is
+        literally prefixed with it. That is why a Kling rate limit could never
+        cool a deployment down.
+        """
+        from litellm.router_utils.cooldown_handlers import _is_cooldown_required
+
+        error = self.config.get_error_class(error_message="slow down", status_code=429, headers={})
+
+        assert _is_cooldown_required(
+            litellm_router_instance=None,
+            model_id="kling-deployment-1",
+            exception_status=error.status_code,
+            exception_str=str(error),
+        )
+
+    def test_a_bare_base_llm_exception_would_still_regress(self):
+        """
+        Pins WHY the fix has to change the exception type rather than just the
+        status. This is exactly what the old code produced for code 1303, and it
+        still becomes an APIConnectionError that cooldown ignores.
+        """
+        from litellm.litellm_core_utils.exception_mapping_utils import exception_type
+        from litellm.llms.base_llm.chat.transformation import BaseLLMException
+        from litellm.router_utils.cooldown_handlers import _is_cooldown_required
+
+        litellm.suppress_debug_info = True
+        old_shape = BaseLLMException(status_code=400, message="parallel task over limit", headers={})
+
+        with pytest.raises(litellm.APIConnectionError) as excinfo:
+            exception_type(model=MODEL, original_exception=old_shape, custom_llm_provider="kling")
+
+        assert not _is_cooldown_required(
+            litellm_router_instance=None,
+            model_id="kling-deployment-1",
+            exception_status=500,
+            exception_str=str(excinfo.value),
+        )

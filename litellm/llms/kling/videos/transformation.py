@@ -1,6 +1,8 @@
 import base64
 import re
+from collections.abc import Mapping
 from json import JSONDecodeError
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
 import httpx
@@ -64,6 +66,45 @@ _CAPABILITY_PARAMS = frozenset(
         "generate_audio",
     )
 )
+
+_KLING_RATE_LIMIT_STATUS = 429
+
+# NOL-530. Kling's body-level error codes, mapped to the HTTP status that
+# describes them. 1303 ("parallel task over resource pack limit") is the
+# concurrency wall: the account is saturated and the request should be retried
+# later, which is a 429 and not the 400 every body code used to become.
+_KLING_BODY_CODE_STATUS: Mapping[int, int] = MappingProxyType(
+    {  # mutable-ok: frozen constant lookup table
+        1303: _KLING_RATE_LIMIT_STATUS,
+    }
+)
+
+# Anything Kling reports that is not a known saturation code stays a client
+# error: the request was understood and refused on its merits.
+_KLING_DEFAULT_BODY_ERROR_STATUS = 400
+
+
+def kling_rate_limit_error(
+    error_message: str,
+    headers: Mapping[str, object] | httpx.Headers | None,
+    model: str = "",
+) -> litellm.RateLimitError:
+    """
+    Build the rate-limit error a saturated Kling deployment should raise.
+
+    `Retry-After` rides through on `headers` when Kling sends it, which is the
+    only way it reaches the client: RateLimitError deliberately does not copy
+    response headers onto itself, so a header that is not passed explicitly is
+    dropped.
+    """
+    resolved = dict(headers) if headers else {}  # mutable-ok: RateLimitError contract takes a dict of headers
+    return litellm.RateLimitError(
+        message=error_message,
+        llm_provider=litellm.LlmProviders.KLING.value,
+        model=model,
+        category=litellm.RateLimitErrorCategory.VENDOR_RATE_LIMIT,
+        headers={str(key): str(value) for key, value in resolved.items()},
+    )
 
 
 class KlingVideoConfig(BaseVideoConfig):
@@ -500,17 +541,65 @@ class KlingVideoConfig(BaseVideoConfig):
         raise NotImplementedError("Video delete/cancel is not supported by the Kling API")
 
     def get_error_class(self, error_message: str, status_code: int, headers: dict | httpx.Headers) -> BaseLLMException:
-        raise BaseLLMException(
+        """
+        NOL-530. RETURNS the exception rather than raising it, matching every
+        other provider's contract: the call sites, including the shared
+        `_handle_error` path in llm_http_handler, already do
+        `raise provider_config.get_error_class(...)`, so raising here made that
+        `raise` unreachable and skipped the caller's own handling.
+
+        A 429 becomes a real `litellm.RateLimitError`. Nothing else in the
+        provider chain does this for Kling: `kling` is absent from
+        `openai_compatible_providers` and `_openai_like_providers` and has no
+        branch in `exception_type`, and a plain `BaseLLMException` is not in
+        `LITELLM_EXCEPTION_TYPES`, so it used to fall all the way through to the
+        terminal generic branch and surface as a 500 `APIConnectionError`. That
+        is what made the 2026-08-05 concurrency incident answer 500.
+
+        The consequence was worse than the wrong status. `APIConnectionError` is
+        excluded from router cooldown by name -
+        `cooldown_handlers._is_cooldown_required` skips any exception whose
+        string contains it, and the message is literally prefixed with it - so a
+        Kling rate limit could never cool the deployment down, and the router
+        could not tell a saturated provider from a transport blip. Returning a
+        RateLimitError takes the error OFF the APIConnectionError path
+        entirely: it is in `LITELLM_EXCEPTION_TYPES`, so `exception_type`
+        short-circuits and returns it untouched, and 429 is explicitly a
+        cooldown status.
+        """
+        if status_code == _KLING_RATE_LIMIT_STATUS:
+            # Deliberately NOT a BaseLLMException: only members of
+            # LITELLM_EXCEPTION_TYPES survive exception_type() untouched, and
+            # that passthrough is the entire point of this branch.
+            rate_limited = kling_rate_limit_error(error_message, headers)
+            return rate_limited  # pyright: ignore[reportReturnType]  # deliberate; see the comment above
+        return BaseLLMException(
             status_code=status_code,
             message=error_message,
             headers=headers,
         )
 
     def _raise_for_kling_error(self, response_data: dict[str, Any]) -> None:
+        """
+        Kling reports application-level failures in the response BODY, commonly
+        under HTTP 200, so the body code is the only signal of what happened.
+
+        NOL-530. Every such code used to become a hardcoded 400, which
+        `litellm._should_retry(400)` refuses, so the concurrency wall
+        (`{"code": 1303, "message": "parallel task over resource pack limit"}`)
+        produced neither a retry nor a cooldown. It is a saturation signal, so
+        it maps to 429 like any other.
+        """
         code = response_data.get("code")
-        if code is not None and code != 0:
-            message = response_data.get("message") or "Kling API returned an error"
-            raise self.get_error_class(error_message=str(message), status_code=400, headers={})
+        if code is None or code == 0:
+            return
+        message = response_data.get("message")
+        status_code = _KLING_BODY_CODE_STATUS.get(code, _KLING_DEFAULT_BODY_ERROR_STATUS)
+        raise self.get_error_class(
+            error_message=str(message) if message else "Kling API returned an error",
+            status_code=status_code,
+            headers={},  # mutable-ok: BaseLLMException contract takes a dict of headers
+        )
 
     def _raise_for_status(self, raw_response: httpx.Response) -> None:
         if raw_response.is_success:
