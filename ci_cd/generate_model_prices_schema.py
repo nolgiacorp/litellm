@@ -149,6 +149,11 @@ COST_DESCRIPTIONS: dict[str, str] = {
     "cache_read_input_token_cost": "USD per prompt token served from the provider's prompt cache.",
     "input_cost_per_token_batches": "USD per prompt token via the provider's batch API.",
     "output_cost_per_token_batches": "USD per generated token via the provider's batch API.",
+    "output_cost_per_credit": (
+        "USD per provider credit, for providers that bill an opaque credit unit rather than a "
+        "rate the caller can derive (e.g. Topaz, which bills credits for frames processed). "
+        "The credit count comes from the provider's own quote on the job, carried on usage."
+    ),
 }
 
 

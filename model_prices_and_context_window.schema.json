@@ -398,6 +398,11 @@
           "minimum": 0,
           "description": "Rate applied once the prompt exceeds the token threshold in the field name."
         },
+        "output_cost_per_credit": {
+          "type": "number",
+          "minimum": 0,
+          "description": "USD per provider credit, for providers that bill an opaque credit unit rather than a rate the caller can derive (e.g. Topaz, which bills credits for frames processed). The credit count comes from the provider's own quote on the job, carried on usage."
+        },
         "output_cost_per_image": {
           "type": "number",
           "minimum": 0
