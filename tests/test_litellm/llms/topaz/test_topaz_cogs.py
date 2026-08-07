@@ -21,6 +21,10 @@ returned `{"estimates": {"cost": [2, 3], "time": [299, 316]}}` for a 5s
 is polled after upload rather than read off the create response.
 """
 
+import asyncio
+import threading
+import time
+
 import httpx
 import pytest
 
@@ -30,6 +34,7 @@ from litellm.llms.topaz.cost_calculator import (
     cost_calculator,
     cost_per_credit,
 )
+from litellm.llms.topaz.video_geometry import SourceGeometry
 from litellm.llms.topaz.videos import transformation as topaz_transformation
 from litellm.llms.topaz.videos.transformation import TopazVideoConfig
 
@@ -64,8 +69,18 @@ class TestTopazCreditRate:
     def test_every_configured_topaz_engine_is_priced(self):
         """The 12 engines routed in litellm-config.yaml must all resolve a rate."""
         configured = [
-            "prob-4", "rhea-1", "iris-3", "nyx-3", "thd-3", "ahq-12",
-            "ghq-5", "dtd-4", "slf-2", "slp-2.5", "wonder-1", "hyp-2",
+            "prob-4",
+            "rhea-1",
+            "iris-3",
+            "nyx-3",
+            "thd-3",
+            "ahq-12",
+            "ghq-5",
+            "dtd-4",
+            "slf-2",
+            "slp-2.5",
+            "wonder-1",
+            "hyp-2",
         ]
         for code in configured:
             entry = litellm.model_cost.get(f"topaz/{code}")
@@ -78,10 +93,10 @@ class TestTopazCostCalculator:
         "credits,expected",
         [
             (1, 0.12),
-            (2, 0.24),   # the live quote for a 5s 720p -> 1080p prob-4 restore
+            (2, 0.24),  # the live quote for a 5s 720p -> 1080p prob-4 restore
             (6, 0.72),
             (10, 1.20),
-            (0.25, 0.03),   # measured: 5s from a 960x720 source, 720p out
+            (0.25, 0.03),  # measured: 5s from a 960x720 source, 720p out
             (9.67, 1.1604),  # measured: the same 720p tier from 7680x4320
         ],
     )
@@ -101,113 +116,364 @@ def _create_response(url: str = "https://api.topazlabs.com/video/express") -> ht
     )
 
 
-class TestTopazCreditProbe:
-    def test_status_url_is_derived_from_the_create_url(self):
-        """Preserves a TOPAZ_API_BASE override instead of assuming the default host."""
-        url = TopazVideoConfig._create_status_url(
-            _create_response("https://topaz.internal.test/video/express"), "req-1"
+def _mp4(width: int = 640, height: int = 360, timescale: int = 24000, duration: int = 312000, samples: int = 312):
+    """A structurally valid ISO-BMFF clip; see test_video_geometry.py for the box layout."""
+    from tests.test_litellm.llms.topaz.test_video_geometry import _mp4 as build
+
+    return build(
+        coded=(width, height), display=(width, height), timescale=timescale, duration=duration, samples=samples
+    )
+
+
+class _FakeClient:
+    """
+    Records every call so the tests can assert HOW MANY were made, not just what
+    came back. The attempt count is the point: the reverted approach polled.
+    """
+
+    def __init__(self, post_result=None):
+        self.post_calls = []
+        self.put_calls = []
+        self._post_result = post_result
+
+    def put(self, url, content=None, headers=None):
+        self.put_calls.append(url)
+        return httpx.Response(200, request=httpx.Request("PUT", url))
+
+    def post(self, url, json=None, headers=None, timeout=None):
+        self.post_calls.append({"url": url, "json": json, "headers": headers, "timeout": timeout})
+        if isinstance(self._post_result, Exception):
+            raise self._post_result
+        if self._post_result is not None:
+            return self._post_result
+        return httpx.Response(
+            200,
+            json={"requestId": "est-1", "estimates": {"cost": [1, 2], "time": [323, 336]}},
+            request=httpx.Request("POST", url),
         )
-        assert url == "https://topaz.internal.test/video/req-1/status"
 
-    def test_probe_reuses_the_create_request_api_key(self):
-        assert TopazVideoConfig._probe_headers(_create_response()) == {"X-API-Key": "test-key"}
 
-    def test_probe_reads_the_lower_bound_of_the_cost_range(self):
-        """Topaz bills the LOWER bound; the upper is vendor uncertainty."""
+def _pending(config, source, container="mp4", declared=None, output=(1280, 720), frame_rate=None):
+    from litellm.llms.topaz.videos.transformation import _PendingUpload
+
+    return _PendingUpload(
+        source=source,
+        container=container,
+        seconds=13,
+        model_code="prob-4",
+        output_width=output[0],
+        output_height=output[1],
+        output_frame_rate=frame_rate,
+        declared_geometry=declared,
+    )
+
+
+class TestTopazEstimateAcquisition:
+    """
+    NOL-519. The quote comes from Topaz's FREE `POST /video/` endpoint, priced
+    off geometry read from the bytes this leg already downloaded.
+
+    The approach this replaced polled the job's own status object, where
+    `estimates` appears only at the `preprocessing` transition - measured at 2.6s
+    on one live restore and still pending at 68s on the next. It therefore
+    captured the quote only sometimes, and an intermittently populated COGS
+    ledger is worse than an empty one: it looks healthy while understating
+    unpredictably, and it permanently mutes the NOL-535 guard, which fires only
+    for a model that has NEVER recorded a cost.
+    """
+
+    def test_estimate_url_is_derived_from_the_create_url(self):
+        """Preserves a TOPAZ_API_BASE override instead of assuming the default host."""
+        url = TopazVideoConfig._estimate_url(_create_response("https://topaz.internal.test/video/express"))
+        assert url == "https://topaz.internal.test/video/"
+
+    def test_estimate_url_falls_back_when_the_create_url_is_unexpected(self):
+        url = TopazVideoConfig._estimate_url(_create_response("https://elsewhere.test/other"))
+        assert url == "https://api.topazlabs.com/video/"
+
+    def test_estimate_reuses_the_create_request_api_key(self):
+        headers = TopazVideoConfig._estimate_headers(_create_response())
+        assert headers["X-API-Key"] == "test-key"
+        assert headers["Content-Type"] == "application/json"
+
+    def test_body_matches_topaz_schema_for_parsed_geometry(self):
+        """
+        The vendor contract, pinned field by field. Verified live against
+        api.topazlabs.com: this exact body for a 640x360 24fps 13s source at a
+        1280x720 output returned {"estimates": {"cost": [1, 2], ...}} on five
+        consecutive calls, in about 0.15s each.
+        """
+        client = _FakeClient()
+        config = TopazVideoConfig(sync_client=client)
+        data = _mp4()
+
+        credits = config._estimate_billed_credits(_create_response(), _pending(config, source=None), data)
+
+        assert credits == pytest.approx(1.0)
+        body = client.post_calls[0]["json"]
+        assert body["source"] == {
+            "container": "mp4",
+            "size": len(data),
+            "duration": pytest.approx(13.0),
+            "frameCount": 312,
+            "frameRate": pytest.approx(24.0),
+            "resolution": {"width": 640, "height": 360},
+        }
+        assert body["filters"] == [{"model": "prob-4"}]
+        assert body["output"]["resolution"] == {"width": 1280, "height": 720}
+        assert body["output"]["frameRate"] == pytest.approx(24.0)
+
+    def test_exactly_one_request_is_made(self):
+        """
+        The regression guard against the reverted design. A quote that has to be
+        polled is a quote whose arrival depends on Topaz's queue depth; this
+        endpoint is deterministic over its inputs, so a second attempt could
+        only ever return the same answer.
+        """
+        client = _FakeClient()
+        config = TopazVideoConfig(sync_client=client)
+
+        config._estimate_billed_credits(_create_response(), _pending(config, source=None), _mp4())
+
+        assert len(client.post_calls) == 1
+
+    def test_no_request_is_made_without_geometry(self):
+        """An unparseable container with nothing declared cannot be quoted, so nothing is sent."""
+        client = _FakeClient()
+        config = TopazVideoConfig(sync_client=client)
+
+        credits = config._estimate_billed_credits(
+            _create_response(), _pending(config, source=None, container="mkv"), b"\x1a\x45\xdf\xa3not-isobmff"
+        )
+
+        assert credits is None
+        assert client.post_calls == []
+
+    def test_output_frame_rate_defaults_to_the_source_rate(self):
+        """An upscale that was not asked to interpolate processes the frames it was given."""
+        client = _FakeClient()
+        config = TopazVideoConfig(sync_client=client)
+
+        config._estimate_billed_credits(_create_response(), _pending(config, source=None, frame_rate=60.0), _mp4())
+        assert client.post_calls[0]["json"]["output"]["frameRate"] == pytest.approx(60.0)
+
+    def test_request_carries_its_own_timeout(self):
+        """This sits inline on a customer's create request and rides a client whose default can be 60s."""
+        client = _FakeClient()
+        config = TopazVideoConfig(sync_client=client)
+
+        config._estimate_billed_credits(_create_response(), _pending(config, source=None), _mp4())
+
+        assert client.post_calls[0]["timeout"] == pytest.approx(6.0)
+
+
+class TestTopazGeometryPrecedence:
+    def test_measured_geometry_beats_declared_geometry(self):
+        """
+        A caller-supplied number that LOWERS the quote would lower our own
+        recorded COGS. The bytes being uploaded are the authority.
+        """
+        client = _FakeClient()
+        config = TopazVideoConfig(sync_client=client)
+        declared = SourceGeometry(width=64, height=36, duration_seconds=1.0, frame_rate=1.0)
+
+        config._estimate_billed_credits(_create_response(), _pending(config, None, declared=declared), _mp4())
+
+        assert client.post_calls[0]["json"]["source"]["resolution"] == {"width": 640, "height": 360}
+
+    def test_declared_geometry_covers_unparseable_containers(self):
+        """mkv is EBML, not ISO-BMFF, so the declaration is the only source of truth for it."""
+        client = _FakeClient()
+        config = TopazVideoConfig(sync_client=client)
+        declared = SourceGeometry(width=1920, height=1080, duration_seconds=5.0, frame_rate=30.0)
+
+        credits = config._estimate_billed_credits(
+            _create_response(), _pending(config, None, container="mkv", declared=declared), b"\x1a\x45\xdf\xa3"
+        )
+
+        assert credits == pytest.approx(1.0)
+        assert client.post_calls[0]["json"]["source"]["frameCount"] == 150
+
+    def test_declared_geometry_survives_the_real_param_mapping(self):
+        """
+        map_openai_params forwards only what it recognises, so geometry that is
+        neither a filter nor an output param is dropped before the create leg
+        ever sees it. That left the override inert through the actual proxy
+        flow while every direct-construction test still passed.
+        """
         config = TopazVideoConfig()
-        resp = httpx.Response(200, json={"status": "processing", "estimates": {"cost": [6, 9]}})
-        assert config._credits_from_status(resp) == 6
+        mapped = config.map_openai_params(
+            {
+                "input_reference": "https://example.test/clip.mkv",
+                "resolution": "1920x1080",
+                "container": "mkv",
+                "source_width": 1920,
+                "source_height": 1080,
+                "source_frame_rate": 30,
+                "source_duration_seconds": 5,
+            },
+            MODEL,
+            False,
+        )
+        assert mapped["source_width"] == 1920
+
+        body, _files, _url = config.transform_video_create_request(
+            model=MODEL,
+            prompt="",
+            api_base=None,
+            video_create_optional_request_params=mapped,
+            litellm_params=None,
+            headers={},
+        )
+        assert config._pending_upload.declared_geometry == SourceGeometry(
+            width=1920, height=1080, duration_seconds=5.0, frame_rate=30.0
+        )
+        # It describes the footage, so it must not leak into the job body.
+        assert "source_width" not in body["output"]
+        assert "source_width" not in body["source"]
+        assert not any("source_" in key for key in body["filters"][0])
+
+    def test_partial_declared_geometry_is_refused(self):
+        """Completing a declaration with defaults produces a plausible quote that is quietly wrong."""
+        assert TopazVideoConfig._declared_geometry({"source_width": 1920, "source_height": 1080}) is None
+        assert TopazVideoConfig._declared_geometry({}) is None
+
+    def test_declared_duration_falls_back_to_seconds(self):
+        geometry = TopazVideoConfig._declared_geometry(
+            {"source_width": 1920, "source_height": 1080, "source_frame_rate": 30, "seconds": 5}
+        )
+        assert geometry == SourceGeometry(width=1920, height=1080, duration_seconds=5.0, frame_rate=30.0)
+
+    def test_nonsense_declared_values_are_refused(self):
+        assert (
+            TopazVideoConfig._declared_geometry(
+                {"source_width": 0, "source_height": 1080, "source_frame_rate": 30, "seconds": 5}
+            )
+            is None
+        )
+
+    @pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf"), "nan", "Infinity"])
+    @pytest.mark.parametrize("field", ["source_width", "source_frame_rate", "seconds"])
+    def test_non_finite_declared_values_are_refused(self, bad, field):
+        """
+        NaN survives every ordering guard (`nan <= 0` is False) and only fails
+        later - at int(), or once frame_count is evaluated after the upload,
+        turning a bookkeeping value into a 500 for accepted footage.
+        """
+        declared = {"source_width": 1920, "source_height": 1080, "source_frame_rate": 30, "seconds": 5}
+        declared[field] = bad
+
+        assert TopazVideoConfig._declared_geometry(declared) is None
+
+
+class TestTopazEstimateFailuresAreSilent:
+    """
+    Topaz has already accepted the footage by the time the quote is taken, so no
+    bookkeeping failure may surface as a create error. Missing credits records
+    no cost, which is the pre-existing behaviour and what NOL-535 detects.
+    """
 
     @pytest.mark.parametrize(
-        "payload",
+        "response",
         [
-            {"status": "processing"},                      # estimates not ready yet
-            {"status": "processing", "estimates": {}},     # no cost key
-            {"status": "processing", "estimates": {"cost": []}},
+            httpx.Response(503, text="upstream down", request=httpx.Request("POST", "https://t.test/video/")),
+            httpx.Response(200, text="not json", request=httpx.Request("POST", "https://t.test/video/")),
+            httpx.Response(200, json=[1, 2], request=httpx.Request("POST", "https://t.test/video/")),
+            httpx.Response(200, json={"estimates": {}}, request=httpx.Request("POST", "https://t.test/video/")),
+            httpx.Response(
+                200, json={"estimates": {"cost": []}}, request=httpx.Request("POST", "https://t.test/video/")
+            ),
         ],
     )
-    def test_missing_estimate_yields_no_credits(self, payload):
-        config = TopazVideoConfig()
-        assert config._credits_from_status(httpx.Response(200, json=payload)) is None
+    def test_unusable_responses_yield_no_credits(self, response):
+        config = TopazVideoConfig(sync_client=_FakeClient(post_result=response))
+        assert config._estimate_billed_credits(_create_response(), _pending(config, None), _mp4()) is None
 
-    @pytest.mark.parametrize("credits,expected", [(0.25, 0.25), (9.67, 9.67), (2, 2.0)])
-    def test_fractional_quotes_are_read_at_full_precision(self, credits, expected):
+    @pytest.mark.parametrize(
+        "raised",
+        [
+            httpx.ConnectError("no route"),
+            httpx.ReadTimeout("slow"),
+            litellm.Timeout(message="timed out", model="topaz/prob-4", llm_provider="topaz"),
+        ],
+    )
+    def test_transport_and_timeout_failures_do_not_escape(self, raised):
         """
-        Topaz quotes fractions for small jobs: 0.25 truncated to int would record
-        $0 for exactly the cheap end of the range, and 9.67 would bill as 9.
+        The handler converts a read timeout into litellm.Timeout, which is NOT
+        an httpx.HTTPError, so catching only httpx errors would let it through.
         """
-        config = TopazVideoConfig()
-        resp = httpx.Response(200, json={"status": "processing", "estimates": {"cost": [credits, 12]}})
-        assert config._credits_from_status(resp) == pytest.approx(expected)
+        config = TopazVideoConfig(sync_client=_FakeClient(post_result=raised))
+        assert config._estimate_billed_credits(_create_response(), _pending(config, None), _mp4()) is None
 
-    def test_non_200_and_unparseable_status_yield_no_credits(self):
-        config = TopazVideoConfig()
-        assert config._credits_from_status(httpx.Response(503, text="upstream down")) is None
-        assert config._credits_from_status(httpx.Response(200, text="not json")) is None
+    def test_lower_bound_of_the_cost_range_is_what_topaz_bills(self):
+        response = httpx.Response(
+            200,
+            json={"estimates": {"cost": [3, 9]}},
+            request=httpx.Request("POST", "https://t.test/video/"),
+        )
+        config = TopazVideoConfig(sync_client=_FakeClient(post_result=response))
+        assert config._estimate_billed_credits(_create_response(), _pending(config, None), _mp4()) == pytest.approx(3)
 
-    @pytest.mark.parametrize("body", ["null", "[]", '"queued"', "3"])
-    def test_non_object_status_json_reads_as_a_failed_probe(self, body):
-        """
-        A 200 carrying valid non-object JSON must not raise: this runs after the
-        upload succeeded, so it would turn accepted footage into a create error.
-        """
-        config = TopazVideoConfig()
-        assert config._credits_from_status(httpx.Response(200, text=body)) is None
+    def test_fractional_quotes_keep_full_precision(self):
+        """Topaz quotes 0.25 credits for small jobs; truncating would record $0 for the cheap end."""
+        response = httpx.Response(
+            200,
+            json={"estimates": {"cost": [0.25, 1]}},
+            request=httpx.Request("POST", "https://t.test/video/"),
+        )
+        config = TopazVideoConfig(sync_client=_FakeClient(post_result=response))
+        credits = config._estimate_billed_credits(_create_response(), _pending(config, None), _mp4())
+        assert credits == pytest.approx(0.25)
+        assert cost_calculator(model=MODEL, topaz_credits=credits) == pytest.approx(0.03)
 
-    def test_probe_gives_up_quietly_when_the_status_endpoint_is_unreachable(self, monkeypatch):
-        """A bookkeeping probe must never fail a job the customer already paid for."""
-        config = TopazVideoConfig()
-        attempts = []
 
-        class _Boom:
-            def get(self, *a, **k):
-                attempts.append(k.get("timeout"))
-                raise httpx.ConnectError("topaz unreachable")
+class _StalledClient:
+    """A vendor endpoint that does answer, but not inside the deadline."""
 
-        monkeypatch.setattr(topaz_transformation.time, "sleep", lambda _: None)
-        monkeypatch.setattr(config, "_http_client", lambda: _Boom())
-        assert config._probe_billed_credits(_create_response(), "req-1") is None
-        assert len(attempts) == topaz_transformation._CREDIT_PROBE_ATTEMPTS
+    def __init__(self, released):
+        self._released = released
 
-    def test_transport_blip_is_retried_rather_than_ending_the_probe(self, monkeypatch):
-        """
-        The create leg is the only chance to record spend, so a transient
-        ConnectError must spend the remaining attempts instead of returning None.
-        """
-        config = TopazVideoConfig()
-        timeouts = []
+    def post(self, url, json=None, headers=None, timeout=None):
+        self._released.wait(30)
+        return httpx.Response(200, json={"estimates": {"cost": [9, 9]}}, request=httpx.Request("POST", url))
 
-        class _Flaky:
-            def get(self, *a, **k):
-                timeouts.append(k.get("timeout"))
-                if len(timeouts) == 1:
-                    raise httpx.ConnectError("transient blip")
-                return httpx.Response(200, json={"estimates": {"cost": [2, 3]}})
 
-        monkeypatch.setattr(topaz_transformation.time, "sleep", lambda _: None)
-        monkeypatch.setattr(config, "_http_client", lambda: _Flaky())
-        assert config._probe_billed_credits(_create_response(), "req-1") == pytest.approx(2)
-        assert len(timeouts) == 2
+class _StalledAsyncClient:
+    async def post(self, url, json=None, headers=None, timeout=None):
+        await asyncio.sleep(30)
+        return httpx.Response(200, json={"estimates": {"cost": [9, 9]}}, request=httpx.Request("POST", url))
 
-    def test_every_probe_request_carries_its_own_timeout(self, monkeypatch):
-        """
-        The probe rides the caller's client, whose default timeout can be 60s.
-        Without an explicit per-request timeout the attempt count would bound
-        only the sleeps, not the network wait.
-        """
-        config = TopazVideoConfig()
-        timeouts = []
 
-        class _Silent:
-            def get(self, *a, **k):
-                timeouts.append(k.get("timeout"))
-                return httpx.Response(200, json={"status": "processing"})
+class TestTopazEstimateDeadline:
+    """
+    httpx times each socket operation separately - connect, each redirect and
+    each read - so a server delivering one byte inside every read window never
+    trips the scalar timeout. Topaz has already accepted the footage by this
+    point, so a slow quote has to be abandoned rather than held onto.
+    """
 
-        monkeypatch.setattr(topaz_transformation.time, "sleep", lambda _: None)
-        monkeypatch.setattr(config, "_http_client", lambda: _Silent())
-        assert config._probe_billed_credits(_create_response(), "req-1") is None
-        assert timeouts == [topaz_transformation._CREDIT_PROBE_TIMEOUT_SECS] * len(timeouts)
-        assert timeouts and timeouts[0] is not None
+    def test_a_stalled_quote_degrades_to_no_credits(self, monkeypatch):
+        monkeypatch.setattr(topaz_transformation, "_ESTIMATE_DEADLINE_SECS", 0.05)
+        released = threading.Event()
+        config = TopazVideoConfig(sync_client=_StalledClient(released))
+
+        try:
+            started = time.monotonic()
+            credits = config._estimate_billed_credits(_create_response(), _pending(config, None), _mp4())
+            elapsed = time.monotonic() - started
+        finally:
+            released.set()
+
+        assert credits is None
+        assert elapsed < 5.0
+
+    async def test_the_async_twin_is_bounded_too(self, monkeypatch):
+        monkeypatch.setattr(topaz_transformation, "_ESTIMATE_DEADLINE_SECS", 0.05)
+        config = TopazVideoConfig(async_client=_StalledAsyncClient())
+
+        credits = await config._async_estimate_billed_credits(_create_response(), _pending(config, None), _mp4())
+
+        assert credits is None
 
 
 class TestTopazCreatedVideoObject:
@@ -241,110 +507,3 @@ class TestTopazCreatedVideoObject:
         assert cheap.usage["duration_seconds"] == dear.usage["duration_seconds"]
         assert cheap._hidden_params["response_cost"] == pytest.approx(0.12)
         assert dear._hidden_params["response_cost"] == pytest.approx(4.68)
-
-
-class TestTopazCreditProbeWindow:
-    """
-    The probe window is sized from a live measurement, not a guess.
-
-    Against api.topazlabs.com a job walks accepted -> initializing ->
-    preprocessing once the upload lands, and `estimates` first appears at the
-    preprocessing transition, ~2.6s in. A 3-attempt window sat on that boundary
-    and missed it on a real prod restore, recording $0 for a job Topaz quoted at
-    1 credit. These pin the shape of the fix so it cannot silently narrow again.
-    """
-
-    def test_window_outlasts_the_measured_estimate_delay(self):
-        from litellm.llms.topaz.videos.transformation import (
-            _CREDIT_PROBE_ATTEMPTS,
-            _CREDIT_PROBE_DELAY_SECS,
-        )
-
-        measured_delay_secs = 2.6
-        # The request timeout is an upper bound on each GET, not time the probe
-        # is guaranteed to wait: an estimate-less status comes back immediately,
-        # so the sleeps are the whole guaranteed horizon.
-        horizon = (_CREDIT_PROBE_ATTEMPTS - 1) * _CREDIT_PROBE_DELAY_SECS
-        assert horizon > measured_delay_secs * 1.5, (
-            f"probe polls for only {horizon}s of guaranteed wall clock, which leaves no margin "
-            f"over the measured {measured_delay_secs}s delay before Topaz publishes estimates"
-        )
-
-    def test_window_stays_bounded_enough_for_a_create_request(self):
-        """A restore runs for minutes, but this sits on the customer's request."""
-        from litellm.llms.topaz.videos.transformation import (
-            _CREDIT_PROBE_ATTEMPTS,
-            _CREDIT_PROBE_DELAY_SECS,
-            _CREDIT_PROBE_MAX_WALL_SECS,
-            _CREDIT_PROBE_TIMEOUT_SECS,
-        )
-
-        assert _CREDIT_PROBE_MAX_WALL_SECS <= 15.0
-        nominal = _CREDIT_PROBE_ATTEMPTS * _CREDIT_PROBE_TIMEOUT_SECS + (
-            _CREDIT_PROBE_ATTEMPTS - 1
-        ) * _CREDIT_PROBE_DELAY_SECS
-        # The nominal schedule must fit inside the enforced deadline, so healthy
-        # jobs spend every attempt rather than being cut short by the guard.
-        assert nominal <= _CREDIT_PROBE_MAX_WALL_SECS, (
-            f"the {nominal}s polling schedule would be truncated by the "
-            f"{_CREDIT_PROBE_MAX_WALL_SECS}s deadline"
-        )
-
-    def test_a_slow_status_endpoint_cannot_hold_the_create_leg_open(self, monkeypatch):
-        """
-        The scalar httpx timeout caps each socket operation, not the whole GET:
-        redirects or a response that keeps trickling within the read timeout can
-        make one attempt outlast it. So the ceiling is enforced with a monotonic
-        deadline rather than inferred from attempts * timeout.
-        """
-        config = TopazVideoConfig()
-        clock = {"now": 1_000.0}
-        started_at = []
-
-        class _Slow:
-            def get(self, *a, **k):
-                started_at.append(clock["now"])
-                clock["now"] += 9.0  # one GET outlasting its per-request timeout
-                return httpx.Response(200, json={"status": "initializing"})
-
-        monkeypatch.setattr(topaz_transformation.time, "monotonic", lambda: clock["now"])
-        monkeypatch.setattr(
-            topaz_transformation.time, "sleep", lambda secs: clock.update(now=clock["now"] + secs)
-        )
-        monkeypatch.setattr(config, "_http_client", lambda: _Slow())
-
-        start = clock["now"]
-        assert config._probe_billed_credits(_create_response(), "req-1") is None
-        assert len(started_at) < topaz_transformation._CREDIT_PROBE_ATTEMPTS, (
-            "the deadline never fired: the probe spent every attempt on a status endpoint "
-            "that burns 9s per call"
-        )
-        assert all(
-            begun - start < topaz_transformation._CREDIT_PROBE_MAX_WALL_SECS for begun in started_at
-        ), "an attempt started after the wall-clock budget was already spent"
-
-    def test_probe_keeps_polling_through_the_pre_estimate_statuses(self, monkeypatch):
-        """
-        accepted and initializing carry no estimates; the quote lands at
-        preprocessing. The probe must ride through the first two rather than
-        treating an estimate-less 200 as a final answer.
-        """
-        config = TopazVideoConfig()
-        pages = [
-            {"status": "accepted"},
-            {"status": "initializing"},
-            {"status": "preprocessing", "estimates": {"cost": [1, 2]}},
-        ]
-        seen = []
-
-        class _Staged:
-            def get(self, *a, **k):
-                payload = pages[min(len(seen), len(pages) - 1)]
-                seen.append(payload["status"])
-                return httpx.Response(200, json=payload)
-
-        monkeypatch.setattr(topaz_transformation.time, "sleep", lambda _: None)
-        monkeypatch.setattr(config, "_http_client", lambda: _Staged())
-
-        assert config._probe_billed_credits(_create_response(), "req-1") == pytest.approx(1.0)
-        assert seen == ["accepted", "initializing", "preprocessing"]

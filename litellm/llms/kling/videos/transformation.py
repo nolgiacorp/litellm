@@ -1,6 +1,8 @@
 import base64
 import re
+from collections.abc import Mapping
 from json import JSONDecodeError
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
 import httpx
@@ -64,6 +66,96 @@ _CAPABILITY_PARAMS = frozenset(
         "generate_audio",
     )
 )
+
+_KLING_RATE_LIMIT_STATUS = 429
+
+# NOL-530. 1303 ("parallel task over resource pack limit") is Kling's
+# concurrency wall: the account is saturated and the request should be retried
+# later, which is a 429 and not the 400 every body code used to become.
+_KLING_BODY_CODE_STATUS: Mapping[int, int] = MappingProxyType(
+    {  # mutable-ok: frozen constant lookup table
+        1303: _KLING_RATE_LIMIT_STATUS,
+    }
+)
+
+_KLING_DEFAULT_BODY_ERROR_STATUS = 400
+
+# The proxy re-emits `RateLimitError.headers` on its own response, so only the
+# rate-limit fields a client acts on are carried over from the upstream
+# response. Forwarding the rest would put a vendor Content-Length, Set-Cookie or
+# CORS header on our reply, outside the usual get_response_headers() namespacing.
+_RATE_LIMIT_HEADERS = frozenset(
+    (
+        "retry-after",
+        "x-ratelimit-limit",
+        "x-ratelimit-remaining",
+        "x-ratelimit-reset",
+        "x-ratelimit-limit-requests",
+        "x-ratelimit-remaining-requests",
+        "x-ratelimit-reset-requests",
+    )
+)
+
+
+def _rate_limit_headers(
+    headers: Mapping[str, object] | httpx.Headers | None,
+) -> dict[str, str]:  # mutable-ok: RateLimitError contract takes a dict of headers
+    if not headers:
+        return {}  # mutable-ok: RateLimitError contract takes a dict of headers
+    return {  # mutable-ok: RateLimitError contract takes a dict of headers
+        str(key).lower(): str(value) for key, value in dict(headers).items() if str(key).lower() in _RATE_LIMIT_HEADERS
+    }
+
+
+def kling_error_response(status_code: int, error_message: str) -> httpx.Response:
+    """
+    A response whose BODY carries the vendor's message.
+
+    `_handle_error` in the shared HTTP handler re-derives an error's text from
+    `e.response.text` whenever the exception carries a response, and BOTH
+    BaseLLMException and RateLimitError synthesise one with an EMPTY body. So
+    any Kling error re-wrapped on that path - which is every error raised from a
+    response transform - arrived at the caller with a BLANK message.
+
+    That erases the vendor's own words, including the "parallel task over
+    resource pack limit" text nolgia-api matches as its NOL-526 fallback. The
+    429 status is now the primary signal, but a fallback that silently cannot
+    fire is worse than no fallback. Putting the message in the body makes the
+    handler's re-derivation a no-op instead of an erasure.
+
+    Deliberately carries no headers: `_handle_error` prefers the exception's own
+    headers and only falls back to the response's, and a vendor is not allowed
+    to inject headers that a downstream serializer might forward to a client.
+    """
+    return httpx.Response(
+        status_code=status_code,
+        text=error_message,
+        request=httpx.Request(method="POST", url=resolve_kling_api_base(None)),
+    )
+
+
+def kling_rate_limit_error(
+    error_message: str,
+    headers: Mapping[str, object] | httpx.Headers | None,
+    model: str = "",
+) -> litellm.RateLimitError:
+    """
+    Build the rate-limit error a saturated Kling deployment should raise.
+
+    `Retry-After` reaches the client only by being passed here: RateLimitError
+    does not copy response headers onto itself.
+    """
+    error = litellm.RateLimitError(
+        message=error_message,
+        llm_provider=litellm.LlmProviders.KLING.value,
+        model=model,
+        category=litellm.RateLimitErrorCategory.VENDOR_RATE_LIMIT,
+        headers=_rate_limit_headers(headers),
+    )
+    # Assigned after construction because RateLimitError.__init__ overwrites
+    # self.response unconditionally, ignoring any response handed to it.
+    error.response = kling_error_response(_KLING_RATE_LIMIT_STATUS, error_message)
+    return error
 
 
 class KlingVideoConfig(BaseVideoConfig):
@@ -500,17 +592,44 @@ class KlingVideoConfig(BaseVideoConfig):
         raise NotImplementedError("Video delete/cancel is not supported by the Kling API")
 
     def get_error_class(self, error_message: str, status_code: int, headers: dict | httpx.Headers) -> BaseLLMException:
-        raise BaseLLMException(
+        """
+        RETURNS the exception rather than raising it, matching the contract its
+        call sites already assume: they do `raise get_error_class(...)`.
+
+        A 429 must become a `litellm.RateLimitError` and not a
+        `BaseLLMException`: only members of LITELLM_EXCEPTION_TYPES survive
+        `exception_type()` untouched, and everything else becomes a 500
+        APIConnectionError, which router cooldown skips by name - so a saturated
+        deployment could never be backed off.
+        """
+        if status_code == _KLING_RATE_LIMIT_STATUS:
+            return kling_rate_limit_error(error_message, headers)  # pyright: ignore[reportReturnType]  # see docstring
+        return BaseLLMException(
             status_code=status_code,
             message=error_message,
             headers=headers,
+            response=kling_error_response(status_code, error_message),
         )
 
     def _raise_for_kling_error(self, response_data: dict[str, Any]) -> None:
+        """
+        Kling reports application-level failures in the response BODY, commonly
+        under HTTP 200, so the body code is the only signal of what happened.
+
+        Every such code used to become a hardcoded 400, which
+        `litellm._should_retry(400)` refuses, so the concurrency wall got
+        neither a retry nor a cooldown.
+        """
         code = response_data.get("code")
-        if code is not None and code != 0:
-            message = response_data.get("message") or "Kling API returned an error"
-            raise self.get_error_class(error_message=str(message), status_code=400, headers={})
+        if code is None or code == 0:
+            return
+        message = response_data.get("message")
+        status_code = _KLING_BODY_CODE_STATUS.get(code, _KLING_DEFAULT_BODY_ERROR_STATUS)
+        raise self.get_error_class(
+            error_message=str(message) if message else "Kling API returned an error",
+            status_code=status_code,
+            headers={},  # mutable-ok: BaseLLMException contract takes a dict of headers
+        )
 
     def _raise_for_status(self, raw_response: httpx.Response) -> None:
         if raw_response.is_success:

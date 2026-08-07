@@ -1,5 +1,8 @@
+import asyncio
+import math
+import threading
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from json import JSONDecodeError
 from types import MappingProxyType
@@ -26,6 +29,7 @@ from litellm.llms.custom_httpx.http_handler import (
 )
 from litellm.llms.topaz.common_utils import TOPAZ_VIDEO_MODELS, TopazException, TopazModelInfo
 from litellm.llms.topaz.cost_calculator import cost_calculator as topaz_cost_calculator
+from litellm.llms.topaz.video_geometry import SourceGeometry, parse_video_geometry
 from litellm.types.router import GenericLiteLLMParams
 from litellm.types.videos.main import VideoCreateOptionalRequestParams, VideoObject
 from litellm.types.videos.utils import encode_video_id_with_provider, extract_original_video_id
@@ -39,36 +43,66 @@ else:
     LiteLLMLoggingObj = Any
 
 
-# NOL-519. How hard the create leg tries to read Topaz's credit quote before
-# giving up and recording no cost.
+# NOL-519. The create leg prices a restore against Topaz's FREE `POST /video/`
+# estimate endpoint.
 #
-# The attempt count is MEASURED, not guessed. Against the live API, a job walks
-# accepted -> initializing -> preprocessing after the upload lands, and
-# `estimates` first appears at the preprocessing transition - about 2.6s in.
-# An earlier 3-attempt window sat right on that boundary and missed it on a real
-# prod restore, recording $0 for a job Topaz quoted at 1 credit, so the window
-# is now wide enough that the observed timing is caught with margin rather than
-# raced. Typical cost is still one round trip: the loop exits on the first
-# reading, so the ceiling is only paid when a quote never arrives at all.
+# THE PREVIOUS APPROACH IS NOT TUNABLE, AND WAS REVERTED. It read the quote off
+# the job's own status object, where `estimates` appears only once the job
+# reaches `preprocessing`. That transition is QUEUE-DEPENDENT, not a fixed cost:
+# measured on the live API with identical inputs, one restore reached it in 2.6s
+# and the next was still `initializing` at 68s. No window acceptable on a
+# customer's create request covers a 68s tail, so the poll captured the quote
+# only SOMETIMES while adding ~7s to every create.
 #
-# The delay carries the window on its own: an estimate-less status returns
-# immediately, so the sleeps - not the request timeout - are the only wait the
-# probe is GUARANTEED to spend. (attempts - 1) * delay must therefore clear the
-# measured 2.6s with margin.
+# Intermittent capture is worse than recording nothing. A partially populated
+# COGS ledger looks healthy while understating by an unpredictable amount, and
+# it permanently mutes the NOL-535 guard, which fires only when a model has
+# NEVER recorded a cost - one lucky capture silences it forever. A clean zero is
+# detectable; a partial one is not.
 #
-# It stays bounded because this runs on the customer's create request. A restore
-# then runs for MINUTES, so a few seconds here is free in context, but a hung
-# status endpoint must not hold the leg open: hence an explicit per-request
-# timeout as well as the attempt count, since the probe rides the caller's
-# client whose default can be 60s. That timeout is scalar - httpx applies it per
-# socket operation, not to the whole GET - so redirects or a trickling response
-# can outlast it, and attempts * timeout + sleeps is NOT a real wall-clock bound.
-# The bound is enforced instead: a monotonic deadline stops the probe from
-# starting another attempt once the budget is spent.
-_CREDIT_PROBE_ATTEMPTS = 6
-_CREDIT_PROBE_DELAY_SECS = 0.8
-_CREDIT_PROBE_TIMEOUT_SECS = 1.0
-_CREDIT_PROBE_MAX_WALL_SECS = 15.0
+# `POST /video/` has none of that timing risk because it prices SUPPLIED
+# GEOMETRY rather than a queued job: per Topaz's documentation it "does NOT
+# consume credits" and "does NOT start processing", so it is free, synchronous
+# and off the queue, and it answers on the first call or not at all. The
+# geometry it needs is read from the source bytes this leg has already
+# downloaded for the upload PUT, so the quote costs no extra network I/O.
+#
+# The deadline is short and deliberate: this sits inline on the customer's
+# create request, and a slow vendor endpoint must yield "no quote" rather than
+# hold the leg open. It is a WALL-CLOCK bound, not just the httpx timeout, which
+# applies per socket operation - connect, each redirect and each read are timed
+# separately, so a server dribbling one byte inside every read window would keep
+# an already-accepted create open indefinitely. Only one attempt is made: a
+# deterministic endpoint that failed once will fail again for the same input.
+_ESTIMATE_DEADLINE_SECS = 6.0
+
+# Topaz's estimate schema requires a source byte size, but it provably does not
+# affect the quote - verified against the live endpoint, where 1MB, 24MB and
+# 500MB sources returned an identical cost for the same geometry. The real
+# length is sent when known (it always is here, since the bytes are in hand),
+# and this is the declared fallback.
+_NOMINAL_SOURCE_BYTES = 32 << 20
+
+# Topaz requires an audio codec and transfer mode on `output`. The upscale lane
+# does not re-encode audio, so the transfer is None; neither field moves the
+# per-frame cost.
+_ESTIMATE_AUDIO_CODEC = "AAC"
+_ESTIMATE_AUDIO_TRANSFER = "None"
+
+# Source geometry a caller may state explicitly, overriding what this proxy
+# reads from the footage. Present for the containers the ISO-BMFF reader does
+# not parse (mkv) and for callers that already measured their own source, e.g.
+# nolgia-api, which computes exactly these to resolve a restore tier against the
+# source aspect ratio. Consumed for the quote only: none of it reaches Topaz's
+# create body, which describes the job rather than the footage.
+_SOURCE_GEOMETRY_PARAMS = frozenset(
+    (
+        "source_width",
+        "source_height",
+        "source_frame_rate",
+        "source_duration_seconds",
+    )
+)
 
 _SUPPORTED_OPENAI_PARAMS = (
     "model",
@@ -127,6 +161,10 @@ _CONSUMED_PARAMS = frozenset(
         "size",
         "resolution",
         "container",
+        "source_width",
+        "source_height",
+        "source_frame_rate",
+        "source_duration_seconds",
     )
 )
 
@@ -192,16 +230,38 @@ def strip_topaz_prefix(model: str) -> str:
 
 @dataclass(frozen=True, slots=True)
 class _PendingUpload:
+    """
+    What the create RESPONSE leg needs but only the REQUEST leg knows.
+
+    The upload target is the source and container; the rest is the job
+    description Topaz's estimate endpoint prices, carried across so the quote
+    can be built without re-deriving it from the request body.
+    """
+
     source: object
     container: str
     seconds: object
+    model_code: str
+    output_width: int
+    output_height: int
+    output_frame_rate: float | None
+    declared_geometry: SourceGeometry | None
 
 
 def _safe_float(value: object) -> float | None:
+    """
+    Non-finite values are refused alongside unparseable ones. NaN passes every
+    ordering comparison a caller might guard with (`nan <= 0` is False) and only
+    fails later, at `int()` or on the way into a request body - which would turn
+    a bookkeeping value into a 500 for a job Topaz has already accepted.
+    """
     try:
-        return float(value) if value is not None else None  # pyright: ignore[reportArgumentType]  # guarded by except
+        number = float(value) if value is not None else None  # pyright: ignore[reportArgumentType]  # guarded by except
     except (TypeError, ValueError):
         return None
+    if number is None or not math.isfinite(number):
+        return None
+    return number
 
 
 def _progress_percent(value: object) -> int | None:
@@ -253,6 +313,31 @@ def _billed_credits(estimates: object) -> float | None:
     if not isinstance(cost, (list, tuple)) or not cost:
         return None
     return _safe_float(cost[0])
+
+
+def _quote_within_deadline(quote: Callable[[], httpx.Response]) -> httpx.Response | None:
+    """
+    Run the blocking quote under `_ESTIMATE_DEADLINE_SECS` of wall clock.
+
+    httpx has no whole-request timeout, so the deadline is imposed from outside
+    the call. The worker is a daemon and is abandoned rather than joined when it
+    overruns: an unresponsive vendor endpoint may cost a stranded socket, but it
+    may not hold up a create request Topaz has already accepted, nor block
+    interpreter shutdown. A missed deadline reads as "no quote", like every
+    other estimate failure.
+    """
+    completed: list[httpx.Response] = []  # mutable-ok: the worker's only way to hand the response back
+
+    def run() -> None:
+        try:
+            completed.append(quote())
+        except Exception:  # noqa: BLE001  # a bookkeeping failure must never escape onto the create leg
+            return
+
+    worker = threading.Thread(target=run, name="topaz-estimate", daemon=True)
+    worker.start()
+    worker.join(_ESTIMATE_DEADLINE_SECS)
+    return completed[0] if completed else None
 
 
 class TopazVideoConfig(BaseVideoConfig):
@@ -329,7 +414,15 @@ class TopazVideoConfig(BaseVideoConfig):
         self._reject_unsupported(params, model)
         seconds = params.get("seconds") if params.get("seconds") is not None else params.get("duration_seconds")
         width, height = self._resolution(params, model)
-        carried = tuple((key, value) for key, value in params.items() if key in _FILTER_PARAMS or key in _OUTPUT_PARAMS)
+        # Source geometry is carried, not consumed here: it never reaches Topaz's
+        # create body, which describes the job rather than the footage, but the
+        # create leg needs it to quote a container this proxy cannot parse.
+        # Dropping it here would leave the override silently inert.
+        carried = tuple(
+            (key, value)
+            for key, value in params.items()
+            if key in _FILTER_PARAMS or key in _OUTPUT_PARAMS or key in _SOURCE_GEOMETRY_PARAMS
+        )
         mapped = (
             ("input_reference", params.get("input_reference")),
             ("container", self._container(params, model)),
@@ -507,8 +600,45 @@ class TopazVideoConfig(BaseVideoConfig):
             "filters": [upscale_filter],  # mutable-ok: request body fragment
             "output": output,
         }
-        self._pending_upload = _PendingUpload(source=source, container=container, seconds=params.get("seconds"))
+        self._pending_upload = _PendingUpload(
+            source=source,
+            container=container,
+            seconds=params.get("seconds"),
+            model_code=self._model_code(model),
+            output_width=width,
+            output_height=height,
+            output_frame_rate=_safe_float(params.get("frameRate")),
+            declared_geometry=self._declared_geometry(params),
+        )
         return body, (), f"{resolve_topaz_api_base(api_base)}/video/express"
+
+    @staticmethod
+    def _declared_geometry(params: Mapping[str, Any]) -> SourceGeometry | None:
+        """
+        Source geometry the caller stated explicitly, if it stated all of it.
+
+        Partial geometry is refused rather than completed with defaults: a
+        guessed frame rate or duration produces a plausible-looking quote that
+        is quietly wrong, which is the failure mode this whole change exists to
+        avoid. Duration falls back to `seconds` because that is the same
+        quantity under the name the OpenAI video surface already uses.
+        """
+        width = _safe_float(params.get("source_width"))
+        height = _safe_float(params.get("source_height"))
+        frame_rate = _safe_float(params.get("source_frame_rate"))
+        duration = _safe_float(params.get("source_duration_seconds"))
+        if duration is None:
+            duration = _safe_float(params.get("seconds"))
+        if width is None or height is None or frame_rate is None or duration is None:
+            return None
+        if width <= 0 or height <= 0 or frame_rate <= 0 or duration <= 0:
+            return None
+        return SourceGeometry(
+            width=int(width),
+            height=int(height),
+            duration_seconds=duration,
+            frame_rate=frame_rate,
+        )
 
     def transform_video_create_response(
         self,
@@ -529,7 +659,9 @@ class TopazVideoConfig(BaseVideoConfig):
             },
         )
         self._raise_for_status(response)
-        credits = self._probe_billed_credits(raw_response, request_id)
+        # Quoted AFTER the upload so the customer's job starts first: the
+        # estimate is bookkeeping and must never delay the work being paid for.
+        credits = self._estimate_billed_credits(raw_response, pending, content)
         return self._created_video_object(model, request_id, custom_llm_provider, pending.seconds, credits)
 
     async def async_transform_video_create_response(
@@ -551,7 +683,7 @@ class TopazVideoConfig(BaseVideoConfig):
             },
         )
         self._raise_for_status(response)
-        credits = await self._async_probe_billed_credits(raw_response, request_id)
+        credits = await self._async_estimate_billed_credits(raw_response, pending, content)
         return self._created_video_object(model, request_id, custom_llm_provider, pending.seconds, credits)
 
     def _take_pending_upload(self) -> _PendingUpload:
@@ -623,27 +755,81 @@ class TopazVideoConfig(BaseVideoConfig):
         return video_obj
 
     @staticmethod
-    def _create_status_url(raw_response: httpx.Response, request_id: str) -> str:
+    def _estimate_url(raw_response: httpx.Response) -> str:
         """
-        Status URL for a request we just created, derived from the create URL so
-        any TOPAZ_API_BASE override is preserved. The request id came from
-        Topaz's own response here (not from a caller), but it is still
-        percent-encoded before it reaches this credential-bearing URL.
+        The estimate endpoint, derived from the create URL so any
+        TOPAZ_API_BASE override is preserved.
         """
         create_url = str(raw_response.request.url)
         marker = "/video/express"
         # rsplit returns the input unchanged when the marker is absent, which
-        # would silently build a status URL under the wrong path. Fall back to
-        # the resolved base instead of guessing from an unexpected create URL.
+        # would post the quote to the wrong path. Fall back to the resolved
+        # base rather than guessing from an unexpected create URL.
         base = create_url.rsplit(marker, 1)[0] if marker in create_url else resolve_topaz_api_base(None)
-        return f"{base}/video/{encode_url_path_segment(request_id, field_name='video_id')}/status"
+        return f"{base}/video/"
 
     @staticmethod
-    def _probe_headers(raw_response: httpx.Response) -> dict:  # mutable-ok: httpx expects a dict of headers
+    def _estimate_headers(raw_response: httpx.Response) -> dict:  # mutable-ok: httpx expects a dict of headers
         api_key = raw_response.request.headers.get("X-API-Key", "")
-        return {"X-API-Key": api_key} if api_key else {}  # mutable-ok: httpx expects a dict of headers
+        if not api_key:
+            return {}  # mutable-ok: httpx expects a dict of headers
+        return {  # mutable-ok: httpx expects a dict of headers
+            "X-API-Key": api_key,
+            "Content-Type": "application/json",
+        }
 
-    def _credits_from_status(self, response: httpx.Response) -> float | None:
+    @staticmethod
+    def _estimate_body(
+        pending: _PendingUpload,
+        geometry: SourceGeometry,
+        source_bytes: int,
+    ) -> dict:  # mutable-ok: httpx expects a dict body
+        """
+        Topaz's `POST /video/` request shape.
+
+        The output frame rate defaults to the source's: an upscale that does not
+        ask for interpolation processes exactly the frames it was given, and
+        quoting a different rate would price a job we are not running.
+        """
+        output_frame_rate = pending.output_frame_rate if pending.output_frame_rate else geometry.frame_rate
+        return {  # mutable-ok: httpx expects a dict body
+            "source": {  # mutable-ok: request body fragment
+                "container": pending.container,
+                "size": source_bytes if source_bytes > 0 else _NOMINAL_SOURCE_BYTES,
+                "duration": geometry.duration_seconds,
+                "frameCount": geometry.frame_count,
+                "frameRate": geometry.frame_rate,
+                "resolution": {"width": geometry.width, "height": geometry.height},  # mutable-ok: request body fragment
+            },
+            "filters": [{"model": pending.model_code}],  # mutable-ok: request body fragment
+            "output": {  # mutable-ok: request body fragment
+                "resolution": {  # mutable-ok: request body fragment
+                    "width": pending.output_width,
+                    "height": pending.output_height,
+                },
+                "frameRate": output_frame_rate,
+                "audioCodec": _ESTIMATE_AUDIO_CODEC,
+                "audioTransfer": _ESTIMATE_AUDIO_TRANSFER,
+            },
+        }
+
+    @staticmethod
+    def _resolve_geometry(pending: _PendingUpload, content: bytes) -> SourceGeometry | None:
+        """
+        The footage description to quote against.
+
+        What was MEASURED from the bytes being uploaded wins over what the
+        caller declared. The declaration is a convenience for containers this
+        proxy cannot parse, not a pricing input to be trusted: a caller that
+        understated its geometry would understate our own recorded COGS, and a
+        ledger that errs low is the failure this ticket exists to fix.
+        """
+        parsed = parse_video_geometry(content)
+        if parsed is not None:
+            return parsed
+        return pending.declared_geometry
+
+    def _credits_from_estimate(self, response: httpx.Response) -> float | None:
         if response.status_code != 200:
             return None
         try:
@@ -651,75 +837,74 @@ class TopazVideoConfig(BaseVideoConfig):
         except (ValueError, JSONDecodeError):
             return None
         # A 200 carrying valid JSON that is not an object (null, a list, a
-        # string from an intermediary) must read as a failed probe: .get() on it
+        # string from an intermediary) must read as a failed quote: .get() on it
         # would raise past the fail-silent handling and turn a bookkeeping
         # hiccup into a create error for footage Topaz has already accepted.
         if not isinstance(payload, Mapping):
             return None
         return _billed_credits(payload.get("estimates"))
 
-    def _probe_billed_credits(self, raw_response: httpx.Response, request_id: str) -> float | None:
+    def _estimate_billed_credits(
+        self,
+        raw_response: httpx.Response,
+        pending: _PendingUpload,
+        content: bytes,
+    ) -> float | None:
         """
-        Read the credit quote Topaz attaches to the job, right after the source
-        upload completes.
+        Quote this restore against Topaz's free estimate endpoint.
 
-        Topaz cannot quote at create time - the express create body carries no
-        source geometry, so `estimates` is absent from that response and only
-        appears once Topaz has inspected the uploaded file. Hence a short poll
-        here rather than a read of the create payload.
+        One attempt, by design. The endpoint is deterministic over its inputs,
+        so a failure is not a race worth re-running; and this sits on the
+        customer's create request, which must not be held open for bookkeeping.
 
-        Deliberately bounded and deliberately silent on failure: a restore takes
-        minutes, so a few seconds is free, but a slow or unhappy status endpoint
-        must never fail a job the customer has already been charged for. Missing
-        credits means no cost is recorded, which is the pre-existing behaviour;
-        the NOL-535 ledger guard is what catches a model that never records.
-
-        The bound is a monotonic deadline, not arithmetic over the attempt count:
-        the per-request timeout is scalar and so caps each socket operation
-        rather than the whole GET.
+        Silent on failure for the same reason the old poll was: a slow or
+        unhappy vendor endpoint must never fail a job whose footage Topaz has
+        already accepted. No quote means no cost recorded, which is the state
+        the NOL-535 ledger guard is built to catch.
         """
-        url = self._create_status_url(raw_response, request_id)
-        headers = self._probe_headers(raw_response)
-        deadline = time.monotonic() + _CREDIT_PROBE_MAX_WALL_SECS
-        for attempt in range(_CREDIT_PROBE_ATTEMPTS):
-            if time.monotonic() >= deadline:
-                break
-            try:
-                credits = self._credits_from_status(
-                    self._http_client().get(url, headers=headers, timeout=_CREDIT_PROBE_TIMEOUT_SECS)
-                )
-            except httpx.HTTPError:
-                # A transport blip counts as a failed attempt, not as the end of
-                # the probe: the create leg is the only chance to record spend,
-                # so the remaining attempts are worth spending on a retry.
-                credits = None
-            if credits is not None:
-                return credits
-            if attempt + 1 < _CREDIT_PROBE_ATTEMPTS:
-                time.sleep(_CREDIT_PROBE_DELAY_SECS)
-        return None
+        geometry = self._resolve_geometry(pending, content)
+        if geometry is None:
+            return None
+        response = _quote_within_deadline(
+            lambda: self._http_client().post(
+                self._estimate_url(raw_response),
+                json=self._estimate_body(pending, geometry, len(content)),
+                headers=self._estimate_headers(raw_response),
+                timeout=_ESTIMATE_DEADLINE_SECS,
+            )
+        )
+        if response is None:
+            return None
+        return self._credits_from_estimate(response)
 
-    async def _async_probe_billed_credits(self, raw_response: httpx.Response, request_id: str) -> float | None:
-        """Async twin of _probe_billed_credits; see that docstring."""
-        import asyncio
-
-        url = self._create_status_url(raw_response, request_id)
-        headers = self._probe_headers(raw_response)
-        deadline = time.monotonic() + _CREDIT_PROBE_MAX_WALL_SECS
-        for attempt in range(_CREDIT_PROBE_ATTEMPTS):
-            if time.monotonic() >= deadline:
-                break
-            try:
-                credits = self._credits_from_status(
-                    await self._async_http_client().get(url, headers=headers, timeout=_CREDIT_PROBE_TIMEOUT_SECS)
-                )
-            except httpx.HTTPError:
-                credits = None
-            if credits is not None:
-                return credits
-            if attempt + 1 < _CREDIT_PROBE_ATTEMPTS:
-                await asyncio.sleep(_CREDIT_PROBE_DELAY_SECS)
-        return None
+    async def _async_estimate_billed_credits(
+        self,
+        raw_response: httpx.Response,
+        pending: _PendingUpload,
+        content: bytes,
+    ) -> float | None:
+        """Async twin of _estimate_billed_credits; see that docstring."""
+        geometry = self._resolve_geometry(pending, content)
+        if geometry is None:
+            return None
+        try:
+            response = await asyncio.wait_for(
+                self._async_http_client().post(
+                    self._estimate_url(raw_response),
+                    json=self._estimate_body(pending, geometry, len(content)),
+                    headers=self._estimate_headers(raw_response),
+                    timeout=_ESTIMATE_DEADLINE_SECS,
+                ),
+                timeout=_ESTIMATE_DEADLINE_SECS,
+            )
+        except (httpx.HTTPError, litellm.Timeout, asyncio.TimeoutError):
+            # The handler re-raises a non-2xx as MaskedHTTPStatusError (an
+            # httpx.HTTPError) but converts a read timeout into litellm.Timeout,
+            # which is not one; wait_for enforces the wall clock the scalar
+            # httpx timeout does not. All three mean "no quote", and none may
+            # escape: Topaz has already accepted the footage by this point.
+            return None
+        return self._credits_from_estimate(response)
 
     def _source_bytes(self, source: object, model: str) -> bytes:
         if isinstance(source, str):
