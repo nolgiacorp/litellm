@@ -91,6 +91,63 @@ def test_grok_imagine_entries_match_across_price_maps():
         assert root[model][cost_key] == rate, f"{model} {cost_key} is not {rate}"
 
 
+def test_nol535_zero_cogs_entries_match_across_price_maps():
+    """NOL-535: three live routes logged real generations at $0 COGS because
+    their price-map keys did not exist - black_forest_labs/flux-3-video, the
+    fal seedance reference-to-video variant (its t2v/i2v siblings were priced,
+    r2v was not), and fal-ai/clarity-upscaler (the upscale pass behind every
+    2k/4k image tier). Pin that all three entries exist and are byte-identical
+    in both maps (the NOL-90 invariant; our deployments read the backup), that
+    the flux-3-video tiers carry BFL's published per-second rates, that the r2v
+    rate matches its siblings' basis, and that clarity carries fal's published
+    $0.03/megapixel as a per-pixel rate."""
+    with open(REPO_ROOT / "model_prices_and_context_window.json") as f:
+        root = json.load(f)
+    with open(REPO_ROOT / "litellm" / "model_prices_and_context_window_backup.json") as f:
+        backup = json.load(f)
+
+    models = (
+        "black_forest_labs/flux-3-video",
+        "fal_ai/bytedance/seedance-2.0/reference-to-video",
+        "fal_ai/fal-ai/clarity-upscaler",
+    )
+    for model in models:
+        assert model in root, f"{model} missing from canonical price map"
+        assert model in backup, f"{model} missing from backup price map"
+        assert root[model] == backup[model], f"{model} differs between the price map and its backup copy"
+
+    flux3 = root["black_forest_labs/flux-3-video"]
+    assert flux3["output_cost_per_second_hd"] == 0.17
+    assert flux3["output_cost_per_second_fhd"] == 0.29
+    assert flux3["output_cost_per_second_v2v_hd"] == 0.43
+    assert flux3["output_cost_per_second_v2v_fhd"] == 0.54
+    assert flux3["output_cost_per_second_v2v"] == flux3["output_cost_per_second_v2v_hd"]
+    assert flux3["output_cost_per_second"] == flux3["output_cost_per_second_hd"], (
+        "the base rate must be the hd tier - hd is the deployment default, so an "
+        "untiered request must price as hd rather than $0"
+    )
+    assert "output_cost_per_video_per_second" not in flux3, (
+        "output_cost_per_video_per_second is checked before the tiered keys and "
+        "would flatten every tier to one rate"
+    )
+
+    r2v = root["fal_ai/bytedance/seedance-2.0/reference-to-video"]
+    for sibling in (
+        "fal_ai/bytedance/seedance-2.0/text-to-video",
+        "fal_ai/bytedance/seedance-2.0/image-to-video",
+    ):
+        assert r2v["output_cost_per_video_per_second"] == root[sibling]["output_cost_per_video_per_second"], (
+            f"r2v must share its siblings' per-second basis ({sibling})"
+        )
+
+    clarity = root["fal_ai/fal-ai/clarity-upscaler"]
+    assert clarity["output_cost_per_pixel"] == 3e-08, "fal bills clarity at $0.03 per megapixel"
+    assert "output_cost_per_image" not in clarity, (
+        "a flat per-image rate would shadow nothing but would misprice any "
+        "dimension-less fallback as nonzero guesswork"
+    )
+
+
 def test_fleet_brain_cache_read_uses_the_key_the_cost_calculator_reads():
     """NOL-376: the fleet brain's cache-read rate has to sit under a consumed key.
 

@@ -1,3 +1,4 @@
+from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
 import httpx
@@ -103,6 +104,29 @@ class FalAIClarityUpscalerConfig(FalAIBaseConfig):
         )
         model_response.data = [
             *(model_response.data or []),
-            *(ImageObject(url=image.get("url"), b64_json=image.get("b64_json")) for image in images),
+            *(
+                ImageObject(
+                    url=image.get("url"),
+                    b64_json=image.get("b64_json"),
+                    provider_specific_fields=self._dimension_fields(image),
+                )
+                for image in images
+            ),
         ]
         return model_response
+
+    @staticmethod
+    def _dimension_fields(
+        image: "Mapping[str, object]",
+    ) -> "dict | None":  # mutable-ok: ImageObject.provider_specific_fields expects a dict
+        """
+        Delivered image dimensions, carried so the fal cost calculator can price
+        the upscale at fal's published per-megapixel rate (NOL-535). Output size
+        depends on the input image and upscale_factor, so it is only knowable
+        from the response.
+        """
+        width = image.get("width")
+        height = image.get("height")
+        if isinstance(width, int) and isinstance(height, int) and width > 0 and height > 0:
+            return {"width": width, "height": height}  # mutable-ok: ImageObject.provider_specific_fields expects a dict
+        return None

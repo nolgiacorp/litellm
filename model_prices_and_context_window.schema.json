@@ -436,6 +436,26 @@
           "type": "number",
           "minimum": 0
         },
+        "output_cost_per_second_fhd": {
+          "type": "number",
+          "minimum": 0
+        },
+        "output_cost_per_second_hd": {
+          "type": "number",
+          "minimum": 0
+        },
+        "output_cost_per_second_v2v": {
+          "type": "number",
+          "minimum": 0
+        },
+        "output_cost_per_second_v2v_fhd": {
+          "type": "number",
+          "minimum": 0
+        },
+        "output_cost_per_second_v2v_hd": {
+          "type": "number",
+          "minimum": 0
+        },
         "output_cost_per_token": {
           "type": "number",
           "minimum": 0,

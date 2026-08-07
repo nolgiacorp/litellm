@@ -1002,3 +1002,36 @@ def test_fal_ai_video_model_registered_with_video_endpoint(
     assert tuple(entry["supported_modalities"]) == expected_modalities
     assert entry["supported_output_modalities"] == ["video"]
     assert isinstance(entry["output_cost_per_video_per_second"], (int, float))
+
+
+class TestSeedanceReferenceToVideoCogs:
+    """NOL-535: the r2v seedance variant logged real generations at $0 while its
+    t2v/i2v siblings recorded spend - the fal_ai/bytedance/seedance-2.0/
+    reference-to-video price-map key simply did not exist. These drive the real
+    cost-map lookup path with the exact model/provider shape the ledger logs."""
+
+    def test_r2v_records_per_second_cost(self):
+        from litellm.cost_calculator import default_video_cost_calculator
+
+        litellm.model_cost = litellm.get_model_cost_map(url="")
+        cost = default_video_cost_calculator(
+            model="bytedance/seedance-2.0/reference-to-video",
+            duration_seconds=5,
+            custom_llm_provider="fal_ai",
+        )
+        assert cost, "seedance r2v still prices at $0 - this is the NOL-535 defect"
+        assert cost == pytest.approx(0.3034 * 5)
+
+    def test_r2v_shares_its_siblings_per_second_basis(self):
+        from litellm.cost_calculator import default_video_cost_calculator
+
+        litellm.model_cost = litellm.get_model_cost_map(url="")
+        costs = {
+            variant: default_video_cost_calculator(
+                model=f"bytedance/seedance-2.0/{variant}",
+                duration_seconds=1,
+                custom_llm_provider="fal_ai",
+            )
+            for variant in ("reference-to-video", "text-to-video", "image-to-video")
+        }
+        assert len(set(costs.values())) == 1, f"seedance variants diverge: {costs}"
