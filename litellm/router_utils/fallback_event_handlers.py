@@ -19,6 +19,40 @@ else:
     LitellmRouter = Any
 
 
+def is_request_rejection(error: Exception) -> bool:
+    """
+    True when the error means the REQUEST is invalid, rather than the deployment
+    being unhealthy.
+
+    Fallbacks exist to route around a sick deployment: a 5xx, a timeout, a rate
+    limit, exhausted capacity. Retrying those elsewhere is the whole point. A
+    deliberate rejection of the request as written is the opposite case. Every
+    deployment that implements the same contract will reject it identically, so
+    failing over cannot fix it; it can only find a deployment whose contract
+    happens to differ, silently substituting a provider the caller never asked
+    for and billing them for it.
+
+    That is not hypothetical. A video request carrying a capability param the
+    primary provider cannot execute is refused by
+    litellm/videos/capabilities.py, and before this check the router treated
+    that refusal as a failed submit and re-ran the request on a fallback twin
+    that did accept the param, so the caller silently got a different provider's
+    render instead of the 400 the gate raised.
+
+    Scoped to 400 and 422, the two statuses that mean "the request is wrong".
+    Auth, permission and not-found (401/403/404) keep falling over, since those
+    describe a broken deployment rather than a bad request, and 408/409/429/5xx
+    are untouched.
+
+    Context-window and content-policy errors are excluded even though they are
+    400s: they have their own dedicated fallback lists, and honoring those is a
+    deliberate feature rather than a silent substitution.
+    """
+    if isinstance(error, (litellm.ContextWindowExceededError, litellm.ContentPolicyViolationError)):
+        return False
+    return isinstance(error, (litellm.BadRequestError, litellm.UnprocessableEntityError))
+
+
 def _check_stripped_model_group(model_group: str, fallback_key: str) -> bool:
     """
     Handles wildcard routing scenario
