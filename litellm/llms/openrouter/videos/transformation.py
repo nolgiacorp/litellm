@@ -91,6 +91,10 @@ class OpenRouterVideoConfig(BaseVideoConfig):
         transformation deliberately ignores unknown top-level fields rather than
         forwarding them (OpenRouter rejects them), so video_urls / audio_urls /
         bitrate_mode would be discarded without a trace. They are not declared.
+
+        negative_prompt is not declared for the same reason: it is absent from
+        _PASSTHROUGH_PARAMS and from the normalized schema, so it never leaves this
+        transformation.
         """
         return DeclaredCapabilityParams(_CAPABILITY_PARAMS)
 

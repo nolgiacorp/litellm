@@ -75,6 +75,17 @@ _DEFAULT_T2V_RATIO = "16:9"
 _DEFAULT_V2_DURATION = 6
 _DEFAULT_V2_RESOLUTION = "2K"
 
+# Regeneration is a separate endpoint with a narrower contract: role="base_video" is
+# absent from /v2/video_generation's role enum (which is why it answered 2013 invalid
+# params), resolution is an enum of one, and there is no duration field at all because
+# the output inherits the source video's length.
+_GENERATION_PATH = "/v2/video_generation"
+_REGENERATION_PATH = "/v2/video_regeneration"
+_REGENERATION_RESOLUTION = "2K"
+# resolution is not omitted: _map_v2_params already pins it to 2K for regeneration,
+# refusing anything else rather than silently upgrading it.
+_REGENERATION_UNSUPPORTED_KEYS = frozenset(("duration", "ratio"))
+
 _V2_MEDIA_KEYS = frozenset(
     {"first_frame", "last_frame", "reference_images", "reference_videos", "reference_audios", "base_video"}
 )
@@ -179,6 +190,13 @@ class MinimaxVideoConfig(BaseVideoConfig):
 
         generate_audio is not declared on either: MiniMax audio is native and has no
         switch, so a flag would be discarded.
+
+        negative_prompt is not declared on either. The legacy body is model, prompt,
+        prompt_optimizer, fast_pretreatment, duration, resolution, callback_url and
+        first_frame_image; the /v2 body is model, content, resolution, duration,
+        ratio and callback_url, where prompt text is a single content item with no
+        second negative channel. Folding the exclusion into the prompt would be a
+        different feature, not support, so it is refused rather than guessed at.
         """
         return DeclaredCapabilityParams(
             _LEGACY_CAPABILITY_PARAMS if _uses_legacy_video_api(model) else _V2_CAPABILITY_PARAMS
@@ -305,6 +323,16 @@ class MinimaxVideoConfig(BaseVideoConfig):
                 model=model,
                 llm_provider=litellm.LlmProviders.MINIMAX.value,
             )
+        if base_video is not None and resolution is not None and str(resolution).upper() != _REGENERATION_RESOLUTION:
+            raise litellm.BadRequestError(
+                message=(
+                    f"MiniMax H3 regeneration only renders at {_REGENERATION_RESOLUTION}; it re-renders a 768P source "
+                    f"video at higher resolution and its request has no other resolution to ask for. Requested "
+                    f"'{resolution}'. Drop the resolution or set it to {_REGENERATION_RESOLUTION}."
+                ),
+                model=model,
+                llm_provider=litellm.LlmProviders.MINIMAX.value,
+            )
         return drop_none_values(
             {
                 "duration": duration if duration is not None else _DEFAULT_V2_DURATION,
@@ -395,9 +423,11 @@ class MinimaxVideoConfig(BaseVideoConfig):
             *self._frame_items(mapped),
             *self._reference_items(mapped),
         )
-        passthrough = drop_none_values({key: value for key, value in mapped.items() if key not in _V2_MEDIA_KEYS})
+        is_regeneration = bool(mapped.get("base_video"))
+        omitted = _V2_MEDIA_KEYS | (_REGENERATION_UNSUPPORTED_KEYS if is_regeneration else frozenset())
+        passthrough = drop_none_values({key: value for key, value in mapped.items() if key not in omitted})
         request_data = {"model": model_name, "content": content, **passthrough}
-        return request_data, (), f"{api_base}/v2/video_generation"
+        return request_data, (), f"{api_base}{_REGENERATION_PATH if is_regeneration else _GENERATION_PATH}"
 
     @staticmethod
     def _frame_items(mapped: Mapping[str, Any]) -> tuple[Mapping[str, Any], ...]:
@@ -455,14 +485,21 @@ class MinimaxVideoConfig(BaseVideoConfig):
 
     @staticmethod
     def _create_billed_seconds(request_data: Mapping[str, Any] | None) -> float | None:
+        """
+        Seconds to bill from the create call alone.
+
+        Regeneration reports nothing here. Its endpoint has no duration field, since
+        the output inherits the source video's length, so there is no number in the
+        request to charge from and inventing one would be a guess in whichever
+        direction the guess happens to lean. The authoritative figure is usage on the
+        status response, which _v2_status_video_object already reads.
+        """
         if not request_data:
             return None
-        duration = _safe_float(request_data.get("duration"))
-        if duration is None:
-            return None
         content = request_data.get("content") or ()
-        has_base_video = any(isinstance(item, Mapping) and item.get("role") == "base_video" for item in content)
-        return duration * 2 if has_base_video else duration
+        if any(isinstance(item, Mapping) and item.get("role") == "base_video" for item in content):
+            return None
+        return _safe_float(request_data.get("duration"))
 
     def transform_video_status_retrieve_request(
         self,

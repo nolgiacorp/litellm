@@ -96,6 +96,12 @@ class XAIVideoConfig(BaseVideoConfig):
         reference_audios. It has no end-frame, reference-video, reference-audio-URL,
         regeneration, bitrate or generate_audio surface; grok audio is native and
         always on, so there is no soundtrack switch to honor.
+
+        No negative-prompt surface either. xAI's published OpenAPI schema for
+        /v1/videos/generations enumerates aspect_ratio, duration, image, model,
+        output, prompt, reference_audios, reference_images, resolution,
+        storage_options and user, and the string "negative" does not appear anywhere
+        in that spec.
         """
         return DeclaredCapabilityParams(_CAPABILITY_PARAMS)
 

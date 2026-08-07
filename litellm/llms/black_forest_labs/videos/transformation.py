@@ -181,6 +181,12 @@ class BflVideoConfig(BaseVideoConfig):
         generate_audio. It has no reference-audio, preset-voice, regeneration or
         bitrate surface; those params reach _merged_params and would be passed
         through to BFL verbatim, which ignores them.
+
+        negative_prompt is not declared either, and here the passthrough is worse
+        than ignored: every /v1/flux-3-video mode schema sets additionalProperties
+        false, so BFL answers 422 extra_forbidden and the whole generation fails.
+        Refusing it up front turns that into a 400 that names the param. This is the
+        opposite of the BFL image endpoints, which silently accept and drop extras.
         """
         return DeclaredCapabilityParams(_CAPABILITY_PARAMS)
 

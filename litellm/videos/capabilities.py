@@ -46,6 +46,7 @@ CAPABILITY_PARAMS: frozenset[str] = frozenset(
         "base_video_url",
         "bitrate_mode",
         "generate_audio",
+        "negative_prompt",
     )
 )
 """
@@ -53,6 +54,12 @@ The closed vocabulary this module enforces.
 
 ``input_reference`` and ``image_url`` are the same start-frame slot under two names;
 callers routinely send both, so a provider that honors one must declare both.
+
+``negative_prompt`` is here for the same reason the frame and reference slots are:
+it constrains what the model may render, so discarding it returns a different video
+than the caller asked for and bills them for it. It is the one member with no
+``GET /models`` capability flag behind it, because it is published unconditionally on
+the video request rather than advertised per model.
 """
 
 
