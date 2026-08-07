@@ -52,8 +52,13 @@ CAPABILITY_PARAMS: frozenset[str] = frozenset(
 """
 The closed vocabulary this module enforces.
 
-``input_reference`` and ``image_url`` are the same start-frame slot under two names;
-callers routinely send both, so a provider that honors one must declare both.
+``input_reference`` names the primary media the request is conditioned on. On a
+generator that is the start frame, which ``image_url`` also names, so callers routinely
+send both and a generator that honors one must declare both. On an upscale or restore
+lane it is instead the mandatory source clip, and ``image_url`` is deliberately left
+undeclared there: a still is not footage such a model can enhance, so the two names
+stop being interchangeable. Declaring ``input_reference`` therefore means "this model
+executes the media in that slot", not "this model accepts a start-frame image".
 
 ``negative_prompt`` is here for the same reason the frame and reference slots are:
 it constrains what the model may render, so discarding it returns a different video

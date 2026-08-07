@@ -23,6 +23,7 @@ from litellm.llms.kling.videos.transformation import KlingVideoConfig
 from litellm.llms.minimax.videos.transformation import MinimaxVideoConfig
 from litellm.llms.openai.videos.transformation import OpenAIVideoConfig
 from litellm.llms.openrouter.videos.transformation import OpenRouterVideoConfig
+from litellm.llms.topaz.videos.transformation import TopazVideoConfig
 from litellm.llms.xai.videos.transformation import XAIVideoConfig
 from litellm.proxy.video_endpoints.capabilities import build_video_capability_report
 from litellm.types.router import GenericLiteLLMParams
@@ -156,6 +157,13 @@ EXECUTED_CAPABILITIES = (
             "audio_urls": ["https://example.com/r.mp3"],
             "bitrate_mode": "high",
         },
+    ),
+    # The source clip an upscaler exists to enhance; refusing it would take the whole
+    # restore lane down.
+    (
+        TopazVideoConfig(),
+        "topaz/prob-4",
+        {"input_reference": "https://example.com/source.mp4", "resolution": "1080p", "seconds": 2},
     ),
 )
 
@@ -341,6 +349,24 @@ def _deployment(model_name: str, model: str, custom_llm_provider: str | None = N
 
 def _entry(report, model_name: str):
     return next((entry for entry in report["data"] if entry["model"] == model_name), None)
+
+
+def test_report_declares_the_topaz_upscale_surface():
+    """
+    Topaz was the only video provider left unaudited, so every topaz route reported
+    declared=False with no params and a catalog consuming this report could not verify
+    anything about the restore lane. It executes exactly one capability param: the
+    source clip.
+    """
+    report = build_video_capability_report(
+        (_deployment("topaz-proteus", "topaz/prob-4"),),
+        visible_models=frozenset({"topaz-proteus"}),
+    )
+
+    entry = _entry(report, "topaz-proteus")
+    assert entry is not None
+    assert entry["declared"] is True
+    assert entry["capability_params"] == ["input_reference"]
 
 
 def test_report_intersects_capabilities_across_deployments_of_one_name():

@@ -235,6 +235,34 @@ def test_status_response_surfaces_the_billed_lower_bound_credit_estimate():
     assert video.usage == {"topaz_credits": 7}
 
 
+@pytest.mark.parametrize(
+    ("reported", "expected"),
+    [
+        (43.037974683544306, 43),
+        (63.92405063291139, 63),
+        (99.6, 99),
+        (0.5, 0),
+        (100, 100),
+        (0, 0),
+        (None, None),
+        ("not-a-number", None),
+    ],
+)
+def test_status_response_truncates_topaz_fractional_progress(reported: object, expected: int | None):
+    # Topaz reports progress as a fractional percent while a render is in flight. VideoObject
+    # types it as an int and pydantic refuses a float with a fractional part, so passing the raw
+    # value through raised a ValidationError that reached callers as a 500 on every mid-render
+    # poll. 99.6 must truncate to 99, never round to a 100 that reads as a finished render.
+    config = TopazVideoConfig()
+    video = config.transform_video_status_retrieve_response(
+        raw_response=_response({"status": "processing", "progress": reported}),
+        logging_obj=None,
+        custom_llm_provider="topaz",
+    )
+    assert video.status == "in_progress"
+    assert video.progress == expected
+
+
 def test_status_response_carries_the_failure_message():
     config = TopazVideoConfig()
     video = config.transform_video_status_retrieve_response(

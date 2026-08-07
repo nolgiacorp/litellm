@@ -28,6 +28,7 @@ from litellm.llms.topaz.common_utils import TOPAZ_VIDEO_MODELS, TopazException, 
 from litellm.types.router import GenericLiteLLMParams
 from litellm.types.videos.main import VideoCreateOptionalRequestParams, VideoObject
 from litellm.types.videos.utils import encode_video_id_with_provider, extract_original_video_id
+from litellm.videos.capabilities import CapabilityParamSupport, DeclaredCapabilityParams
 
 if TYPE_CHECKING:
     from litellm.litellm_core_utils.litellm_logging import Logging as _LiteLLMLoggingObj
@@ -96,6 +97,8 @@ _CONSUMED_PARAMS = frozenset(
         "container",
     )
 )
+
+_CAPABILITY_PARAMS = frozenset(("input_reference",))
 
 _CONTAINER_MIME: Mapping[str, str] = MappingProxyType(
     {  # mutable-ok: frozen constant lookup table
@@ -167,6 +170,21 @@ def _safe_float(value: object) -> float | None:
         return float(value) if value is not None else None  # pyright: ignore[reportArgumentType]  # guarded by except
     except (TypeError, ValueError):
         return None
+
+
+def _progress_percent(value: object) -> int | None:
+    """
+    Topaz reports progress as a fractional percent (63.92405063291139); VideoObject.progress is an
+    int, and pydantic refuses a float with a fractional part outright, so passing it through raises
+    a ValidationError that surfaces to the caller as a 500 on every mid-render poll.
+
+    Truncated rather than rounded: 99.6 must not read as a finished render while the status is
+    still in_progress.
+    """
+    percent = _safe_float(value)
+    if percent is None:
+        return None
+    return int(percent)
 
 
 def _source_too_large(size_bytes: int, model: str) -> Exception:
@@ -250,6 +268,21 @@ class TopazVideoConfig(BaseVideoConfig):
 
     def supports_promptless_video_create(self, model: str) -> bool:
         return True
+
+    def get_capability_param_support(self, model: str) -> CapabilityParamSupport:
+        """
+        Topaz enhances mandatory source footage and nothing else: input_reference carries that
+        clip, and the rest of the request is the engine choice and the output frame.
+
+        Every other member of the vocabulary is genuinely absent rather than merely unmapped.
+        There is no prompt to negate, no soundtrack to render, and no slot for a start or end
+        frame, reference media or a base video, so declaring any of them would let a caller be
+        billed for an enhancement that ignored what they attached. image_url is NOT declared
+        alongside input_reference here, unlike on the generators where the two are the same
+        start-frame slot: this input is the source video, and a still passed to an upscaler is
+        not footage it can enhance.
+        """
+        return DeclaredCapabilityParams(_CAPABILITY_PARAMS)
 
     def map_openai_params(
         self,
@@ -613,7 +646,7 @@ class TopazVideoConfig(BaseVideoConfig):
             id=video_id,
             object="video",
             status=status,
-            progress=payload.get("progress"),
+            progress=_progress_percent(payload.get("progress")),
             error=self._failure_error(payload) if topaz_status in TOPAZ_TERMINAL_FAILURES else None,
             usage={"topaz_credits": credits} if credits is not None else {},  # mutable-ok: usage expects a dict
         )
