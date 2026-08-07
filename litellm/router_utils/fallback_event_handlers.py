@@ -56,7 +56,7 @@ def fallback_transforms_request(fallback: Any) -> bool:
     return any(key not in _ROUTER_FALLBACK_ENTRY_KEYS for key in fallback)
 
 
-def get_request_transforming_fallbacks(fallbacks: Optional[List[Any]]) -> List[Any]:
+def get_request_transforming_fallbacks(fallbacks: list[Any] | None) -> list[Any]:
     """
     The client-side fallbacks that repair the request itself, if any.
 
