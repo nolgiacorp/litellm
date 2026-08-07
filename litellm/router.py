@@ -6411,8 +6411,14 @@ class Router:
             )
             # A rejection of the request raised while falling back is terminal, and
             # it says more than the deployment failure that triggered the fallback:
-            # surface it instead of masking it with the original exception.
+            # surface it instead of masking it with the original exception. It carries
+            # a provider message from a deployment the caller did not address, so it
+            # gets the same scrub the embedded fallback failure string gets.
             if is_request_rejection(new_exception):
+                # Only these two classify as a rejection, and both carry the
+                # caller-visible `message` the scrub has to reach.
+                if isinstance(new_exception, (litellm.BadRequestError, litellm.UnprocessableEntityError)):
+                    new_exception.message = redact_string(new_exception.message)
                 raise new_exception
 
         if hasattr(original_exception, "message") and litellm.expose_router_debug_in_errors:
