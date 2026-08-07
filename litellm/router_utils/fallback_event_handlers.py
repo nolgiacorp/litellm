@@ -11,6 +11,7 @@ from litellm.router_utils.add_retry_fallback_headers import (
     get_fallback_error_info,
 )
 from litellm.types.router import LiteLLMParamsTypedDict
+from litellm.types.utils import all_litellm_params
 
 if TYPE_CHECKING:
     from litellm.router import Router as _Router
@@ -20,10 +21,13 @@ else:
     LitellmRouter = Any
 
 
-# Keys the router itself puts on a fallback entry when it re-points the same
-# request at another deployment or order level. Anything beyond these means the
-# caller rewrote the request in the fallback.
+# Keys a fallback entry can carry without changing the request the provider
+# rejected: the routing keys the router adds itself when it re-points the same
+# request, and the LiteLLM-level settings (api_key, api_base, timeout, metadata,
+# num_retries, ...) that configure the call but never reach the provider payload.
+# An entry made only of these resends the rejected payload verbatim.
 _ROUTER_FALLBACK_ENTRY_KEYS = frozenset(("model", "_target_order", "_excluded_deployment_ids"))
+_NON_PAYLOAD_FALLBACK_KEYS = _ROUTER_FALLBACK_ENTRY_KEYS | frozenset(all_litellm_params) | frozenset(("timeout",))
 
 
 def is_router_availability_error(error: Exception) -> bool:
@@ -37,24 +41,32 @@ def is_router_availability_error(error: Exception) -> bool:
     fallback to a healthy group is the right answer and has to keep working.
 
     Router-generated errors carry no llm_provider, because no provider was reached
-    to produce them; provider validation responses always name their provider.
+    to produce them. That signal is necessary but not sufficient: some provider
+    param validators raise litellm.UnsupportedParamsError without naming the
+    provider (litellm/images/utils.py, the provider transformations), and those
+    are refusals of the request. Their type says so regardless of llm_provider, so
+    they are classified first; anything else without a provider falls back to
+    being treated as a router failure, which keeps failover working.
     """
+    if isinstance(error, litellm.UnsupportedParamsError):
+        return False
     return not getattr(error, "llm_provider", None)
 
 
 def fallback_transforms_request(fallback: Any) -> bool:
     """
-    True when a fallback entry rewrites the request instead of only re-pointing it.
+    True when a fallback entry rewrites the request the provider rejected.
 
     A client-side fallback such as {"model": "backup", "messages": [...]} is a
-    deliberate request repair: it sends something different, so a rejection of the
-    original request does not predict its outcome. Plain model-group entries
-    ("backup", or the {"model": ..., "_target_order": ...} entries the router builds
-    for itself) resend the same request and therefore cannot repair a rejection.
+    deliberate request repair: it sends a different payload, so a rejection of the
+    original does not predict its outcome. Entries that only re-point or
+    reconfigure the call ("backup", {"model": ..., "_target_order": ...},
+    {"model": "backup", "api_key": ...}) resend the rejected payload unchanged and
+    therefore cannot repair a rejection.
     """
     if not isinstance(fallback, dict):
         return False
-    return any(key not in _ROUTER_FALLBACK_ENTRY_KEYS for key in fallback)
+    return any(key not in _NON_PAYLOAD_FALLBACK_KEYS for key in fallback)
 
 
 def get_request_transforming_fallbacks(fallbacks: Sequence[Any] | None) -> tuple[Any, ...]:
@@ -208,9 +220,14 @@ async def run_async_fallback(
 
     error_from_fallbacks = original_exception
     fallback_errors = (get_fallback_error_info(original_exception),)
+    rejected_request: Exception | None = None
 
     for mg in fallback_model_group:
         if mg == original_model_group:
+            continue
+        # Once the request itself has been rejected, only entries that rewrite it
+        # can still help; the rest resend the rejected payload.
+        if rejected_request is not None and not fallback_transforms_request(mg):
             continue
         try:
             # LOGGING
@@ -250,14 +267,13 @@ async def run_async_fallback(
                 kwargs=kwargs,
                 original_exception=original_exception,
             )
-            # A request rejection is terminal for the whole loop, not just for this
-            # entry. The remaining entries resend the same request, so continuing
-            # only finds one whose contract happens to accept it and bills the
-            # caller for a substitution they never asked for. Entries that rewrite
-            # the request are the exception: they send something different, so the
-            # rejection says nothing about them.
+            # A request rejection is terminal for every entry that resends the same
+            # request: continuing only finds one whose contract happens to accept it
+            # and bills the caller for a substitution they never asked for. Entries
+            # that rewrite the request are the exception, so the loop keeps going for
+            # them and raises the rejection only if none of them recovers.
             if is_request_rejection(e) and not fallback_transforms_request(mg):
-                raise e
+                rejected_request = e
     raise error_from_fallbacks
 
 

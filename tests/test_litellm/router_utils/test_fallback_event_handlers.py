@@ -193,6 +193,10 @@ def test_get_fallback_model_group_does_not_mutate_fallbacks():
             ),
             False,
         ),
+        # A provider param validator that does not name its provider: the type says
+        # the request is at fault, so the missing llm_provider must not read as a
+        # router failure.
+        (litellm.UnsupportedParamsError(message="size is not supported for model m", model="m"), True),
     ),
     ids=lambda v: type(v).__name__ if isinstance(v, Exception) else str(v),
 )
@@ -414,3 +418,70 @@ async def test_plain_client_side_fallback_list_does_not_run_after_a_rejection():
         )
 
     assert attempted == ["primary"]
+
+
+@pytest.mark.asyncio
+async def test_connection_only_client_fallback_does_not_run_after_a_rejection():
+    """
+    api_key/api_base/timeout reconfigure the call but leave the payload alone, so an
+    entry carrying only those resends the rejected request: not a repair.
+    """
+    router = _two_group_router()
+
+    attempted: list = []  # mutable-ok: test recorder
+
+    async def original_function(**kwargs):
+        attempted.append(kwargs.get("model"))
+        if kwargs.get("model") == "primary":
+            raise litellm.BadRequestError(message="bad param", model="primary", llm_provider="openai")
+        return {"served_by": kwargs.get("model")}
+
+    with pytest.raises(litellm.BadRequestError, match="bad param"):
+        await router.async_function_with_fallbacks(
+            model="primary",
+            original_function=original_function,
+            messages=[{"role": "user", "content": "hi"}],
+            metadata={},
+            fallbacks=[{"model": "twin", "api_key": "sk-other", "api_base": "https://other", "timeout": 5}],
+        )
+
+    assert attempted == ["primary"]
+
+
+@pytest.mark.asyncio
+async def test_run_async_fallback_skips_plain_entries_but_keeps_a_later_repair_entry():
+    """
+    twin_a rejects the unchanged request, which rules out every later entry that
+    resends it (twin_c), but not the repair entry that follows: that one sends a
+    different payload, so the rejection says nothing about it.
+    """
+    attempted: list = []  # mutable-ok: test recorder
+
+    class RejectingRouter:
+        def log_retry(self, kwargs, e):
+            return kwargs
+
+        async def async_function_with_fallbacks(self, *args, **kwargs):
+            content = kwargs["messages"][0]["content"]
+            attempted.append((kwargs["model"], content))
+            if content == "rejected":
+                raise litellm.BadRequestError(message="bad param", model=kwargs["model"], llm_provider="openai")
+            return {"served_by": kwargs["model"]}
+
+    response = await run_async_fallback(
+        litellm_router=RejectingRouter(),
+        fallback_model_group=[
+            {"model": "twin_a"},
+            {"model": "twin_c"},
+            {"model": "twin_b", "messages": [{"role": "user", "content": "repaired"}]},
+        ],
+        original_model_group="primary",
+        original_exception=litellm.InternalServerError(message="500", model="primary", llm_provider="openai"),
+        max_fallbacks=5,
+        fallback_depth=0,
+        model="primary",
+        messages=[{"role": "user", "content": "rejected"}],
+    )
+
+    assert response["served_by"] == "twin_b"
+    assert attempted == [("twin_a", "rejected"), ("twin_b", "repaired")]
