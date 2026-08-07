@@ -176,13 +176,18 @@ def test_create_response_relays_the_source_bytes_to_the_presigned_upload_url():
     config = TopazVideoConfig(sync_client=client)
     video = _created(config, {"requestId": REQUEST_ID, "uploadId": "u", "uploadUrls": [UPLOAD_URL]})
 
-    assert client.gets == ["https://cdn.example/clip.mp4"]
+    # The source fetch, then (NOL-519) the credit-quote probe. Topaz cannot
+    # quote at create time - the express body carries no source geometry - so
+    # the cost is read from the job's status once the upload lands.
+    assert client.gets[0] == "https://cdn.example/clip.mp4"
+    assert client.gets[-1].endswith(f"/video/{REQUEST_ID}/status")
     assert len(client.puts) == 1
     url, content, headers = client.puts[0]
     assert url == UPLOAD_URL
     assert content == b"the-real-clip"
     assert headers["Content-Type"] == "video/mp4"
     assert video.status == "queued"
+    # This fake returns no estimates, so no cost is asserted - the pre-fix shape.
     assert video.usage == {"duration_seconds": 2.0}
     assert REQUEST_ID not in video.id
 
@@ -488,11 +493,18 @@ def test_video_generation_handler_relays_the_source_through_the_callers_client()
         api_key="test-key",
     )
 
-    assert caller_client.calls == [
+    # The create POST, the source GET, the presigned PUT, then (NOL-519) the
+    # credit-quote probe. Topaz cannot quote at create time - the express body
+    # carries no source geometry - so cost is read off the job's status once the
+    # upload lands. All four must ride the caller's client, or a mock transport,
+    # proxy or private CA applies to the create POST only.
+    assert caller_client.calls[:3] == [
         ("POST", "https://api.topazlabs.com/video/express"),
         ("GET", "https://cdn.example/clip.mp4"),
         ("PUT", UPLOAD_URL),
     ]
+    assert caller_client.calls[3][0] == "GET"
+    assert caller_client.calls[3][1].endswith(f"/video/{REQUEST_ID}/status")
     assert video.status == "queued"
 
 
@@ -513,11 +525,18 @@ async def test_async_video_generation_handler_relays_the_source_through_the_call
         api_key="test-key",
     )
 
-    assert caller_client.calls == [
+    # The create POST, the source GET, the presigned PUT, then (NOL-519) the
+    # credit-quote probe. Topaz cannot quote at create time - the express body
+    # carries no source geometry - so cost is read off the job's status once the
+    # upload lands. All four must ride the caller's client, or a mock transport,
+    # proxy or private CA applies to the create POST only.
+    assert caller_client.calls[:3] == [
         ("POST", "https://api.topazlabs.com/video/express"),
         ("GET", "https://cdn.example/clip.mp4"),
         ("PUT", UPLOAD_URL),
     ]
+    assert caller_client.calls[3][0] == "GET"
+    assert caller_client.calls[3][1].endswith(f"/video/{REQUEST_ID}/status")
     assert video.status == "queued"
 
 
