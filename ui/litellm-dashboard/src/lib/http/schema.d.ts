@@ -26090,6 +26090,16 @@ export interface components {
             output_cost_per_second_4k?: number | null;
             /** Output Cost Per Second 720P */
             output_cost_per_second_720p?: number | null;
+            /** Output Cost Per Second Fhd */
+            output_cost_per_second_fhd?: number | null;
+            /** Output Cost Per Second Hd */
+            output_cost_per_second_hd?: number | null;
+            /** Output Cost Per Second V2V */
+            output_cost_per_second_v2v?: number | null;
+            /** Output Cost Per Second V2V Fhd */
+            output_cost_per_second_v2v_fhd?: number | null;
+            /** Output Cost Per Second V2V Hd */
+            output_cost_per_second_v2v_hd?: number | null;
             /** Output Cost Per Token */
             output_cost_per_token?: number | null;
             /** Output Cost Per Token Above 128K Tokens */
@@ -34230,6 +34240,16 @@ export interface components {
             output_cost_per_second_4k?: number | null;
             /** Output Cost Per Second 720P */
             output_cost_per_second_720p?: number | null;
+            /** Output Cost Per Second Fhd */
+            output_cost_per_second_fhd?: number | null;
+            /** Output Cost Per Second Hd */
+            output_cost_per_second_hd?: number | null;
+            /** Output Cost Per Second V2V */
+            output_cost_per_second_v2v?: number | null;
+            /** Output Cost Per Second V2V Fhd */
+            output_cost_per_second_v2v_fhd?: number | null;
+            /** Output Cost Per Second V2V Hd */
+            output_cost_per_second_v2v_hd?: number | null;
             /** Output Cost Per Token */
             output_cost_per_token?: number | null;
             /** Output Cost Per Token Above 128K Tokens */
