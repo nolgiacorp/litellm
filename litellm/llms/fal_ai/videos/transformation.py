@@ -263,6 +263,23 @@ _REFERENCE_MEDIA_CAPABILITY_PARAMS = frozenset(
     )
 )
 
+# negative_prompt is per app family, not per lane: the kling-video/v3 schemas carry it
+# (max 2500 chars) on every tier and both directions, while the turbo variants of the
+# same family expose only prompt/aspect_ratio/duration, and no seedance-2.0 or seedvr
+# schema has it at all.
+_NEGATIVE_PROMPT_MODEL_MARKER = "kling-video/v3"
+
+_NEGATIVE_PROMPT_EXCLUDED_MARKER = "turbo"
+
+_NEGATIVE_PROMPT_CAPABILITY_PARAMS = frozenset(("negative_prompt",))
+
+
+def _supports_negative_prompt(normalized_model: str) -> bool:
+    return (
+        _NEGATIVE_PROMPT_MODEL_MARKER in normalized_model and _NEGATIVE_PROMPT_EXCLUDED_MARKER not in normalized_model
+    )
+
+
 # fal is a generic gateway onto arbitrary app schemas, so "declared" here can only
 # mean "this app's published input schema has been read". App families whose schema
 # was audited are listed below; every other app id stays undeclared, which keeps its
@@ -332,7 +349,8 @@ class FalAIVideoConfig(BaseVideoConfig):
         declared: within them, every video lane takes a start frame and
         generate_audio, image-to-video lanes add a top-level end_image_url, and the
         seedance reference-to-video lane adds the reference-media block (image_urls /
-        video_urls / audio_urls) plus bitrate_mode.
+        video_urls / audio_urls) plus bitrate_mode. negative_prompt is narrower still
+        and is scoped to the kling-video/v3 family minus its turbo variants.
 
         An unrecognized fal app id stays UNDECLARED rather than being reported as
         exhaustively known. fal is a gateway, so a custom or newly added app may
@@ -352,6 +370,7 @@ class FalAIVideoConfig(BaseVideoConfig):
             _BASE_CAPABILITY_PARAMS
             | (_END_FRAME_CAPABILITY_PARAMS if _END_FRAME_MODEL_MARKER in normalized else frozenset())
             | (_REFERENCE_MEDIA_CAPABILITY_PARAMS if _REFERENCE_MEDIA_MODEL_MARKER in normalized else frozenset())
+            | (_NEGATIVE_PROMPT_CAPABILITY_PARAMS if _supports_negative_prompt(normalized) else frozenset())
         )
 
     def supports_promptless_video_create(self, model: str) -> bool:

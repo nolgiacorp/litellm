@@ -72,6 +72,7 @@ _CAPABILITY_PARAMS = frozenset(
     (
         "input_reference",
         "image_url",
+        "negative_prompt",
     )
 )
 
@@ -119,9 +120,12 @@ class GeminiOmniVideoConfig(BaseVideoConfig):
     def get_capability_param_support(self, model: str) -> "CapabilityParamSupport":
         """
         Omni executes a start frame: transform_video_create_request reads image_url
-        and switches the interaction to image_to_video. It has no end-frame,
-        reference-media, regeneration or bitrate surface, and its audio is native
-        with no generate_audio switch.
+        and switches the interaction to image_to_video. It also executes
+        negative_prompt, though not as a field; Omni has no negative channel, so the
+        same method folds it into the prompt as an explicit exclusion, which is a
+        real constraint on the render rather than a discarded param. It has no
+        end-frame, reference-media, regeneration or bitrate surface, and its audio is
+        native with no generate_audio switch.
         """
         from litellm.videos.capabilities import DeclaredCapabilityParams
 

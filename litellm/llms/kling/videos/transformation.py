@@ -87,6 +87,17 @@ class KlingVideoConfig(BaseVideoConfig):
         """
         Kling's direct API executes a start frame (image) and generate_audio (sound).
 
+        negative_prompt is deliberately NOT declared, and this one is a judgement call
+        rather than a documented fact. Kling's classic request table carries the field,
+        but the only version-specific statement found says models 2.5, 2.6 and 3.0 do
+        not honor it, and every model routed here is kling-v3. The vendor's own docs
+        would settle it; they are not machine-readable from CI. Undeclared means a 400
+        rather than a render that quietly ignored the exclusion, which is the failure
+        mode this gate exists to remove, and it is a one-line change to flip once a
+        live probe answers it. Note the fal-hosted kling-video/v3 twin does publish
+        negative_prompt in its schema and IS declared, so this is another case of the
+        route deciding capability rather than the vendor.
+
         It has NO end-frame surface here: Kling names that field image_tail, which
         this transformation never emits, so an end_image_url would be forwarded
         verbatim and ignored by the provider. Reference media, regeneration and

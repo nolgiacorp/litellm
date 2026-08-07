@@ -66,6 +66,25 @@ SILENTLY_DROPPED_BEFORE = (
     (MinimaxVideoConfig(), "MiniMax-Hailuo-2.3", "end_image_url", "https://example.com/end.png"),
     (MinimaxVideoConfig(), "MiniMax-Hailuo-2.3", "image_urls", ["https://example.com/a.png"]),
     (FalAIVideoConfig(), "fal_ai/bytedance/seedance-2.0/text-to-video", "end_image_url", "https://e.com/e.png"),
+    # negative_prompt. None of these surfaces has a negative channel: xAI's published
+    # OpenAPI schema for /v1/videos/generations does not contain the string
+    # "negative"; MiniMax's legacy body and its /v2 content-item shape both carry a
+    # single prompt; OpenRouter's normalized schema has no slot and this
+    # transformation drops what it does not recognize; and no seedance-2.0 or
+    # seedvr schema on fal exposes one.
+    (XAIVideoConfig(), "grok-imagine-video-1.5", "negative_prompt", "blurry, low quality"),
+    (MinimaxVideoConfig(), "MiniMax-H3", "negative_prompt", "blurry, low quality"),
+    (MinimaxVideoConfig(), "MiniMax-Hailuo-2.3", "negative_prompt", "blurry, low quality"),
+    (OpenRouterVideoConfig(), "openrouter/bytedance/seedance-2.0", "negative_prompt", "blurry, low quality"),
+    (FalAIVideoConfig(), "fal_ai/bytedance/seedance-2.0/text-to-video", "negative_prompt", "blurry"),
+    (FalAIVideoConfig(), "fal_ai/fal-ai/seedvr/upscale/video", "negative_prompt", "blurry"),
+    # Same fal family as the declared kling lanes, but the turbo schemas expose only
+    # prompt, aspect_ratio and duration, so the family marker alone is too coarse.
+    (FalAIVideoConfig(), "fal_ai/fal-ai/kling-video/v3/pro/turbo/text-to-video", "negative_prompt", "blurry"),
+    # Direct Kling routes every model here as kling-v3, and the only version-specific
+    # statement available says 2.5/2.6/3.0 do not honor negative_prompt. Its fal twin
+    # does publish the field, which is why they differ.
+    (KlingVideoConfig(), "kling/kling-v3", "negative_prompt", "blurry, low quality"),
 )
 
 
@@ -117,6 +136,11 @@ EXECUTED_CAPABILITIES = (
     (MinimaxVideoConfig(), "MiniMax-H3", {"base_video_url": "https://example.com/src.mp4"}),
     # fal's kling twin does take an end frame, unlike the direct kling route.
     (FalAIVideoConfig(), "fal_ai/fal-ai/kling-video/v3/pro/image-to-video", {"end_image_url": "https://e.com/e.png"}),
+    # negative_prompt on the surfaces that do carry one. fal's non-turbo
+    # kling-video/v3 schemas publish it in both directions (default
+    # "blur, distort, and low quality"), unlike the direct kling route below.
+    (FalAIVideoConfig(), "fal_ai/fal-ai/kling-video/v3/pro/text-to-video", {"negative_prompt": "blurry"}),
+    (FalAIVideoConfig(), "fal_ai/fal-ai/kling-video/v3/pro/image-to-video", {"negative_prompt": "blurry"}),
     (
         FalAIVideoConfig(),
         "fal_ai/bytedance/seedance-2.0/reference-to-video",
@@ -362,3 +386,77 @@ def test_report_omits_models_the_caller_cannot_route_to():
     )
 
     assert [entry["model"] for entry in report["data"]] == ["visible-video"]
+
+
+# --- negative_prompt ------------------------------------------------------
+
+
+def test_bfl_negative_prompt_is_refused_rather_than_forwarded_into_a_422():
+    """
+    BFL is the one provider where forwarding was worse than dropping. Every
+    /v1/flux-3-video mode schema sets additionalProperties false, so a passed-through
+    negative_prompt comes back as 422 extra_forbidden and the whole generation fails
+    with a provider-shaped error that names no capability. The gate turns it into a
+    400 that names the param and the model before the request is ever sent.
+    """
+    with pytest.raises(litellm.BadRequestError) as excinfo:
+        _map(BflVideoConfig(), "flux-3-video", {"negative_prompt": "blurry"})
+
+    assert "negative_prompt" in str(excinfo.value)
+    assert "flux-3-video" in str(excinfo.value)
+
+
+def test_declared_negative_prompt_actually_reaches_the_fal_provider():
+    """
+    Passing the gate is not the same as being executed. fal carries negative_prompt on
+    its verbatim passthrough rather than through an explicit mapping, so a change to
+    what that loop forwards would leave the param declared and silently dropped, which
+    is the exact failure this ticket is about.
+    """
+    mapped = _map(FalAIVideoConfig(), "fal_ai/fal-ai/kling-video/v3/pro/text-to-video", {"negative_prompt": "blurry"})
+
+    assert mapped["negative_prompt"] == "blurry"
+
+
+def test_veo_negative_prompt_reaches_the_provider_as_negative_prompt():
+    """
+    Veo names the field negativePrompt. The normalization lives in map_openai_params,
+    so this goes through the same choke point a real request does; asserting against
+    transform_video_create_request alone would skip the rename and pass on a body that
+    never carried the exclusion.
+    """
+    mapped = _map(GeminiVideoConfig(), "gemini/veo-3.0-generate-001", {"negative_prompt": "blurry, low quality"})
+
+    assert mapped["negativePrompt"] == "blurry, low quality"
+    assert "negative_prompt" not in mapped
+
+    request_data, _, _ = _veo_request("gemini/veo-3.0-generate-001", mapped)
+    assert request_data["parameters"]["negativePrompt"] == "blurry, low quality"
+
+
+def test_gemini_omni_negative_prompt_is_folded_into_the_prompt():
+    """
+    Omni has no negative channel, so the exclusion is carried as prompt text. That is
+    why it is declared: it constrains the render rather than being discarded.
+    """
+    from litellm.llms.gemini.videos import omni_transformation
+
+    request_data, _, _ = omni_transformation.GeminiOmniVideoConfig().transform_video_create_request(
+        model="gemini/gemini-omni-flash-preview",
+        prompt="a cat",
+        api_base="https://generativelanguage.googleapis.com/v1beta/interactions",
+        video_create_optional_request_params={"negative_prompt": "blurry, low quality"},
+        litellm_params=GenericLiteLLMParams(),
+        headers={},
+    )
+
+    assert request_data["input"] == "a cat Do not include: blurry, low quality."
+
+
+def test_negative_prompt_is_in_the_vocabulary_but_carries_no_catalog_flag():
+    """
+    Every other member of the vocabulary backs a published GET /models capability
+    flag. negative_prompt does not; it is published unconditionally on the video
+    request, which is precisely why nothing caught the silent drop.
+    """
+    assert "negative_prompt" in CAPABILITY_PARAMS

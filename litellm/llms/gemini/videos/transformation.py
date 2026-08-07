@@ -188,6 +188,7 @@ _CAPABILITY_PARAMS = frozenset(
         "image_url",
         "image_urls",
         "generate_audio",
+        "negative_prompt",
     )
 )
 
@@ -215,8 +216,10 @@ class GeminiVideoConfig(BaseVideoConfig):
 
     def get_capability_param_support(self, model: str) -> "CapabilityParamSupport":
         """
-        Veo executes a start frame (image / image_url) and up to three reference
-        images ("ingredients", mapped to referenceImages on the instance).
+        Veo executes a start frame (image / image_url), up to three reference
+        images ("ingredients", mapped to referenceImages on the instance) and
+        negative_prompt, which every Veo model carries as parameters.negativePrompt
+        and which map_openai_params normalizes onto that camelCase name below.
 
         generate_audio is declared for every Veo model because the transform consumes
         and validates it per model rather than dropping it: on Veo 3.x audio is native
