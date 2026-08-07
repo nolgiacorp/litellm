@@ -3169,6 +3169,7 @@ class CustomPricingLiteLLMParams(BaseModel):
     output_cost_per_second_1080p: Optional[float] = None
     output_cost_per_second_720p: Optional[float] = None
     output_cost_per_second_4k: Optional[float] = None
+    output_cost_per_credit: Optional[float] = None
     input_cost_per_pixel: Optional[float] = None
     output_cost_per_pixel: Optional[float] = None
 
