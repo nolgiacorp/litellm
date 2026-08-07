@@ -17,23 +17,26 @@ def cost_calculator(
     3.0 bills a flat 8 U/image at both 1k and 2k, i.e. $0.028/image.
 
     The rate now comes from the model cost map like every other provider, so a
-    deployment-level override or a future rate change is a data edit rather
-    than a code change. Mirrors litellm/llms/fal_ai/cost_calculator.py.
+    rate change is a data edit rather than a code change.
+
+    The map is read directly rather than through get_model_info() because that
+    helper raises for an unmapped model. A missing price must degrade to 0.0
+    here, exactly as it did before: this function runs after the image has
+    already been generated and paid for, so raising would turn a pricing gap
+    into a failed generation for the caller.
     """
     if not isinstance(image_response, ImageResponse):
-        raise ValueError(f"image_response must be of type ImageResponse got type={type(image_response)}")
+        raise TypeError(f"image_response must be of type ImageResponse got type={type(image_response)}")
 
-    try:
-        model_info = litellm.get_model_info(
-            model=model,
-            custom_llm_provider=litellm.LlmProviders.KLING.value,
-        )
-    except Exception:
-        # An unmapped Kling image model must not blow up the request; it falls
-        # back to 0.0 the way it always did, but now that is a genuine "no entry"
-        # rather than a hardcoded refusal to price anything.
-        return 0.0
+    provider = litellm.LlmProviders.KLING.value
+    bare_model = model.split("/")[-1]
+    cost_entry = (
+        litellm.model_cost.get(f"{provider}/{bare_model}")
+        or litellm.model_cost.get(model)
+        or litellm.model_cost.get(bare_model)
+        or {}
+    )
 
-    output_cost_per_image: float = model_info.get("output_cost_per_image") or 0.0
+    output_cost_per_image: float = cost_entry.get("output_cost_per_image") or 0.0
     num_images: int = len(image_response.data) if image_response.data else 0
     return output_cost_per_image * num_images
