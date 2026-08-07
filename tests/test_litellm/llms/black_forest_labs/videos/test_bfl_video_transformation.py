@@ -598,3 +598,187 @@ def test_get_llm_provider_routes_black_forest_labs():
     model, provider, _, _ = get_llm_provider("black_forest_labs/flux-3-video")
     assert model == "flux-3-video"
     assert provider == "black_forest_labs"
+
+
+class TestBflVideoCostTier:
+    """NOL-535: flux-3-video logged real generations at $0 COGS. BFL prices per
+    second and per resolution, with a higher video-continuation rate, but one
+    model id serves every tier - so the transform must report the tier on
+    usage.video_resolution or the shared video cost path cannot pick between the
+    tiered rates in the price map."""
+
+    @pytest.mark.parametrize(
+        "request_data,expected",
+        [
+            ({"resolution": "hd", "mode": "t2v"}, "hd"),
+            ({"resolution": "fhd", "mode": "i2v"}, "fhd"),
+            ({"resolution": "HD ", "mode": "t2v"}, "hd"),
+            ({"resolution": "hd", "mode": "v2v"}, "v2v_hd"),
+            ({"resolution": "fhd", "mode": "v2v"}, "v2v_fhd"),
+            ({"mode": "v2v"}, "v2v"),
+        ],
+    )
+    def test_request_tier_is_reported(self, request_data, expected):
+        from litellm.llms.black_forest_labs.videos.transformation import _cost_tier
+
+        assert _cost_tier(request_data) == expected
+
+    @pytest.mark.parametrize(
+        "request_data",
+        [None, {}, {"mode": "t2v"}, {"resolution": "4k", "mode": "t2v"}, {"resolution": "", "mode": "i2v"}],
+    )
+    def test_unknown_tier_yields_none_rather_than_a_guess(self, request_data):
+        """A wrong tier would silently mis-price; absence falls back to the base rate."""
+        from litellm.llms.black_forest_labs.videos.transformation import _cost_tier
+
+        assert _cost_tier(request_data) is None
+
+    def test_create_response_puts_tier_on_usage(self):
+        response = Mock(spec=httpx.Response)
+        response.json.return_value = {"id": "req-123", "polling_url": POLLING_URL}
+        video_obj = BflVideoConfig().transform_video_create_response(
+            model=MODEL,
+            raw_response=response,
+            logging_obj=Mock(),
+            custom_llm_provider=PROVIDER,
+            request_data={"duration": 5, "resolution": "fhd", "mode": "t2v"},
+        )
+        assert video_obj.usage["duration_seconds"] == 5.0
+        assert video_obj.usage["video_resolution"] == "fhd"
+
+    def test_create_response_omits_tier_when_unrecognised(self):
+        response = Mock(spec=httpx.Response)
+        response.json.return_value = {"id": "req-123", "polling_url": POLLING_URL}
+        video_obj = BflVideoConfig().transform_video_create_response(
+            model=MODEL,
+            raw_response=response,
+            logging_obj=Mock(),
+            custom_llm_provider=PROVIDER,
+            request_data={"duration": 5, "mode": "t2v"},
+        )
+        assert video_obj.usage == {"duration_seconds": 5.0}
+
+
+RATE_HD = 0.17
+RATE_FHD = 0.29
+RATE_V2V_FHD = 0.54
+
+
+class _CostCapture:
+    def __init__(self):
+        self.costs = []
+
+    async def __call__(self, kwargs, response_obj, start_time, end_time):
+        slp = kwargs.get("standard_logging_object") or {}
+        self.costs.append(slp.get("response_cost"))
+
+
+def _submit(*args, **kwargs) -> httpx.Response:
+    return httpx.Response(
+        200,
+        json={"id": "req-123", "polling_url": POLLING_URL},
+        request=httpx.Request("POST", f"{API_BASE}/v1/flux-3-video"),
+    )
+
+
+def _prod_shaped_router():
+    import litellm
+
+    return litellm.Router(
+        model_list=[
+            {
+                "model_name": "flux-3-video",
+                "litellm_params": {"model": MODEL, "api_key": "test-key"},
+                "model_info": {"mode": "video_generation"},
+            }
+        ]
+    )
+
+
+async def _cost_of(seconds, **request_params):
+    import asyncio
+    from unittest.mock import patch
+
+    import litellm
+    from litellm.integrations.custom_logger import CustomLogger
+
+    capture = _CostCapture()
+
+    class _Logger(CustomLogger):
+        async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):
+            await capture(kwargs, response_obj, start_time, end_time)
+
+    litellm.model_cost = litellm.get_model_cost_map(url="")
+    litellm.callbacks = [_Logger()]
+    router = _prod_shaped_router()
+    with patch("litellm.llms.custom_httpx.http_handler.AsyncHTTPHandler.post", side_effect=_submit):
+        await router.avideo_generation(
+            model="flux-3-video", prompt="a drop of water on black glass", seconds=seconds, **request_params
+        )
+
+    for _ in range(50):
+        if capture.costs:
+            break
+        await asyncio.sleep(0.05)
+    assert capture.costs, "no success event logged"
+    return capture.costs[-1]
+
+
+class TestBflVideoCogs:
+    """End to end through the real router, in prod's deployment shape."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "seconds,request_params,expected",
+        [
+            (5, {"resolution": "hd"}, round(RATE_HD * 5, 6)),
+            (5, {"resolution": "fhd"}, round(RATE_FHD * 5, 6)),
+            (12, {"resolution": "fhd"}, round(RATE_FHD * 12, 6)),
+            (5, {}, round(RATE_HD * 5, 6)),
+            (5, {"resolution": "fhd", "video_urls": ["https://example.com/ref.mp4"]}, round(RATE_V2V_FHD * 5, 6)),
+        ],
+    )
+    async def test_each_tier_records_its_own_nonzero_rate(self, seconds, request_params, expected):
+        cost = await _cost_of(seconds, **request_params)
+        assert cost, "flux-3-video still logs $0 - this is the NOL-535 defect"
+        assert abs(cost - expected) < 1e-6, f"expected ${expected} for {seconds}s with {request_params}, got ${cost}"
+
+    @pytest.mark.asyncio
+    async def test_tiers_are_actually_distinguished(self):
+        """Guards the failure mode where one flat rate makes every tier look
+        priced while fhd and video continuation are under-recorded."""
+        import asyncio
+        from unittest.mock import patch
+
+        import litellm
+        from litellm.integrations.custom_logger import CustomLogger
+
+        capture = _CostCapture()
+
+        class _Logger(CustomLogger):
+            async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):
+                await capture(kwargs, response_obj, start_time, end_time)
+
+        litellm.model_cost = litellm.get_model_cost_map(url="")
+        litellm.callbacks = [_Logger()]
+        router = _prod_shaped_router()
+        requests = (
+            {"resolution": "hd"},
+            {"resolution": "fhd"},
+            {"resolution": "fhd", "video_urls": ["https://example.com/ref.mp4"]},
+        )
+        with patch("litellm.llms.custom_httpx.http_handler.AsyncHTTPHandler.post", side_effect=_submit):
+            for request_params in requests:
+                await router.avideo_generation(
+                    model="flux-3-video", prompt="a drop of water", seconds=5, **request_params
+                )
+
+        for _ in range(50):
+            if len(capture.costs) >= 3:
+                break
+            await asyncio.sleep(0.05)
+
+        assert len(capture.costs) >= 3, f"expected 3 cost events, got {capture.costs}"
+        hd, fhd, v2v = capture.costs[:3]
+        assert hd < fhd < v2v, f"tiers not distinguished: {hd} / {fhd} / {v2v}"
+        assert (hd, fhd, v2v) == pytest.approx((0.85, 1.45, 2.70))

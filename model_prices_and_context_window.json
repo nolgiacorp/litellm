@@ -11274,6 +11274,31 @@
             "/v1/images/generations"
         ]
     },
+    "black_forest_labs/flux-3-video": {
+        "litellm_provider": "black_forest_labs",
+        "mode": "video_generation",
+        "output_cost_per_second": 0.17,
+        "output_cost_per_second_hd": 0.17,
+        "output_cost_per_second_fhd": 0.29,
+        "output_cost_per_second_v2v": 0.43,
+        "output_cost_per_second_v2v_hd": 0.43,
+        "output_cost_per_second_v2v_fhd": 0.54,
+        "source": "https://docs.bfl.ml/quick_start/pricing",
+        "metadata": {
+            "comment": "BFL bills flux-3-video per second and per resolution (hd $0.17, fhd $0.29) with a higher video-continuation rate (v2v: hd $0.43, fhd $0.54). The BFL video transform reports the tier as usage.video_resolution (hd|fhd|v2v_hd|v2v_fhd|v2v); output_cost_per_second is the hd rate, used when the request carries no recognised tier. Draft mode is not exposed by any deployment and is not priced"
+        },
+        "supported_endpoints": [
+            "/v1/videos"
+        ],
+        "supported_modalities": [
+            "text",
+            "image",
+            "video"
+        ],
+        "supported_output_modalities": [
+            "video"
+        ]
+    },
     "black_forest_labs/flux-dev": {
         "litellm_provider": "black_forest_labs",
         "mode": "image_generation",
@@ -16416,6 +16441,36 @@
         ],
         "supported_output_modalities": [
             "video"
+        ]
+    },
+    "fal_ai/bytedance/seedance-2.0/reference-to-video": {
+        "litellm_provider": "fal_ai",
+        "mode": "video_generation",
+        "output_cost_per_video_per_second": 0.3034,
+        "source": "https://fal.ai/models/bytedance/seedance-2.0/reference-to-video",
+        "supported_endpoints": [
+            "/v1/videos"
+        ],
+        "supported_modalities": [
+            "text",
+            "image",
+            "video",
+            "audio"
+        ],
+        "supported_output_modalities": [
+            "video"
+        ]
+    },
+    "fal_ai/fal-ai/clarity-upscaler": {
+        "litellm_provider": "fal_ai",
+        "mode": "image_generation",
+        "output_cost_per_pixel": 3e-08,
+        "source": "https://fal.ai/models/fal-ai/clarity-upscaler",
+        "metadata": {
+            "comment": "fal bills $0.03 per output megapixel. The clarity transform reports the delivered image dimensions on provider_specific_fields and the fal image cost calculator multiplies them by this per-pixel rate; a response missing dimensions degrades to $0 rather than inventing a size"
+        },
+        "supported_endpoints": [
+            "/v1/images/generations"
         ]
     },
     "fal_ai/fal-ai/seedvr/upscale/video": {

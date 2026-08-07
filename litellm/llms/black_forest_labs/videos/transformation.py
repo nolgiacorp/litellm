@@ -135,11 +135,38 @@ def _safe_float(value: Any) -> float | None:
         return None
 
 
-def _duration_usage(seconds: str | None) -> dict:  # mutable-ok: VideoObject.usage expects a dict
+def _duration_usage(
+    seconds: str | None, tier: str | None = None
+) -> dict:  # mutable-ok: VideoObject.usage expects a dict
     duration = _safe_float(seconds)
-    if duration is None:
-        return {}  # mutable-ok: VideoObject.usage expects a dict
-    return {"duration_seconds": duration}  # mutable-ok: VideoObject.usage expects a dict
+    return {  # mutable-ok: VideoObject.usage expects a dict
+        key: value for key, value in (("duration_seconds", duration), ("video_resolution", tier)) if value is not None
+    }
+
+
+_PRICED_RESOLUTIONS = frozenset(("hd", "fhd"))
+
+
+def _cost_tier(request_data: Mapping[str, Any] | None) -> str | None:
+    """
+    Pricing tier for usage.video_resolution, so the shared video cost path can
+    pick between the tiered per-second rates in the price map (NOL-535). BFL
+    prices flux-3-video per second and per resolution, with a higher rate for
+    video continuation, but one model id serves every tier - the tier is a
+    per-request knob, not part of the model name.
+
+    Returns hd|fhd for t2v/i2v, v2v_hd|v2v_fhd|v2v for video continuation, or
+    None when the request carries no recognised resolution - the caller then
+    omits video_resolution and the base (hd) rate applies rather than a guess.
+    """
+    if not request_data:
+        return None
+    resolution = str(request_data.get("resolution") or "").strip().lower()
+    tier = resolution if resolution in _PRICED_RESOLUTIONS else None
+    mode = str(request_data.get("mode") or "").strip().lower()
+    if mode == "v2v":
+        return f"v2v_{tier}" if tier else "v2v"
+    return tier
 
 
 def _failure_error(bfl_status: Any) -> dict:  # mutable-ok: VideoObject.error expects a dict
@@ -402,6 +429,7 @@ class BflVideoConfig(BaseVideoConfig):
         duration = request_data.get("duration") if request_data else None
         aspect_ratio = request_data.get("aspect_ratio") if request_data else None
         seconds = str(duration) if duration is not None else None
+        tier = _cost_tier(request_data)
 
         video_obj = VideoObject(
             id=str(task_id),
@@ -411,7 +439,7 @@ class BflVideoConfig(BaseVideoConfig):
             seconds=seconds,
             size=str(aspect_ratio).replace(":", "x") if aspect_ratio is not None else None,
             created_at=int(time.time()),
-            usage=_duration_usage(seconds),
+            usage=_duration_usage(seconds, tier),
         )
 
         if custom_llm_provider:
