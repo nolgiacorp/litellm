@@ -13,6 +13,7 @@ from litellm.llms.topaz.videos import transformation as topaz_videos
 from litellm.llms.topaz.videos.transformation import TopazVideoConfig
 from litellm.types.router import GenericLiteLLMParams
 from litellm.types.videos.utils import encode_video_id_with_provider
+from tests.test_litellm.llms.topaz.test_video_geometry import _mp4 as _sample_mp4
 
 MODEL = "topaz/prob-4"
 UPLOAD_URL = "https://videocloud.s3.amazonaws.com/abc/source.mp4?X-Amz-Signature=deadbeef"
@@ -176,11 +177,10 @@ def test_create_response_relays_the_source_bytes_to_the_presigned_upload_url():
     config = TopazVideoConfig(sync_client=client)
     video = _created(config, {"requestId": REQUEST_ID, "uploadId": "u", "uploadUrls": [UPLOAD_URL]})
 
-    # The source fetch, then (NOL-519) the credit-quote probe. Topaz cannot
-    # quote at create time - the express body carries no source geometry - so
-    # the cost is read from the job's status once the upload lands.
-    assert client.gets[0] == "https://cdn.example/clip.mp4"
-    assert client.gets[-1].endswith(f"/video/{REQUEST_ID}/status")
+    # Only the source fetch. (NOL-519) The credit quote is a POST to the free
+    # estimate endpoint, priced off geometry read from these very bytes, so the
+    # create leg never polls the job's status.
+    assert client.gets == ["https://cdn.example/clip.mp4"]
     assert len(client.puts) == 1
     url, content, headers = client.puts[0]
     assert url == UPLOAD_URL
@@ -437,6 +437,18 @@ def test_create_response_refuses_a_source_url_that_targets_a_private_network(mon
         )
 
 
+# NOL-519: the create leg reads source geometry out of the bytes it uploads, so
+# the relay tests need footage that actually parses or the quote leg never runs.
+SAMPLE_MP4 = _sample_mp4(coded=(640, 360), display=(640, 360), timescale=24000, duration=312000, samples=312)
+
+
+def _post_payload(url: str) -> dict:
+    """The express create returns an upload URL; the free estimate returns a quote."""
+    if url.endswith("/video/"):
+        return {"requestId": "est-1", "estimates": {"cost": [1, 2], "time": [323, 336]}}
+    return {"requestId": REQUEST_ID, "uploadUrls": [UPLOAD_URL]}
+
+
 class _RecordingHTTPHandler(HTTPHandler):
     """A real HTTPHandler so the shared video handler accepts it as the caller's client."""
 
@@ -446,11 +458,11 @@ class _RecordingHTTPHandler(HTTPHandler):
 
     def post(self, url: str, **kwargs: object) -> httpx.Response:
         self.calls.append(("POST", url))
-        return _response({"requestId": REQUEST_ID, "uploadUrls": [UPLOAD_URL]}, url=url)
+        return _response(_post_payload(url), url=url)
 
     def get(self, url: str, params: dict | None = None, headers: dict | None = None, **kwargs: object):
         self.calls.append(("GET", url))
-        return httpx.Response(status_code=200, content=b"the-real-clip", request=httpx.Request("GET", url))
+        return httpx.Response(status_code=200, content=SAMPLE_MP4, request=httpx.Request("GET", url))
 
     def put(self, url: str, content: bytes | None = None, headers: dict | None = None, **kwargs: object):
         self.calls.append(("PUT", url))
@@ -464,11 +476,11 @@ class _RecordingAsyncHTTPHandler(AsyncHTTPHandler):
 
     async def post(self, url: str, **kwargs: object) -> httpx.Response:
         self.calls.append(("POST", url))
-        return _response({"requestId": REQUEST_ID, "uploadUrls": [UPLOAD_URL]}, url=url)
+        return _response(_post_payload(url), url=url)
 
     async def get(self, url: str, params: dict | None = None, headers: dict | None = None, **kwargs: object):
         self.calls.append(("GET", url))
-        return httpx.Response(status_code=200, content=b"the-real-clip", request=httpx.Request("GET", url))
+        return httpx.Response(status_code=200, content=SAMPLE_MP4, request=httpx.Request("GET", url))
 
     async def put(self, url: str, content: bytes | None = None, headers: dict | None = None, **kwargs: object):
         self.calls.append(("PUT", url))
@@ -494,18 +506,20 @@ def test_video_generation_handler_relays_the_source_through_the_callers_client()
     )
 
     # The create POST, the source GET, the presigned PUT, then (NOL-519) the
-    # credit-quote probe. Topaz cannot quote at create time - the express body
-    # carries no source geometry - so cost is read off the job's status once the
-    # upload lands. All four must ride the caller's client, or a mock transport,
-    # proxy or private CA applies to the create POST only.
-    assert caller_client.calls[:3] == [
+    # free credit quote. All four must ride the caller's client, or a mock
+    # transport, proxy or private CA applies to the create POST only.
+    assert caller_client.calls == [
         ("POST", "https://api.topazlabs.com/video/express"),
         ("GET", "https://cdn.example/clip.mp4"),
         ("PUT", UPLOAD_URL),
+        ("POST", "https://api.topazlabs.com/video/"),
     ]
-    assert caller_client.calls[3][0] == "GET"
-    assert caller_client.calls[3][1].endswith(f"/video/{REQUEST_ID}/status")
     assert video.status == "queued"
+    # NOL-519: the whole point. The quote (1 credit) reaches the logging path as
+    # an explicit response_cost, so the create leg writes a NONZERO spend row
+    # instead of the $0 every Topaz restore recorded before this.
+    assert video.usage["topaz_credits"] == pytest.approx(1.0)
+    assert video._hidden_params["response_cost"] == pytest.approx(0.12)
 
 
 @pytest.mark.asyncio
@@ -526,18 +540,20 @@ async def test_async_video_generation_handler_relays_the_source_through_the_call
     )
 
     # The create POST, the source GET, the presigned PUT, then (NOL-519) the
-    # credit-quote probe. Topaz cannot quote at create time - the express body
-    # carries no source geometry - so cost is read off the job's status once the
-    # upload lands. All four must ride the caller's client, or a mock transport,
-    # proxy or private CA applies to the create POST only.
-    assert caller_client.calls[:3] == [
+    # free credit quote. All four must ride the caller's client, or a mock
+    # transport, proxy or private CA applies to the create POST only.
+    assert caller_client.calls == [
         ("POST", "https://api.topazlabs.com/video/express"),
         ("GET", "https://cdn.example/clip.mp4"),
         ("PUT", UPLOAD_URL),
+        ("POST", "https://api.topazlabs.com/video/"),
     ]
-    assert caller_client.calls[3][0] == "GET"
-    assert caller_client.calls[3][1].endswith(f"/video/{REQUEST_ID}/status")
     assert video.status == "queued"
+    # NOL-519: the whole point. The quote (1 credit) reaches the logging path as
+    # an explicit response_cost, so the create leg writes a NONZERO spend row
+    # instead of the $0 every Topaz restore recorded before this.
+    assert video.usage["topaz_credits"] == pytest.approx(1.0)
+    assert video._hidden_params["response_cost"] == pytest.approx(0.12)
 
 
 def test_status_request_percent_encodes_a_crafted_video_id():
