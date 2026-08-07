@@ -1,9 +1,13 @@
 import json
 
+import httpx
 import pytest
 
+import litellm
+from litellm import Router
 from litellm.router_utils.fallback_event_handlers import (
     get_fallback_model_group,
+    is_request_rejection,
     run_async_fallback,
 )
 
@@ -153,3 +157,138 @@ def test_get_fallback_model_group_does_not_mutate_fallbacks():
 
     assert fallback_model_group == ["gpt-4o-mini"]
     assert fallbacks == [{"gpt-3.5-turbo": ["claude-3-haiku"]}, "gpt-4o-mini"]
+
+
+# --- request rejections must not fall over --------------------------------
+
+
+@pytest.mark.parametrize(
+    "error,terminal",
+    (
+        (litellm.BadRequestError(message="bad", model="m", llm_provider="p"), True),
+        (litellm.UnsupportedParamsError(message="unsupported", model="m", llm_provider="p"), True),
+        (
+            litellm.UnprocessableEntityError(
+                message="unprocessable",
+                model="m",
+                llm_provider="p",
+                response=httpx.Response(status_code=422, request=httpx.Request("POST", "https://litellm.ai")),
+            ),
+            True,
+        ),
+        # Dedicated fallback lists exist for these two, so they stay failover-able.
+        (litellm.ContextWindowExceededError(message="ctx", model="m", llm_provider="p"), False),
+        (litellm.ContentPolicyViolationError(message="policy", model="m", llm_provider="p"), False),
+        # Deployment health, not request validity.
+        (litellm.RateLimitError(message="429", model="m", llm_provider="p"), False),
+        (litellm.AuthenticationError(message="401", model="m", llm_provider="p"), False),
+        (litellm.InternalServerError(message="500", model="m", llm_provider="p"), False),
+        (litellm.Timeout(message="timeout", model="m", llm_provider="p"), False),
+        (litellm.ServiceUnavailableError(message="503", model="m", llm_provider="p"), False),
+    ),
+    ids=lambda v: type(v).__name__ if isinstance(v, Exception) else str(v),
+)
+def test_is_request_rejection_classifies_by_whether_the_request_or_the_deployment_is_at_fault(error, terminal):
+    assert is_request_rejection(error) is terminal
+
+
+def _two_group_router() -> Router:
+    """primary with a fallback twin, mirroring a direct provider plus its reseller."""
+    return Router(
+        model_list=[
+            {"model_name": "primary", "litellm_params": {"model": "openai/gpt-4o", "api_key": "sk-fake"}},
+            {"model_name": "twin", "litellm_params": {"model": "openai/gpt-4o-mini", "api_key": "sk-fake"}},
+        ],
+        fallbacks=[{"primary": ["twin"]}],
+        num_retries=0,
+    )
+
+
+async def _call(router: Router, failure: Exception):
+    """Run the primary through the real fallback path, failing it with `failure`."""
+    attempted: list = []  # mutable-ok: test recorder for which model groups were called
+
+    async def original_function(**kwargs):
+        model = kwargs.get("model")
+        attempted.append(model)
+        if model == "primary":
+            raise failure
+        return {"served_by": model}
+
+    response = await router.async_function_with_fallbacks(
+        model="primary",
+        original_function=original_function,
+        messages=[{"role": "user", "content": "hi"}],
+        metadata={},
+    )
+    return response, attempted
+
+
+@pytest.mark.asyncio
+async def test_validation_rejection_does_not_fall_over_to_the_twin():
+    """
+    The capability gate refuses a param the primary cannot execute. Falling over
+    would run the request on a provider whose contract happens to accept it, so the
+    caller silently receives a different provider's output instead of the refusal.
+    """
+    router = _two_group_router()
+    rejection = litellm.BadRequestError(
+        message="Model 'primary' does not support video parameter(s): negative_prompt.",
+        model="primary",
+        llm_provider="openai",
+    )
+
+    with pytest.raises(litellm.BadRequestError, match="negative_prompt"):
+        await _call(router, rejection)
+
+
+@pytest.mark.asyncio
+async def test_validation_rejection_never_reaches_the_twin_at_all():
+    """The twin must not be invoked; a billed generation on it is the actual harm."""
+    router = _two_group_router()
+    rejection = litellm.BadRequestError(message="bad param", model="primary", llm_provider="openai")
+
+    attempted: list = []  # mutable-ok: test recorder
+
+    async def original_function(**kwargs):
+        attempted.append(kwargs.get("model"))
+        if kwargs.get("model") == "primary":
+            raise rejection
+        return {"served_by": kwargs.get("model")}
+
+    with pytest.raises(litellm.BadRequestError):
+        await router.async_function_with_fallbacks(
+            model="primary",
+            original_function=original_function,
+            messages=[{"role": "user", "content": "hi"}],
+            metadata={},
+        )
+
+    assert attempted == ["primary"], f"the twin was called despite a request rejection: {attempted}"
+
+
+@pytest.mark.asyncio
+async def test_upstream_server_error_still_falls_over_to_the_twin():
+    """
+    The other half. Making rejections terminal must not cost us real failover: a sick
+    deployment is exactly what the fallback group exists for.
+    """
+    router = _two_group_router()
+    outage = litellm.InternalServerError(message="upstream exploded", model="primary", llm_provider="openai")
+
+    response, attempted = await _call(router, outage)
+
+    assert response["served_by"] == "twin"
+    assert attempted == ["primary", "twin"]
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_still_falls_over_to_the_twin():
+    """Capacity errors are the other canonical failover case."""
+    router = _two_group_router()
+    throttled = litellm.RateLimitError(message="slow down", model="primary", llm_provider="openai")
+
+    response, attempted = await _call(router, throttled)
+
+    assert response["served_by"] == "twin"
+    assert attempted == ["primary", "twin"]

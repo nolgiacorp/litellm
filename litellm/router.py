@@ -136,6 +136,7 @@ from litellm.router_utils.cooldown_handlers import (
 from litellm.router_utils.fallback_event_handlers import (
     _check_non_standard_fallback_format,
     get_fallback_model_group,
+    is_request_rejection,
     run_async_fallback,
 )
 from litellm.router_utils.get_retry_from_policy import (
@@ -6158,6 +6159,17 @@ class Router:
         fallback_failure_exception_str = ""
 
         if disable_fallbacks is True or original_model_group is None:
+            raise e
+
+        # A rejection of the request itself is terminal: no other deployment can
+        # satisfy it, and falling over to one whose contract happens to differ
+        # substitutes a provider the caller never asked for. See
+        # is_request_rejection.
+        if is_request_rejection(e):
+            verbose_router_logger.debug(
+                f"Not falling back for {original_model_group}: {type(e).__name__} rejects the request itself, "
+                f"so another deployment would either reject it identically or silently serve something else."
+            )
             raise e
 
         input_kwargs = {
