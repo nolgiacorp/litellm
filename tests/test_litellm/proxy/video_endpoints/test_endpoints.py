@@ -27,6 +27,7 @@ mock's call args), and a brand-new kwarg added to this layer surfaces as a failu
 """
 
 import os
+import re
 import sys
 from contextlib import ExitStack
 from dataclasses import dataclass
@@ -654,3 +655,113 @@ async def test_extension__extracts_nested_video_id_full_contract(harness):
         "custom_llm_provider": "azure",
         "model": "azure-sora",
     }
+
+
+# =========================================================================== #
+#   Route registration order  -  literal paths vs /videos/{video_id}          #
+# =========================================================================== #
+
+_PARAM_SEGMENT = re.compile(r"\{[^}]+\}")
+# A path segment no real route declares literally, so substituting it for a path
+# parameter cannot accidentally collide with some other route's literal segment.
+_SAMPLE_SEGMENT = "__sample__"
+
+
+def _video_api_routes():
+    from fastapi.routing import APIRoute
+
+    from litellm.proxy.proxy_server import app
+
+    return tuple(
+        route
+        for route in app.routes
+        if isinstance(route, APIRoute) and re.match(r"^(/v1)?/videos(/|$)", route.path)
+    )
+
+
+def _concrete_sample(path: str) -> str:
+    """The narrowest real request path this route serves, with params filled in."""
+    return _PARAM_SEGMENT.sub(_SAMPLE_SEGMENT, path)
+
+
+def test_no_video_route_is_shadowed_by_an_earlier_parameterized_route():
+    """
+    Every literal /videos/* path must be registered before any parameterized route
+    that would also match it.
+
+    Starlette resolves in registration order and takes the first match, so a literal
+    path registered after /videos/{video_id} is swallowed: "capabilities" or
+    "characters" is parsed as a video id and the caller gets a client error from the
+    wrong handler. Nothing goes red; the feature is simply unreachable.
+
+    This asserts the property for every video route the app registers rather than
+    for one known pair, so a NEW literal route appended to the bottom of
+    endpoints.py (which is how /videos/characters, /videos/edits and
+    /videos/extensions all ended up below the parameterized block) fails here
+    instead of shipping dead.
+
+    Deliberately method-blind. Today POST /videos/characters survives only because
+    the parameterized route is GET-only, so Starlette records a 405 partial and
+    keeps scanning. That is an accident of the current verb set, not a guarantee:
+    adding a GET listing on a literal path, or any verb to the parameterized route,
+    silently re-opens the shadow. Registration order is the property worth pinning.
+    """
+    routes = _video_api_routes()
+    assert routes, "no /videos routes registered; the router wiring changed"
+
+    shadowed = tuple(
+        (later.path, earlier.path)
+        for index, later in enumerate(routes)
+        for earlier in routes[:index]
+        if earlier.path != later.path and earlier.path_regex.match(_concrete_sample(later.path))
+    )
+
+    assert not shadowed, "\n".join(
+        f"{later} is registered AFTER {earlier}, which already matches it, so {later} is unreachable. "
+        f"Move its @router decorators above the {earlier} handler in "
+        f"litellm/proxy/video_endpoints/endpoints.py"
+        for later, earlier in shadowed
+    )
+
+
+def test_every_literal_video_route_still_resolves_to_its_own_handler():
+    """
+    The ordering assertion above is structural; this one pins the observable result
+    by resolving each path exactly as Starlette's router does (first FULL match wins,
+    otherwise the first PARTIAL match answers 405).
+
+    Without it, a reordering that satisfies the index comparison but breaks dispatch
+    some other way would still pass.
+    """
+    from starlette.routing import Match
+
+    from litellm.proxy.proxy_server import app
+
+    def resolve(method: str, path: str) -> str | None:
+        scope = {"type": "http", "method": method, "path": path, "root_path": "", "headers": []}
+        for route in app.routes:
+            match, _ = route.matches(scope)
+            if match == Match.FULL:
+                return getattr(route.endpoint, "__name__", None)
+        return None
+
+    expected = (
+        ("GET", "/v1/videos/capabilities", "video_capabilities"),
+        ("GET", "/videos/capabilities", "video_capabilities"),
+        ("POST", "/v1/videos/characters", "video_create_character"),
+        ("POST", "/videos/characters", "video_create_character"),
+        ("GET", "/v1/videos/characters/char_abc", "video_get_character"),
+        ("POST", "/v1/videos/edits", "video_edit"),
+        ("POST", "/videos/edits", "video_edit"),
+        ("POST", "/v1/videos/extensions", "video_extension"),
+        ("POST", "/videos/extensions", "video_extension"),
+        # A character id that happens to spell "content" must not fall into
+        # /videos/{video_id}/content, which is what it did before the reorder.
+        ("GET", "/v1/videos/characters/content", "video_get_character"),
+        # The parameterized routes still win for real video ids.
+        ("GET", "/v1/videos/video_abc", "video_status"),
+        ("GET", "/v1/videos/video_abc/content", "video_content"),
+        ("POST", "/v1/videos/video_abc/remix", "video_remix"),
+    )
+
+    assert tuple((method, path, resolve(method, path)) for method, path, _ in expected) == expected
