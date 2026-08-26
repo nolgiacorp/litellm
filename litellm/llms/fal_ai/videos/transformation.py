@@ -287,6 +287,10 @@ def _supports_negative_prompt(normalized_model: str) -> bool:
 # accept under a name this transformation has never seen.
 _AUDITED_MODEL_FAMILY_MARKERS: tuple[str, ...] = ("seedance-2.0", "kling-video/v3")
 
+_H3_MAX_I2V_MODEL_MARKER = "minimax/h3-max/image-to-video"
+
+_H3_MAX_I2V_CAPABILITY_PARAMS = frozenset(("input_reference", "image_url", "end_image_url"))
+
 # The upscale/restore lane takes media plus restore controls only: input_reference is
 # its video_url, and it has no start-frame, end-frame or audio surface at all.
 _UPSCALE_MODEL_MARKER = "seedvr/upscale/video"
@@ -350,7 +354,11 @@ class FalAIVideoConfig(BaseVideoConfig):
         generate_audio, image-to-video lanes add a top-level end_image_url, and the
         seedance reference-to-video lane adds the reference-media block (image_urls /
         video_urls / audio_urls) plus bitrate_mode. negative_prompt is narrower still
-        and is scoped to the kling-video/v3 family minus its turbo variants.
+        and is scoped to the kling-video/v3 family minus its turbo variants. The
+        minimax/h3-max image-to-video app is audited on its own, exact schema: start
+        frame plus end frame and nothing else, because the H3 family renders audio
+        unconditionally and exposes no generate_audio field; its text-to-video
+        sibling stays undeclared since it takes none of the vocabulary at all.
 
         An unrecognized fal app id stays UNDECLARED rather than being reported as
         exhaustively known. fal is a gateway, so a custom or newly added app may
@@ -364,6 +372,8 @@ class FalAIVideoConfig(BaseVideoConfig):
         normalized = model.lower()
         if _UPSCALE_MODEL_MARKER in normalized:
             return DeclaredCapabilityParams(_UPSCALE_CAPABILITY_PARAMS)
+        if _H3_MAX_I2V_MODEL_MARKER in normalized:
+            return DeclaredCapabilityParams(_H3_MAX_I2V_CAPABILITY_PARAMS)
         if not any(marker in normalized for marker in _AUDITED_MODEL_FAMILY_MARKERS):
             return UndeclaredCapabilityParams()
         return DeclaredCapabilityParams(
