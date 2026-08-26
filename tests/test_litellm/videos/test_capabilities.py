@@ -67,6 +67,8 @@ SILENTLY_DROPPED_BEFORE = (
     (MinimaxVideoConfig(), "MiniMax-Hailuo-2.3", "end_image_url", "https://example.com/end.png"),
     (MinimaxVideoConfig(), "MiniMax-Hailuo-2.3", "image_urls", ["https://example.com/a.png"]),
     (FalAIVideoConfig(), "fal_ai/bytedance/seedance-2.0/text-to-video", "end_image_url", "https://e.com/e.png"),
+    (FalAIVideoConfig(), "fal_ai/minimax/h3-max/image-to-video", "generate_audio", True),
+    (FalAIVideoConfig(), "fal_ai/minimax/h3-max/image-to-video", "image_urls", ["https://example.com/a.png"]),
     # negative_prompt. None of these surfaces has a negative channel: xAI's published
     # OpenAPI schema for /v1/videos/generations does not contain the string
     # "negative"; MiniMax's legacy body and its /v2 content-item shape both carry a
@@ -143,6 +145,11 @@ EXECUTED_CAPABILITIES = (
     ),
     # fal's kling twin does take an end frame, unlike the direct kling route.
     (FalAIVideoConfig(), "fal_ai/fal-ai/kling-video/v3/pro/image-to-video", {"end_image_url": "https://e.com/e.png"}),
+    (
+        FalAIVideoConfig(),
+        "fal_ai/minimax/h3-max/image-to-video",
+        {"input_reference": "https://example.com/s.png", "end_image_url": "https://example.com/e.png"},
+    ),
     # negative_prompt on the surfaces that do carry one. fal's non-turbo
     # kling-video/v3 schemas publish it in both directions (default
     # "blur, distort, and low quality"), unlike the direct kling route below.
@@ -271,6 +278,23 @@ def test_fal_upscale_app_declares_only_the_media_slot_it_reads():
     _map(FalAIVideoConfig(), model, {"input_reference": "https://e.com/src.mp4"})
     with pytest.raises(litellm.BadRequestError):
         _map(FalAIVideoConfig(), model, {"generate_audio": True})
+
+
+def test_fal_h3_max_i2v_declares_its_exact_frame_surface():
+    """
+    The h3-max image-to-video schema on fal publishes image_url and end_image_url and
+    no audio field, so the declaration carries exactly the frame surface; its
+    text-to-video sibling takes none of the vocabulary and must stay undeclared so
+    its passthrough is untouched.
+    """
+    config = FalAIVideoConfig()
+    support = config.get_capability_param_support("fal_ai/minimax/h3-max/image-to-video")
+    assert isinstance(support, DeclaredCapabilityParams)
+    assert support.supported == frozenset(("input_reference", "image_url", "end_image_url"))
+    assert isinstance(
+        config.get_capability_param_support("fal_ai/minimax/h3-max/text-to-video"),
+        UndeclaredCapabilityParams,
+    )
 
 
 def test_kling_image_url_alias_sets_the_start_frame():
