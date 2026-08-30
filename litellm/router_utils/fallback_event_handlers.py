@@ -28,8 +28,14 @@ else:
 # request, and the LiteLLM-level settings (api_key, api_base, timeout, metadata,
 # num_retries, ...) that configure the call but never reach the provider payload.
 # An entry made only of these resends the rejected payload verbatim.
-_ROUTER_FALLBACK_ENTRY_KEYS = frozenset(("model", "_target_order", "_excluded_deployment_ids"))
-_NON_PAYLOAD_FALLBACK_KEYS = _ROUTER_FALLBACK_ENTRY_KEYS | frozenset(all_litellm_params) | frozenset(("timeout",))
+_ROUTER_FALLBACK_ENTRY_KEYS = frozenset(
+    ("model", "_target_order", "_excluded_deployment_ids")
+)
+_NON_PAYLOAD_FALLBACK_KEYS = (
+    _ROUTER_FALLBACK_ENTRY_KEYS
+    | frozenset(all_litellm_params)
+    | frozenset(("timeout",))
+)
 
 
 def get_fallback_model_name(fallback: Any) -> Optional[str]:
@@ -81,7 +87,9 @@ class _FallbackSuccessAsyncIterator:
             await aclose()
 
 
-def _attach_custom_stream_success_log(response: CustomStreamWrapper, on_success: Any) -> CustomStreamWrapper:
+def _attach_custom_stream_success_log(
+    response: CustomStreamWrapper, on_success: Any
+) -> CustomStreamWrapper:
     stream_class = type(response)
     stream_aiter = stream_class.__aiter__
     stream_anext = stream_class.__anext__
