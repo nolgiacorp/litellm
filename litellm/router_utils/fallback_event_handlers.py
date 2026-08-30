@@ -1,6 +1,6 @@
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Protocol, Tuple, Union, runtime_checkable
 
 import litellm
 from litellm._logging import verbose_router_logger
@@ -32,7 +32,7 @@ _ROUTER_FALLBACK_ENTRY_KEYS = frozenset(("model", "_target_order", "_excluded_de
 _NON_PAYLOAD_FALLBACK_KEYS = _ROUTER_FALLBACK_ENTRY_KEYS | frozenset(all_litellm_params) | frozenset(("timeout",))
 
 
-def get_fallback_model_name(fallback: Any) -> Optional[str]:
+def get_fallback_model_name(fallback: object) -> str | None:
     """Return only the routing identifier from a fallback entry."""
     if isinstance(fallback, str):
         return fallback
@@ -54,19 +54,27 @@ def _fallback_error_for_log(error: Exception, kwargs: dict, limit: int = 600) ->
     return flat if len(flat) <= limit else flat[:limit] + "…"
 
 
+@runtime_checkable
+class _ObjectAsyncIterator(Protocol):
+    def __aiter__(self) -> AsyncIterator[object]: ...
+
+    async def __anext__(self) -> object: ...
+
+
 class _FallbackSuccessAsyncIterator:
-    def __init__(self, inner: Any, on_success: Any) -> None:
+    def __init__(
+        self,
+        inner: _ObjectAsyncIterator,
+        on_success: Callable[[], Awaitable[None]],
+    ) -> None:
         self._inner = inner
         self._on_success = on_success
         self._success_logged = False
 
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._inner, name)
-
     def __aiter__(self) -> "_FallbackSuccessAsyncIterator":
         return self
 
-    async def __anext__(self) -> Any:
+    async def __anext__(self) -> object:
         try:
             return await self._inner.__anext__()
         except StopAsyncIteration:
@@ -81,18 +89,21 @@ class _FallbackSuccessAsyncIterator:
             await aclose()
 
 
-def _attach_custom_stream_success_log(response: CustomStreamWrapper, on_success: Any) -> CustomStreamWrapper:
+def _attach_custom_stream_success_log(
+    response: CustomStreamWrapper,
+    on_success: Callable[[], Awaitable[None]],
+) -> CustomStreamWrapper:
     stream_class = type(response)
     stream_aiter = stream_class.__aiter__
     stream_anext = stream_class.__anext__
 
-    def __aiter__(self: CustomStreamWrapper) -> Any:
+    def __aiter__(self: CustomStreamWrapper) -> AsyncIterator[object]:
         iterator = stream_aiter(self)
-        if iterator is self:
+        if iterator is self or not isinstance(iterator, _ObjectAsyncIterator):
             return self
         return _FallbackSuccessAsyncIterator(iterator, on_success)
 
-    async def __anext__(self: CustomStreamWrapper) -> Any:
+    async def __anext__(self: CustomStreamWrapper) -> object:
         try:
             return await stream_anext(self)
         except StopAsyncIteration:
@@ -107,6 +118,40 @@ def _attach_custom_stream_success_log(response: CustomStreamWrapper, on_success:
         {"__aiter__": __aiter__, "__anext__": __anext__},
     )
     response.__class__ = completion_class
+    return response
+
+
+async def _finalize_fallback_success(
+    response: object,
+    fallback_model_name: str | None,
+    original_model_group: str,
+    kwargs: dict,
+    original_exception: Exception,
+) -> object:
+    success_logged = False
+
+    async def log_success() -> None:
+        nonlocal success_logged
+        if success_logged:
+            return
+        success_logged = True
+        verbose_router_logger.warning("router_fallback_succeeded model_group=%s", fallback_model_name)
+        await log_success_fallback_event(
+            original_model_group=original_model_group,
+            kwargs=kwargs,
+            original_exception=original_exception,
+        )
+
+    if isinstance(response, CustomStreamWrapper):
+        try:
+            return _attach_custom_stream_success_log(response, log_success)
+        except TypeError:
+            await log_success()
+            return response
+    if isinstance(response, _ObjectAsyncIterator):
+        return _FallbackSuccessAsyncIterator(response, log_success)
+
+    await log_success()
     return response
 
 
@@ -352,31 +397,13 @@ async def run_async_fallback(
                 fallback_errors=(list(fallback_errors) if include_fallback_errors else None),
             )
 
-            success_logged = False
-
-            async def log_success() -> None:
-                nonlocal success_logged
-                if success_logged:
-                    return
-                success_logged = True
-                verbose_router_logger.warning("router_fallback_succeeded model_group=%s", fallback_model_name)
-                await log_success_fallback_event(
-                    original_model_group=original_model_group,
-                    kwargs=kwargs,
-                    original_exception=original_exception,
-                )
-
-            if isinstance(response, CustomStreamWrapper):
-                try:
-                    return _attach_custom_stream_success_log(response, log_success)
-                except TypeError:
-                    await log_success()
-                    return response
-            if hasattr(response, "__anext__"):
-                return _FallbackSuccessAsyncIterator(response, log_success)
-
-            await log_success()
-            return response
+            return await _finalize_fallback_success(
+                response=response,
+                fallback_model_name=fallback_model_name,
+                original_model_group=original_model_group,
+                kwargs=kwargs,
+                original_exception=original_exception,
+            )
         except Exception as e:
             error_from_fallbacks = e
             fallback_errors = fallback_errors + (get_fallback_error_info(e),)
