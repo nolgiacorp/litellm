@@ -364,7 +364,7 @@ async def run_async_fallback(
 
     for mg in fallback_model_group:
         fallback_model_name = get_fallback_model_name(mg)
-        if fallback_model_name == original_model_group:
+        if mg == original_model_group:
             continue
         # Once the request itself has been rejected, only entries that rewrite it
         # can still help; the rest resend the rejected payload.
