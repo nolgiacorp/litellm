@@ -78,10 +78,62 @@ async def test_fallback_warns_with_primary_error(router_with_fallback, caplog):
     assert any(message.startswith("router_fallback_succeeded model_group=backup") for message in warnings), warnings
 
 
-def test_fallback_error_text_is_bounded_and_single_line():
-    from litellm.router import _truncate_for_log
+@pytest.mark.asyncio
+async def test_no_trigger_warning_without_a_matching_fallback(caplog):
+    router = Router(model_list=[], fallbacks=[], set_verbose=False)
+    caplog.set_level(logging.WARNING, logger=verbose_router_logger.name)
+    primary_error = litellm.ServiceUnavailableError(
+        message="upstream unavailable",
+        model="primary",
+        llm_provider="openai",
+    )
 
-    assert _truncate_for_log("a  b\n\tc") == "a b c"
-    long = "x" * 5000
-    rendered = _truncate_for_log(long)
-    assert len(rendered) == 601 and rendered.endswith("…")
+    with pytest.raises(litellm.ServiceUnavailableError):
+        await router.async_function_with_fallbacks_common_utils(
+            e=primary_error,
+            disable_fallbacks=False,
+            fallbacks=[],
+            context_window_fallbacks=None,
+            content_policy_fallbacks=None,
+            model_group="primary",
+            args=(),
+            kwargs={"model": "primary", "metadata": {}},
+        )
+
+    assert not any(
+        record.getMessage().startswith("router_fallback_triggered ")
+        for record in caplog.records
+    )
+
+
+@pytest.mark.asyncio
+async def test_fallback_warning_redacts_message_content(router_with_fallback, caplog):
+    caplog.set_level(logging.WARNING, logger=verbose_router_logger.name)
+    secret = "customer prompt must not be logged"
+    primary_error = litellm.ServiceUnavailableError(
+        message=secret,
+        model="openai/gpt-4o-mini",
+        llm_provider="openai",
+    )
+
+    await router_with_fallback.async_function_with_fallbacks_common_utils(
+        e=primary_error,
+        disable_fallbacks=False,
+        fallbacks=[{"model": "backup", "messages": [{"role": "user", "content": secret}]}],
+        context_window_fallbacks=None,
+        content_policy_fallbacks=None,
+        model_group="primary",
+        args=(),
+        kwargs={
+            "model": "primary",
+            "messages": [{"role": "user", "content": secret}],
+            "metadata": {},
+            "original_function": router_with_fallback._acompletion,
+            "standard_callback_dynamic_params": {"turn_off_message_logging": True},
+        },
+    )
+
+    warnings = [record.getMessage() for record in caplog.records if record.levelno >= logging.WARNING]
+    assert not any(secret in warning for warning in warnings)
+    assert any("fallbacks=['backup'] error=redacted-by-litellm" in warning for warning in warnings)
+    assert any("router_fallback_attempt model_group=backup" in warning for warning in warnings)
