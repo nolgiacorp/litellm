@@ -254,9 +254,7 @@ async def run_async_fallback(
             if include_fallback_errors:
                 kwargs["include_fallback_errors"] = include_fallback_errors
             response = await litellm_router.async_function_with_fallbacks(*args, **kwargs)
-            verbose_router_logger.warning(
-                "router_fallback_succeeded model_group=%s", mask_sensitive_structure(mg)
-            )
+            verbose_router_logger.warning("router_fallback_succeeded model_group=%s", mask_sensitive_structure(mg))
             response = add_fallback_headers_to_response(
                 response=response,
                 attempted_fallbacks=fallback_depth,

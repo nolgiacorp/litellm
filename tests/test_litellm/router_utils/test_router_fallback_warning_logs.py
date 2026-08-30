@@ -27,7 +27,11 @@ def router_with_fallback():
             },
             {
                 "model_name": "backup",
-                "litellm_params": {"model": "openai/gpt-4o-mini", "api_key": "sk-backup", "mock_response": "from backup"},
+                "litellm_params": {
+                    "model": "openai/gpt-4o-mini",
+                    "api_key": "sk-backup",
+                    "mock_response": "from backup",
+                },
             },
         ],
         fallbacks=[{"primary": ["backup"]}],
