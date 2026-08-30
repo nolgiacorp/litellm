@@ -295,9 +295,11 @@ class VertexGeminiConfig(VertexAIBaseConfig, BaseConfig):
         # signature round-trip and the dummy-signature fallback and kills
         # every multi-turn tool-calling conversation on the alias.
         model_id = model.rsplit("/", 1)[-1]
-        if model_id.startswith("gemini-") and model_id.endswith("-latest"):
-            return True
-        return False
+        return model_id in {
+            "gemini-flash-latest",
+            "gemini-flash-lite-latest",
+            "gemini-pro-latest",
+        }
 
     @staticmethod
     def _forward_gemini_function_call_id(model: str) -> bool:

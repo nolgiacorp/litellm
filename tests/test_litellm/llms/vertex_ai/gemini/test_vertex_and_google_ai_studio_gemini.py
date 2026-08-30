@@ -2286,6 +2286,12 @@ def test_is_gemini_3_or_newer():
     assert VertexGeminiConfig._is_gemini_3_or_newer("gemini-2.0-flash") == False
     assert VertexGeminiConfig._is_gemini_3_or_newer("gemini-1.5-pro") == False
     assert VertexGeminiConfig._is_gemini_3_or_newer("gemini-pro") == False
+    assert (
+        VertexGeminiConfig._is_gemini_3_or_newer(
+            "gemini-2.5-flash-native-audio-latest"
+        )
+        == False
+    )
 
     # Edge cases
     assert VertexGeminiConfig._is_gemini_3_or_newer("") == False
