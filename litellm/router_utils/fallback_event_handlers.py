@@ -41,6 +41,11 @@ def get_fallback_model_name(fallback: object) -> str | None:
     return None
 
 
+def _fallback_names_for_log(fallbacks: Sequence[object]) -> str:
+    names = (get_fallback_model_name(fallback) for fallback in fallbacks)
+    return f"[{', '.join(repr(name) for name in names)}]"
+
+
 def _fallback_error_for_log(
     error: Exception,
     kwargs: dict,  # mutable-ok: existing router kwargs are updated throughout fallback handling
@@ -375,7 +380,7 @@ async def run_async_fallback(
                     original_model_group,
                     type(original_exception).__name__,
                     getattr(original_exception, "status_code", None),
-                    tuple(get_fallback_model_name(entry) for entry in fallback_model_group),
+                    _fallback_names_for_log(fallback_model_group),
                     _fallback_error_for_log(original_exception, kwargs),
                 )
             # WARNING, not INFO: the proxy's default log level hides INFO, and a
