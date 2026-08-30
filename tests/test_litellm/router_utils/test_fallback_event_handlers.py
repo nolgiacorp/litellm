@@ -1,11 +1,14 @@
 import json
+import logging
 
 import httpx
 import pytest
 
 import litellm
 from litellm import Router
+from litellm._logging import verbose_router_logger
 from litellm.router_utils.fallback_event_handlers import (
+    _fallback_error_for_log,
     get_fallback_model_group,
     is_request_rejection,
     run_async_fallback,
@@ -31,6 +34,37 @@ class AlwaysFailRouter:
 
     async def async_function_with_fallbacks(self, *args, **kwargs):
         raise RuntimeError("fallback model also failed")
+
+
+class AsyncFallbackStream:
+    def __init__(self, error=None):
+        self._items = iter(["chunk"])
+        self._error = error
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        item = next(self._items, None)
+        if item is not None:
+            return item
+        if self._error is not None:
+            raise self._error
+        raise StopAsyncIteration
+
+
+class StreamingRouter(FakeRouter):
+    def __init__(self, error=None):
+        self.error = error
+
+    async def async_function_with_fallbacks(self, *args, **kwargs):
+        return AsyncFallbackStream(self.error)
+
+
+def test_fallback_error_text_is_bounded_and_single_line():
+    assert _fallback_error_for_log(RuntimeError("a  b\n\tc"), {}) == "a b c"
+    rendered = _fallback_error_for_log(RuntimeError("x" * 5000), {})
+    assert len(rendered) == 601 and rendered.endswith("…")
 
 
 @pytest.mark.asyncio
@@ -85,6 +119,50 @@ async def test_run_async_fallback_raises_when_all_fallbacks_fail():
             fallback_depth=0,
             include_fallback_errors=True,
         )
+
+
+@pytest.mark.asyncio
+async def test_stream_fallback_logs_success_only_after_completion(caplog):
+    caplog.set_level(logging.WARNING, logger=verbose_router_logger.name)
+    response = await run_async_fallback(
+        litellm_router=StreamingRouter(),
+        fallback_model_group=[{"model": "fallback-model", "_target_order": 2}],
+        original_model_group="primary-model",
+        original_exception=RuntimeError("original request failed"),
+        max_fallbacks=3,
+        fallback_depth=0,
+        model="primary-model",
+    )
+
+    warnings = [record.getMessage() for record in caplog.records]
+    assert "router_fallback_attempt model_group=fallback-model from=primary-model" in warnings
+    assert not any(message.startswith("router_fallback_succeeded ") for message in warnings)
+
+    assert [item async for item in response] == ["chunk"]
+    assert "router_fallback_succeeded model_group=fallback-model" in [
+        record.getMessage() for record in caplog.records
+    ]
+
+
+@pytest.mark.asyncio
+async def test_stream_fallback_does_not_log_success_when_iteration_fails(caplog):
+    caplog.set_level(logging.WARNING, logger=verbose_router_logger.name)
+    response = await run_async_fallback(
+        litellm_router=StreamingRouter(RuntimeError("stream failed")),
+        fallback_model_group=["fallback-model"],
+        original_model_group="primary-model",
+        original_exception=RuntimeError("original request failed"),
+        max_fallbacks=3,
+        fallback_depth=0,
+        model="primary-model",
+    )
+
+    with pytest.raises(RuntimeError, match="stream failed"):
+        [item async for item in response]
+    assert not any(
+        record.getMessage().startswith("router_fallback_succeeded ")
+        for record in caplog.records
+    )
 
 
 class RecordingRouter:

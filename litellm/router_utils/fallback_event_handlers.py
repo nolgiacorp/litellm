@@ -1,11 +1,13 @@
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Protocol, Tuple, Union, runtime_checkable
 
 import litellm
 from litellm._logging import verbose_router_logger
 from litellm.integrations.custom_logger import CustomLogger
-from litellm.litellm_core_utils.sensitive_data_masker import mask_sensitive_structure
+from litellm.litellm_core_utils.redact_messages import should_redact_message_logging
+from litellm.litellm_core_utils.secret_redaction import redact_string
+from litellm.litellm_core_utils.streaming_handler import CustomStreamWrapper
 from litellm.router_utils.add_retry_fallback_headers import (
     add_fallback_headers_to_response,
     get_fallback_error_info,
@@ -28,6 +30,143 @@ else:
 # An entry made only of these resends the rejected payload verbatim.
 _ROUTER_FALLBACK_ENTRY_KEYS = frozenset(("model", "_target_order", "_excluded_deployment_ids"))
 _NON_PAYLOAD_FALLBACK_KEYS = _ROUTER_FALLBACK_ENTRY_KEYS | frozenset(all_litellm_params) | frozenset(("timeout",))
+
+
+def get_fallback_model_name(fallback: object) -> str | None:
+    """Return only the routing identifier from a fallback entry."""
+    if isinstance(fallback, str):
+        return fallback
+    if isinstance(fallback, dict) and isinstance(fallback.get("model"), str):
+        return fallback["model"]
+    return None
+
+
+def _fallback_names_for_log(fallbacks: Sequence[object]) -> str:
+    names = (get_fallback_model_name(fallback) for fallback in fallbacks)
+    return f"[{', '.join(repr(name) for name in names)}]"
+
+
+def _fallback_error_for_log(
+    error: Exception,
+    kwargs: dict,  # mutable-ok: existing router kwargs are updated throughout fallback handling
+    limit: int = 600,
+) -> str:
+    if should_redact_message_logging(
+        {  # mutable-ok: callback redaction API requires this request metadata mapping
+            "litellm_params": kwargs,
+            "standard_callback_dynamic_params": kwargs.get("standard_callback_dynamic_params")
+            or {  # mutable-ok: callback redaction API requires this dynamic parameter mapping
+                "turn_off_message_logging": kwargs.get("turn_off_message_logging")
+            },
+        }
+    ):
+        return "redacted-by-litellm"
+    flat = " ".join(redact_string(str(error)).split())
+    return flat if len(flat) <= limit else flat[:limit] + "…"
+
+
+@runtime_checkable
+class _ObjectAsyncIterator(Protocol):
+    def __aiter__(self) -> AsyncIterator[object]: ...
+
+    async def __anext__(self) -> object: ...
+
+
+class _FallbackSuccessAsyncIterator:
+    def __init__(
+        self,
+        inner: _ObjectAsyncIterator,
+        on_success: Callable[[], Awaitable[None]],
+    ) -> None:
+        self._inner = inner
+        self._on_success = on_success
+        self._success_logged = False
+
+    def __aiter__(self) -> "_FallbackSuccessAsyncIterator":
+        return self
+
+    async def __anext__(self) -> object:
+        try:
+            return await self._inner.__anext__()
+        except StopAsyncIteration:
+            if not self._success_logged:
+                self._success_logged = True
+                await self._on_success()
+            raise
+
+    async def aclose(self) -> None:
+        aclose = getattr(self._inner, "aclose", None)
+        if callable(aclose):
+            await aclose()
+
+
+def _attach_custom_stream_success_log(
+    response: CustomStreamWrapper,
+    on_success: Callable[[], Awaitable[None]],
+) -> CustomStreamWrapper:
+    stream_class = type(response)
+    stream_aiter = stream_class.__aiter__
+    stream_anext = stream_class.__anext__
+
+    def __aiter__(self: CustomStreamWrapper) -> AsyncIterator[object]:
+        iterator = stream_aiter(self)
+        if iterator is self or not isinstance(iterator, _ObjectAsyncIterator):
+            return self
+        return _FallbackSuccessAsyncIterator(iterator, on_success)
+
+    async def __anext__(self: CustomStreamWrapper) -> object:
+        try:
+            return await stream_anext(self)
+        except StopAsyncIteration:
+            if not getattr(self, "_fallback_success_logged", False):
+                self._fallback_success_logged = True
+                await on_success()
+            raise
+
+    completion_class = type(
+        f"_FallbackSuccess{stream_class.__name__}",
+        (stream_class,),
+        {  # mutable-ok: type() requires a mutable namespace mapping
+            "__aiter__": __aiter__,
+            "__anext__": __anext__,
+        },
+    )
+    response.__class__ = completion_class
+    return response
+
+
+async def _finalize_fallback_success(
+    response: object,
+    fallback_model_name: str | None,
+    original_model_group: str,
+    kwargs: dict,  # mutable-ok: existing router kwargs feed fallback callbacks
+    original_exception: Exception,
+) -> object:
+    success_logged = False
+
+    async def log_success() -> None:
+        nonlocal success_logged
+        if success_logged:
+            return
+        success_logged = True
+        verbose_router_logger.warning("router_fallback_succeeded model_group=%s", fallback_model_name)
+        await log_success_fallback_event(
+            original_model_group=original_model_group,
+            kwargs=kwargs,
+            original_exception=original_exception,
+        )
+
+    if isinstance(response, CustomStreamWrapper):
+        try:
+            return _attach_custom_stream_success_log(response, log_success)
+        except TypeError:
+            await log_success()
+            return response
+    if isinstance(response, _ObjectAsyncIterator):
+        return _FallbackSuccessAsyncIterator(response, log_success)
+
+    await log_success()
+    return response
 
 
 def is_router_availability_error(error: Exception) -> bool:
@@ -221,8 +360,10 @@ async def run_async_fallback(
     error_from_fallbacks = original_exception
     fallback_errors = (get_fallback_error_info(original_exception),)
     rejected_request: Exception | None = None
+    trigger_logged = False
 
     for mg in fallback_model_group:
+        fallback_model_name = get_fallback_model_name(mg)
         if mg == original_model_group:
             continue
         # Once the request itself has been rejected, only entries that rewrite it
@@ -232,7 +373,25 @@ async def run_async_fallback(
         try:
             # LOGGING
             kwargs = litellm_router.log_retry(kwargs=kwargs, e=original_exception)
-            verbose_router_logger.info(f"Falling back to model_group = {mask_sensitive_structure(mg)}")
+            if not trigger_logged:
+                trigger_logged = True
+                verbose_router_logger.warning(
+                    "router_fallback_triggered model_group=%s error_type=%s status_code=%s fallbacks=%s error=%s",
+                    original_model_group,
+                    type(original_exception).__name__,
+                    getattr(original_exception, "status_code", None),
+                    _fallback_names_for_log(fallback_model_group),
+                    _fallback_error_for_log(original_exception, kwargs),
+                )
+            # WARNING, not INFO: the proxy's default log level hides INFO, and a
+            # hop being taken is exactly what operators need to see (which
+            # deployment actually served a request the caller billed to
+            # another). Pairs with router_fallback_triggered in Router.
+            verbose_router_logger.warning(
+                "router_fallback_attempt model_group=%s from=%s",
+                fallback_model_name,
+                kwargs.get("model"),
+            )
             if isinstance(mg, str):
                 kwargs["model"] = mg
             elif isinstance(mg, dict):
@@ -246,19 +405,19 @@ async def run_async_fallback(
             if include_fallback_errors:
                 kwargs["include_fallback_errors"] = include_fallback_errors
             response = await litellm_router.async_function_with_fallbacks(*args, **kwargs)
-            verbose_router_logger.info("Successful fallback b/w models.")
             response = add_fallback_headers_to_response(
                 response=response,
                 attempted_fallbacks=fallback_depth,
                 fallback_errors=(list(fallback_errors) if include_fallback_errors else None),
             )
-            # callback for successfull_fallback_event():
-            await log_success_fallback_event(
+
+            return await _finalize_fallback_success(
+                response=response,
+                fallback_model_name=fallback_model_name,
                 original_model_group=original_model_group,
                 kwargs=kwargs,
                 original_exception=original_exception,
             )
-            return response
         except Exception as e:
             error_from_fallbacks = e
             fallback_errors = fallback_errors + (get_fallback_error_info(e),)
