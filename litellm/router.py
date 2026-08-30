@@ -323,6 +323,19 @@ class RoutingArgs(enum.Enum):
     ttl = 60  # 1min (RPM/TPM expire key)
 
 
+# Longest error text the fallback WARNING carries: enough for the provider's
+# message (Vertex/OpenAI errors are a few hundred chars), never a full body.
+_FALLBACK_LOG_ERROR_CHARS = 600
+
+
+def _truncate_for_log(text: str, limit: int = _FALLBACK_LOG_ERROR_CHARS) -> str:
+    """One-line, bounded rendering of an exception message for log records."""
+    flat = " ".join(text.split())
+    if len(flat) <= limit:
+        return flat
+    return flat[:limit] + "…"
+
+
 class Router:
     model_names: set = set()
     cache_responses: Optional[bool] = False
@@ -6161,6 +6174,22 @@ class Router:
 
         if disable_fallbacks is True or original_model_group is None:
             raise e
+
+        # A fallback is about to replace the deployment the caller asked for.
+        # Say so at WARNING, with the PRIMARY failure attached: the fallback
+        # chain only ever surfaces its LAST hop's error (see
+        # fallback_failure_exception_str below), so a primary that fails on
+        # every call — or a hop that is itself broken — is invisible at the
+        # default proxy log level unless it is recorded here. Operators alert
+        # on this line ("router_fallback_triggered").
+        verbose_router_logger.warning(
+            "router_fallback_triggered model_group=%s error_type=%s status_code=%s fallbacks=%s error=%s",
+            mask_sensitive_structure(original_model_group),
+            type(e).__name__,
+            getattr(e, "status_code", None),
+            mask_sensitive_structure(fallbacks),
+            _truncate_for_log(str(e)),
+        )
 
         input_kwargs = {
             "litellm_router": self,

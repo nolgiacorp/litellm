@@ -232,7 +232,15 @@ async def run_async_fallback(
         try:
             # LOGGING
             kwargs = litellm_router.log_retry(kwargs=kwargs, e=original_exception)
-            verbose_router_logger.info(f"Falling back to model_group = {mask_sensitive_structure(mg)}")
+            # WARNING, not INFO: the proxy's default log level hides INFO, and a
+            # hop being taken is exactly what operators need to see (which
+            # deployment actually served a request the caller billed to
+            # another). Pairs with router_fallback_triggered in Router.
+            verbose_router_logger.warning(
+                "router_fallback_attempt model_group=%s from=%s",
+                mask_sensitive_structure(mg),
+                mask_sensitive_structure(kwargs.get("model")),
+            )
             if isinstance(mg, str):
                 kwargs["model"] = mg
             elif isinstance(mg, dict):
@@ -246,7 +254,9 @@ async def run_async_fallback(
             if include_fallback_errors:
                 kwargs["include_fallback_errors"] = include_fallback_errors
             response = await litellm_router.async_function_with_fallbacks(*args, **kwargs)
-            verbose_router_logger.info("Successful fallback b/w models.")
+            verbose_router_logger.warning(
+                "router_fallback_succeeded model_group=%s", mask_sensitive_structure(mg)
+            )
             response = add_fallback_headers_to_response(
                 response=response,
                 attempted_fallbacks=fallback_depth,
