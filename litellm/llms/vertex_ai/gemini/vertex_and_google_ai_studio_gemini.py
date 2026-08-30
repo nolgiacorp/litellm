@@ -286,7 +286,20 @@ class VertexGeminiConfig(VertexAIBaseConfig, BaseConfig):
         # Check for Gemini 3 models
         if "gemini-3" in model:
             return True
-        return False
+        # Google's rolling aliases (gemini-flash-latest, gemini-pro-latest,
+        # gemini-flash-lite-latest) resolve to the newest generation, which
+        # has been Gemini 3.x since the 2.5 family was retired. They MUST take
+        # the Gemini 3 path: a 3.x model rejects replayed functionCall parts
+        # without a thoughtSignature (HTTP 400 "Function call is missing a
+        # thought_signature"), so treating the alias as pre-3 drops both the
+        # signature round-trip and the dummy-signature fallback and kills
+        # every multi-turn tool-calling conversation on the alias.
+        model_id = model.rsplit("/", 1)[-1]
+        return model_id in (
+            "gemini-flash-latest",
+            "gemini-flash-lite-latest",
+            "gemini-pro-latest",
+        )
 
     @staticmethod
     def _forward_gemini_function_call_id(model: str) -> bool:
