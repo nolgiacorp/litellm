@@ -2265,6 +2265,21 @@ def test_is_gemini_3_or_newer():
         VertexGeminiConfig._is_gemini_3_or_newer("gemini/gemini-3-pro-preview") == True
     )
 
+    # Google's rolling -latest aliases resolve to the newest (3.x) generation
+    # and must take the Gemini 3 path (thought signatures are mandatory there).
+    assert VertexGeminiConfig._is_gemini_3_or_newer("gemini-flash-latest") == True
+    assert VertexGeminiConfig._is_gemini_3_or_newer("gemini-pro-latest") == True
+    assert (
+        VertexGeminiConfig._is_gemini_3_or_newer("gemini-flash-lite-latest") == True
+    )
+    assert (
+        VertexGeminiConfig._is_gemini_3_or_newer("gemini/gemini-flash-latest") == True
+    )
+    assert (
+        VertexGeminiConfig._is_gemini_3_or_newer("vertex_ai/gemini-pro-latest")
+        == True
+    )
+
     # Gemini 2.5 and older models
     assert VertexGeminiConfig._is_gemini_3_or_newer("gemini-2.5-pro") == False
     assert VertexGeminiConfig._is_gemini_3_or_newer("gemini-2.5-flash") == False
