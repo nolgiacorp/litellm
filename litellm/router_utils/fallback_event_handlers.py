@@ -41,12 +41,18 @@ def get_fallback_model_name(fallback: object) -> str | None:
     return None
 
 
-def _fallback_error_for_log(error: Exception, kwargs: dict, limit: int = 600) -> str:
+def _fallback_error_for_log(
+    error: Exception,
+    kwargs: dict,  # mutable-ok: existing router kwargs are updated throughout fallback handling
+    limit: int = 600,
+) -> str:
     if should_redact_message_logging(
-        {
+        {  # mutable-ok: callback redaction API requires this request metadata mapping
             "litellm_params": kwargs,
             "standard_callback_dynamic_params": kwargs.get("standard_callback_dynamic_params")
-            or {"turn_off_message_logging": kwargs.get("turn_off_message_logging")},
+            or {  # mutable-ok: callback redaction API requires this dynamic parameter mapping
+                "turn_off_message_logging": kwargs.get("turn_off_message_logging")
+            },
         }
     ):
         return "redacted-by-litellm"
@@ -115,7 +121,10 @@ def _attach_custom_stream_success_log(
     completion_class = type(
         f"_FallbackSuccess{stream_class.__name__}",
         (stream_class,),
-        {"__aiter__": __aiter__, "__anext__": __anext__},
+        {  # mutable-ok: type() requires a mutable namespace mapping
+            "__aiter__": __aiter__,
+            "__anext__": __anext__,
+        },
     )
     response.__class__ = completion_class
     return response
@@ -125,7 +134,7 @@ async def _finalize_fallback_success(
     response: object,
     fallback_model_name: str | None,
     original_model_group: str,
-    kwargs: dict,
+    kwargs: dict,  # mutable-ok: existing router kwargs feed fallback callbacks
     original_exception: Exception,
 ) -> object:
     success_logged = False
@@ -366,7 +375,7 @@ async def run_async_fallback(
                     original_model_group,
                     type(original_exception).__name__,
                     getattr(original_exception, "status_code", None),
-                    [get_fallback_model_name(entry) for entry in fallback_model_group],
+                    tuple(get_fallback_model_name(entry) for entry in fallback_model_group),
                     _fallback_error_for_log(original_exception, kwargs),
                 )
             # WARNING, not INFO: the proxy's default log level hides INFO, and a
