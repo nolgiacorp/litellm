@@ -21299,6 +21299,23 @@
             "video"
         ]
     },
+    "gemini/gemini-omni-1.1-flash": {
+        "litellm_provider": "gemini",
+        "max_input_tokens": 32768,
+        "max_tokens": 32768,
+        "mode": "video_generation",
+        "output_cost_per_second": 0.10136,
+        "rpm": 100000,
+        "tpm": 8000000,
+        "source": "https://ai.google.dev/gemini-api/docs/pricing",
+        "supported_modalities": [
+            "text",
+            "image"
+        ],
+        "supported_output_modalities": [
+            "video"
+        ]
+    },
     "gemini/veo-2.0-generate-001": {
         "litellm_provider": "gemini",
         "max_input_tokens": 1024,
