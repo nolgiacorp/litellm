@@ -21200,7 +21200,7 @@
         "max_input_tokens": 32768,
         "max_tokens": 32768,
         "mode": "video_generation",
-        "output_cost_per_second": 0.10,
+        "output_cost_per_second": 0.10136,
         "rpm": 100000,
         "tpm": 8000000,
         "source": "https://ai.google.dev/gemini-api/docs/pricing",

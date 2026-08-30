@@ -33,9 +33,10 @@ class TestGeminiOmniVideoConfig:
         self.config = GeminiOmniVideoConfig()
         self.mock_logging_obj = Mock()
 
-    def test_provider_config_dispatch(self):
+    @pytest.mark.parametrize("model", [MODEL, "gemini-omni-1.1-flash"])
+    def test_provider_config_dispatch(self, model):
         omni = ProviderConfigManager.get_provider_video_config(
-            model=MODEL, provider=LlmProviders.GEMINI
+            model=model, provider=LlmProviders.GEMINI
         )
         assert isinstance(omni, GeminiOmniVideoConfig)
 
@@ -343,6 +344,11 @@ class TestGeminiOmniVideoConfig:
 
         os.environ["LITELLM_LOCAL_MODEL_COST_MAP"] = "True"
         litellm.model_cost = litellm.get_model_cost_map(url="")
-        info = get_model_info("gemini/gemini-omni-flash-preview")
-        assert info["mode"] == "video_generation"
-        assert info["output_cost_per_second"] == 0.10
+        expected_rates = {
+            "gemini/gemini-omni-flash-preview": 0.10,
+            "gemini/gemini-omni-1.1-flash": 0.10136,
+        }
+        for model, expected_rate in expected_rates.items():
+            info = get_model_info(model)
+            assert info["mode"] == "video_generation"
+            assert info["output_cost_per_second"] == expected_rate
