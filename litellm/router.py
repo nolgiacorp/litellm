@@ -7122,29 +7122,10 @@ class Router:
         if include_fallback_errors:
             input_kwargs["include_fallback_errors"] = True
 
-        # A rejection of the request itself is terminal: no other deployment can
-        # satisfy the same request, and falling over to one whose contract happens
-        # to differ substitutes a provider the caller never asked for. See
-        # is_request_rejection.
-        #
-        # The one exception is a client-side fallback that rewrites the request
-        # (e.g. {"model": "backup", "messages": [...]}). That is a deliberate
-        # request repair, so it sends something different and still gets its turn.
-        if is_request_rejection(e):
-            request_repair_fallbacks = get_request_transforming_fallbacks(fallbacks=fallbacks)
-            if not request_repair_fallbacks:
-                verbose_router_logger.debug(
-                    f"Not falling back for {original_model_group}: {type(e).__name__} rejects the request itself, "
-                    f"so another deployment would either reject it identically or silently serve something else."
-                )
-                raise e
-            verbose_router_logger.debug(
-                f"{type(e).__name__} rejects the request itself for {original_model_group}: only the "
-                f"request-transforming fallbacks may run."
-            )
-            input_kwargs["fallback_model_group"] = request_repair_fallbacks
-            input_kwargs["original_model_group"] = original_model_group
-            return await run_async_fallback(*args, **input_kwargs)
+        rejects_request: Final = is_request_rejection(e)
+        request_repair_fallbacks: Final = (
+            get_request_transforming_fallbacks(fallbacks=fallbacks) if rejects_request else []
+        )
 
         # ORDER-BASED FALLBACKS: prepend higher order levels to the fallback list
         # Skip for error types that have their own dedicated fallback handlers
@@ -7172,7 +7153,9 @@ class Router:
             ]
             # Get external fallbacks — handle both standard and non-standard formats
             external_fallback_group: list | None = None
-            if fallbacks is not None and lookup_groups:
+            if rejects_request:
+                external_fallback_group = request_repair_fallbacks
+            elif fallbacks is not None and lookup_groups:
                 if _check_non_standard_fallback_format(fallbacks=fallbacks):
                     # Non-standard formats (e.g. ["claude-3-haiku"] or
                     # [{"model": "...", "messages": [...]}]) are passed through directly
@@ -7200,6 +7183,29 @@ class Router:
                     **input_kwargs,
                 )
                 return response
+
+        # A rejection of the request itself is terminal after any ordered deployments
+        # in the same model group have been tried. Cross-group fallbacks may have a
+        # different contract and must not silently serve a request they interpret
+        # differently. A request-transforming fallback is an explicit repair and is
+        # therefore still allowed.
+        if rejects_request:
+            if not request_repair_fallbacks:
+                verbose_router_logger.debug(
+                    "Not falling back for %s: %s rejects the request itself, so another model group "
+                    "would either reject it identically or silently serve something else.",
+                    original_model_group,
+                    type(e).__name__,
+                )
+                raise e
+            verbose_router_logger.debug(
+                "%s rejects the request itself for %s: only the request-transforming fallbacks may run.",
+                type(e).__name__,
+                original_model_group,
+            )
+            input_kwargs["fallback_model_group"] = request_repair_fallbacks
+            input_kwargs["original_model_group"] = original_model_group
+            return await run_async_fallback(*args, **input_kwargs)
 
         # Weighted intra-group failover (simple-shuffle only); see _maybe_run_weighted_failover.
         if self.enable_weighted_failover and not _skip_order_fallback and original_model_group is not None:

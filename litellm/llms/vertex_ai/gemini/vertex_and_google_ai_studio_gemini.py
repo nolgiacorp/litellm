@@ -1119,8 +1119,10 @@ class VertexGeminiConfig(VertexAIBaseConfig, BaseConfig):
         for param, value in non_default_params.items():
             if drops_sampling_params and param in _GEMINI_3_8_FLASH_DROPPED_SAMPLING_PARAMS:
                 verbose_logger.info(
-                    f"Dropping `{param}` for {model}: Gemini 3.8 Flash and later Flash models no longer accept "
-                    "`temperature`, `top_p` or `top_k`. Move sampling guidance into the system instructions instead."
+                    "Dropping `%s` for %s: Gemini 3.8 Flash and later Flash models no longer accept "
+                    "`temperature`, `top_p` or `top_k`. Move sampling guidance into the system instructions instead.",
+                    param,
+                    model,
                 )
                 continue
             if param == "temperature":
@@ -1160,7 +1162,7 @@ class VertexGeminiConfig(VertexAIBaseConfig, BaseConfig):
             elif param == "n":
                 if VertexGeminiConfig._is_gemini_3_or_newer(model):
                     verbose_logger.info(
-                        f"Dropping `n` for {model}: `candidate_count` is unsupported on Gemini 3 and later."
+                        "Dropping `n` for %s: `candidate_count` is unsupported on Gemini 3 and later.", model
                     )
                 else:
                     optional_params["candidate_count"] = value

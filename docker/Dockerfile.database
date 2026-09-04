@@ -54,7 +54,7 @@ RUN apk add --no-cache \
 # installed interpreter could not import math, uv silently fell back to a
 # managed cpython-3.14.4 (requires-python allows <3.15), and uvloop 0.21.0 has
 # no cp314 wheel, so the build died compiling libuv (Cloud Build 98298003).
-# With these settings that drift fails loudly at `uv sync` instead of moving
+# With these settings that drift fails loudly during dependency sync instead of moving
 # the whole image to a different Python. When it does: bump the wolfi-base
 # digests above to the current tag so glibc matches the repo again.
 ENV UV_PROJECT_ENVIRONMENT=/app/.venv \
