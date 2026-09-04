@@ -16461,6 +16461,64 @@
             "video"
         ]
     },
+    "fal_ai/bytedance/seedance-2.5/text-to-video": {
+        "litellm_provider": "fal_ai",
+        "mode": "video_generation",
+        "output_cost_per_second": 0.4622,
+        "output_cost_per_second_480p": 0.2056,
+        "output_cost_per_second_720p": 0.4622,
+        "output_cost_per_second_1080p": 1.1372,
+        "source": "https://fal.ai/models/bytedance/seedance-2.5/text-to-video",
+        "supported_endpoints": [
+                "/v1/videos"
+        ],
+        "supported_modalities": [
+                "text"
+        ],
+        "supported_output_modalities": [
+                "video"
+        ]
+    },
+    "fal_ai/bytedance/seedance-2.5/image-to-video": {
+        "litellm_provider": "fal_ai",
+        "mode": "video_generation",
+        "output_cost_per_second": 0.4622,
+        "output_cost_per_second_480p": 0.2056,
+        "output_cost_per_second_720p": 0.4622,
+        "output_cost_per_second_1080p": 1.1372,
+        "source": "https://fal.ai/models/bytedance/seedance-2.5/image-to-video",
+        "supported_endpoints": [
+                "/v1/videos"
+        ],
+        "supported_modalities": [
+                "text",
+                "image"
+        ],
+        "supported_output_modalities": [
+                "video"
+        ]
+    },
+    "fal_ai/bytedance/seedance-2.5/reference-to-video": {
+        "litellm_provider": "fal_ai",
+        "mode": "video_generation",
+        "output_cost_per_second": 0.4622,
+        "output_cost_per_second_480p": 0.2056,
+        "output_cost_per_second_720p": 0.4622,
+        "output_cost_per_second_1080p": 1.1372,
+        "source": "https://fal.ai/models/bytedance/seedance-2.5/reference-to-video",
+        "supported_endpoints": [
+                "/v1/videos"
+        ],
+        "supported_modalities": [
+                "text",
+                "image",
+                "video",
+                "audio"
+        ],
+        "supported_output_modalities": [
+                "video"
+        ]
+    },
     "fal_ai/fal-ai/clarity-upscaler": {
         "litellm_provider": "fal_ai",
         "mode": "image_generation",

@@ -66,16 +66,12 @@ FAL_QUEUE_COMPLETED_STATUS = {
 
 
 def _fal_status_response(payload, request_id="abc-123", status_code=200):
-    request = httpx.Request(
-        "GET", f"{FAL_API_BASE}/{KLING_MODEL_ID}/requests/{request_id}/status"
-    )
+    request = httpx.Request("GET", f"{FAL_API_BASE}/{KLING_MODEL_ID}/requests/{request_id}/status")
     return httpx.Response(status_code, json=payload, request=request)
 
 
 def _fal_result_response(payload, request_id="abc-123", status_code=200):
-    request = httpx.Request(
-        "GET", f"{FAL_API_BASE}/{KLING_MODEL_ID}/requests/{request_id}"
-    )
+    request = httpx.Request("GET", f"{FAL_API_BASE}/{KLING_MODEL_ID}/requests/{request_id}")
     return httpx.Response(status_code, json=payload, request=request)
 
 
@@ -170,9 +166,7 @@ class TestFalAIVideoTransformation:
 
     def test_get_complete_url_uses_default_base(self, monkeypatch):
         monkeypatch.delenv("FAL_AI_API_BASE", raising=False)
-        url = self.config.get_complete_url(
-            model=SORA_2_MODEL, api_base=None, litellm_params={}
-        )
+        url = self.config.get_complete_url(model=SORA_2_MODEL, api_base=None, litellm_params={})
         assert url == FAL_API_BASE
 
     def test_get_complete_url_strips_trailing_slash(self):
@@ -317,9 +311,7 @@ class TestFalAIVideoTransformation:
 
     def test_map_openai_params_unpacks_extra_body(self):
         params = self.config.map_openai_params(
-            video_create_optional_params={
-                "extra_body": {"negative_prompt": "blurry", "cfg_scale": 0.5}
-            },
+            video_create_optional_params={"extra_body": {"negative_prompt": "blurry", "cfg_scale": 0.5}},
             model=KLING_MODEL,
             drop_params=False,
         )
@@ -453,10 +445,7 @@ class TestFalAIVideoTransformation:
             headers={},
         )
 
-        assert (
-            url
-            == f"https://attacker.example.com/{KLING_QUEUE_NAMESPACE}/requests/abc-123/status"
-        )
+        assert url == f"https://attacker.example.com/{KLING_QUEUE_NAMESPACE}/requests/abc-123/status"
         assert params == {}
 
     def test_status_and_content_urls_use_owner_app_namespace(self):
@@ -490,9 +479,7 @@ class TestFalAIVideoTransformation:
         assert url == f"{FAL_API_BASE}/fal-ai/sora-2/requests/abc-123/status"
 
     def test_transform_video_status_request_url_path_segment_is_encoded(self):
-        encoded_id = encode_video_id_with_provider(
-            "../../../etc/passwd", "fal_ai", KLING_MODEL_ID
-        )
+        encoded_id = encode_video_id_with_provider("../../../etc/passwd", "fal_ai", KLING_MODEL_ID)
         url, _ = self.config.transform_video_status_retrieve_request(
             video_id=encoded_id,
             api_base=FAL_API_BASE,
@@ -535,9 +522,7 @@ class TestFalAIVideoTransformation:
         assert status_obj.error["message"] == "model timed out"
 
     def test_queue_completed_with_failed_generation_reports_failed_status(self):
-        result_client = _RecordingClient(
-            _fal_result_response(FAL_FILE_DOWNLOAD_ERROR_RESULT, status_code=422)
-        )
+        result_client = _RecordingClient(_fal_result_response(FAL_FILE_DOWNLOAD_ERROR_RESULT, status_code=422))
         config = FalAIVideoConfig(sync_client=result_client)
 
         status_obj = config.transform_video_status_retrieve_response(
@@ -557,9 +542,7 @@ class TestFalAIVideoTransformation:
 
     @pytest.mark.asyncio
     async def test_async_queue_completed_with_failed_generation_reports_failed_status(self):
-        result_client = _RecordingAsyncClient(
-            _fal_result_response(FAL_FILE_DOWNLOAD_ERROR_RESULT, status_code=422)
-        )
+        result_client = _RecordingAsyncClient(_fal_result_response(FAL_FILE_DOWNLOAD_ERROR_RESULT, status_code=422))
         config = FalAIVideoConfig(async_client=result_client)
 
         status_obj = await config.async_transform_video_status_retrieve_response(
@@ -573,18 +556,14 @@ class TestFalAIVideoTransformation:
         assert "Failed to download the file" in status_obj.error["message"]
 
     def test_status_lookup_forwards_authorization_to_result_endpoint(self):
-        result_client = _RecordingClient(
-            _fal_result_response({"video": {"url": "https://cdn.example.com/v.mp4"}})
-        )
+        result_client = _RecordingClient(_fal_result_response({"video": {"url": "https://cdn.example.com/v.mp4"}}))
         config = FalAIVideoConfig(sync_client=result_client)
         request = httpx.Request(
             "GET",
             f"{FAL_API_BASE}/{KLING_MODEL_ID}/requests/abc-123/status",
             headers={"Authorization": "Key secret-token"},
         )
-        status_response = httpx.Response(
-            200, json=FAL_QUEUE_COMPLETED_STATUS, request=request
-        )
+        status_response = httpx.Response(200, json=FAL_QUEUE_COMPLETED_STATUS, request=request)
 
         status_obj = config.transform_video_status_retrieve_response(
             raw_response=status_response,
@@ -597,9 +576,7 @@ class TestFalAIVideoTransformation:
         assert headers == {"Authorization": "Key secret-token"}
 
     def test_queue_completed_with_video_reports_completed_status(self):
-        result_client = _RecordingClient(
-            _fal_result_response({"video": {"url": "https://cdn.example.com/v.mp4"}})
-        )
+        result_client = _RecordingClient(_fal_result_response({"video": {"url": "https://cdn.example.com/v.mp4"}}))
         config = FalAIVideoConfig(sync_client=result_client)
 
         status_obj = config.transform_video_status_retrieve_response(
@@ -613,9 +590,7 @@ class TestFalAIVideoTransformation:
 
     def test_content_on_failed_job_raises_instead_of_serving_json_as_media(self):
         config = FalAIVideoConfig()
-        failed_result = _fal_result_response(
-            FAL_FILE_DOWNLOAD_ERROR_RESULT, status_code=200
-        )
+        failed_result = _fal_result_response(FAL_FILE_DOWNLOAD_ERROR_RESULT, status_code=200)
 
         with pytest.raises(litellm.BadRequestError) as exc_info:
             config.transform_video_content_response(
@@ -644,9 +619,7 @@ class TestFalAIVideoTransformation:
         assert "docs.fal.ai" not in message
 
     @pytest.mark.parametrize("transient_status", [429, 500, 502, 503])
-    def test_transient_result_lookup_failure_is_not_reported_as_generation_failure(
-        self, transient_status
-    ):
+    def test_transient_result_lookup_failure_is_not_reported_as_generation_failure(self, transient_status):
         result_client = _RecordingClient(
             _fal_result_response({"detail": "upstream unavailable"}, status_code=transient_status)
         )
@@ -663,9 +636,7 @@ class TestFalAIVideoTransformation:
         assert exc_info.value.status_code == transient_status
 
     def test_rate_limited_result_lookup_stays_retryable(self):
-        result_client = _RecordingClient(
-            _fal_result_response({"detail": "slow down"}, status_code=429)
-        )
+        result_client = _RecordingClient(_fal_result_response({"detail": "slow down"}, status_code=429))
         config = FalAIVideoConfig(sync_client=result_client)
 
         with pytest.raises(litellm.RateLimitError) as exc_info:
@@ -688,9 +659,7 @@ class TestFalAIVideoTransformation:
             (422, litellm.BadRequestError, 400, False),
         ],
     )
-    def test_get_error_class_preserves_status_categories(
-        self, status_code, expected, expected_status, retryable
-    ):
+    def test_get_error_class_preserves_status_categories(self, status_code, expected, expected_status, retryable):
         with pytest.raises(expected) as exc_info:
             self.config.get_error_class(
                 error_message="upstream said no",
@@ -702,12 +671,8 @@ class TestFalAIVideoTransformation:
         assert litellm._should_retry(exc_info.value.status_code) is retryable
 
     def test_unreadable_result_body_does_not_claim_generation_failed(self):
-        request = httpx.Request(
-            "GET", f"{FAL_API_BASE}/{KLING_MODEL_ID}/requests/abc-123"
-        )
-        result_client = _RecordingClient(
-            httpx.Response(200, content=b"<html>gateway</html>", request=request)
-        )
+        request = httpx.Request("GET", f"{FAL_API_BASE}/{KLING_MODEL_ID}/requests/abc-123")
+        result_client = _RecordingClient(httpx.Response(200, content=b"<html>gateway</html>", request=request))
         config = FalAIVideoConfig(sync_client=result_client)
 
         with pytest.raises(BaseLLMException) as exc_info:
@@ -721,9 +686,7 @@ class TestFalAIVideoTransformation:
 
     def test_transform_video_status_response_tolerates_non_json_body(self):
         mock_response = Mock(spec=httpx.Response)
-        mock_response.json.side_effect = ValueError(
-            "Expecting value: line 1 column 1 (char 0)"
-        )
+        mock_response.json.side_effect = ValueError("Expecting value: line 1 column 1 (char 0)")
 
         status_obj = self.config.transform_video_status_retrieve_response(
             raw_response=mock_response,
@@ -752,16 +715,11 @@ class TestFalAIVideoTransformation:
             litellm_params=GenericLiteLLMParams(),
             headers={},
         )
-        assert (
-            url
-            == f"https://attacker.example.com/{KLING_QUEUE_NAMESPACE}/requests/abc-123"
-        )
+        assert url == f"https://attacker.example.com/{KLING_QUEUE_NAMESPACE}/requests/abc-123"
         assert params == {}
 
     def test_classify_result_handles_video_object(self):
-        outcome = _classify_result_payload(
-            {"video": {"url": "https://cdn.example.com/v.mp4"}}
-        )
+        outcome = _classify_result_payload({"video": {"url": "https://cdn.example.com/v.mp4"}})
         assert outcome == _GeneratedVideo("https://cdn.example.com/v.mp4")
 
     def test_classify_result_handles_top_level_url(self):
@@ -912,12 +870,8 @@ def _handler_poll_responses(result_payload, result_status_code=200):
     status_url = f"{FAL_API_BASE}/{KLING_QUEUE_NAMESPACE}/requests/abc-123/status"
     result_url = f"{FAL_API_BASE}/{KLING_QUEUE_NAMESPACE}/requests/abc-123"
     responses = {
-        status_url: httpx.Response(
-            200, json=FAL_QUEUE_COMPLETED_STATUS, request=httpx.Request("GET", status_url)
-        ),
-        result_url: httpx.Response(
-            result_status_code, json=result_payload, request=httpx.Request("GET", result_url)
-        ),
+        status_url: httpx.Response(200, json=FAL_QUEUE_COMPLETED_STATUS, request=httpx.Request("GET", status_url)),
+        result_url: httpx.Response(result_status_code, json=result_payload, request=httpx.Request("GET", result_url)),
     }
     return status_url, result_url, responses
 
@@ -925,9 +879,7 @@ def _handler_poll_responses(result_payload, result_status_code=200):
 def test_video_status_handler_resolves_result_through_the_callers_client():
     # A caller-supplied client (or one built from ssl_verify) must carry the follow-up
     # result lookup too, or half the poll escapes its transport and CA settings.
-    status_url, result_url, responses = _handler_poll_responses(
-        FAL_FILE_DOWNLOAD_ERROR_RESULT, result_status_code=422
-    )
+    status_url, result_url, responses = _handler_poll_responses(FAL_FILE_DOWNLOAD_ERROR_RESULT, result_status_code=422)
     caller_client = _RecordingHTTPHandler(responses)
 
     video_obj = BaseLLMHTTPHandler().video_status_handler(
@@ -947,9 +899,7 @@ def test_video_status_handler_resolves_result_through_the_callers_client():
 
 @pytest.mark.asyncio
 async def test_async_video_status_handler_resolves_result_through_the_callers_client():
-    status_url, result_url, responses = _handler_poll_responses(
-        {"video": {"url": "https://cdn.example.com/v.mp4"}}
-    )
+    status_url, result_url, responses = _handler_poll_responses({"video": {"url": "https://cdn.example.com/v.mp4"}})
     caller_client = _RecordingAsyncHTTPHandler(responses)
 
     video_obj = await BaseLLMHTTPHandler().async_video_status_handler(
@@ -970,9 +920,7 @@ def test_provider_config_manager_returns_fal_ai_video_config():
     from litellm.types.utils import LlmProviders
     from litellm.utils import ProviderConfigManager
 
-    config = ProviderConfigManager.get_provider_video_config(
-        model=SORA_2_MODEL, provider=LlmProviders.FAL_AI
-    )
+    config = ProviderConfigManager.get_provider_video_config(model=SORA_2_MODEL, provider=LlmProviders.FAL_AI)
     assert isinstance(config, FalAIVideoConfig)
 
 
@@ -986,11 +934,12 @@ def test_provider_config_manager_returns_fal_ai_video_config():
         ("fal_ai/fal-ai/kling-video/v3/standard/image-to-video", ("text", "image")),
         ("fal_ai/fal-ai/kling-video/v3/pro/image-to-video", ("text", "image")),
         ("fal_ai/bytedance/seedance-2.0/image-to-video", ("text", "image")),
+        ("fal_ai/bytedance/seedance-2.5/text-to-video", ("text",)),
+        ("fal_ai/bytedance/seedance-2.5/image-to-video", ("text", "image")),
+        ("fal_ai/bytedance/seedance-2.5/reference-to-video", ("text", "image", "video", "audio")),
     ],
 )
-def test_fal_ai_video_model_registered_with_video_endpoint(
-    model_id: str, expected_modalities: tuple
-):
+def test_fal_ai_video_model_registered_with_video_endpoint(model_id: str, expected_modalities: tuple):
     from litellm.litellm_core_utils.get_model_cost_map import GetModelCostMap
 
     backup = GetModelCostMap.load_local_model_cost_map()
@@ -1001,7 +950,9 @@ def test_fal_ai_video_model_registered_with_video_endpoint(
     assert "/v1/videos" in entry["supported_endpoints"]
     assert tuple(entry["supported_modalities"]) == expected_modalities
     assert entry["supported_output_modalities"] == ["video"]
-    assert isinstance(entry["output_cost_per_video_per_second"], (int, float))
+    # 2.0 rows carry the flat per-video-second basis; 2.5 rows carry the tiered
+    # per-second keys (fal bills 2.5 per token, so the rate follows the output tier).
+    assert isinstance(entry.get("output_cost_per_video_per_second", entry.get("output_cost_per_second")), (int, float))
 
 
 class TestSeedanceReferenceToVideoCogs:
@@ -1035,3 +986,79 @@ class TestSeedanceReferenceToVideoCogs:
             for variant in ("reference-to-video", "text-to-video", "image-to-video")
         }
         assert len(set(costs.values())) == 1, f"seedance variants diverge: {costs}"
+
+
+class TestSeedance25ReferenceToVideo:
+    """Seedance 2.5 on fal (2026-09-03): the reference-to-video app is the ONLY route
+    that takes a reference VIDEO for 2.5 (OpenRouter's video API is stills only), so
+    it is the engine behind edit-style lanes (keep @Video1, add one effect; motion
+    transfer; object swap). Its field names match 2.0's, and the family has to be in
+    the audit list or the reference block is silently undeclared."""
+
+    R2V = "fal_ai/bytedance/seedance-2.5/reference-to-video"
+    I2V = "fal_ai/bytedance/seedance-2.5/image-to-video"
+    T2V = "fal_ai/bytedance/seedance-2.5/text-to-video"
+
+    def test_reference_lane_declares_the_reference_media_block(self):
+        from litellm.videos.capabilities import DeclaredCapabilityParams
+
+        support = FalAIVideoConfig().get_capability_param_support(self.R2V)
+        assert isinstance(support, DeclaredCapabilityParams)
+        assert {"image_urls", "video_urls", "audio_urls", "bitrate_mode", "generate_audio"} <= set(support.supported)
+        assert "end_image_url" not in support.supported
+
+    def test_i2v_lane_declares_end_frame_but_no_reference_media(self):
+        from litellm.videos.capabilities import DeclaredCapabilityParams
+
+        support = FalAIVideoConfig().get_capability_param_support(self.I2V)
+        assert isinstance(support, DeclaredCapabilityParams)
+        assert "end_image_url" in support.supported
+        assert "video_urls" not in support.supported
+
+    def test_t2v_lane_is_declared_with_the_base_vocabulary_only(self):
+        from litellm.videos.capabilities import DeclaredCapabilityParams
+
+        support = FalAIVideoConfig().get_capability_param_support(self.T2V)
+        assert isinstance(support, DeclaredCapabilityParams)
+        assert set(support.supported) == {"input_reference", "image_url", "generate_audio"}
+
+    def test_reference_lane_maps_input_reference_onto_image_urls_array(self):
+        mapped = FalAIVideoConfig().map_openai_params(
+            {"input_reference": "https://cdn.example/still.png", "seconds": 8},
+            self.R2V,
+            drop_params=True,
+        )
+        assert mapped["image_urls"] == ["https://cdn.example/still.png"]
+        assert mapped["duration"] == "8"
+
+    def test_reference_lane_forwards_video_urls_verbatim(self):
+        mapped = FalAIVideoConfig().map_openai_params(
+            {
+                "video_urls": ["https://cdn.example/source.mp4"],
+                "resolution": "720p",
+                "generate_audio": False,
+            },
+            self.R2V,
+            drop_params=True,
+        )
+        assert mapped["video_urls"] == ["https://cdn.example/source.mp4"]
+        assert mapped["resolution"] == "720p"
+        assert mapped["generate_audio"] is False
+
+    def test_i2v_lane_keeps_the_single_image_url_field(self):
+        mapped = FalAIVideoConfig().map_openai_params(
+            {"input_reference": "https://cdn.example/start.png"}, self.I2V, drop_params=True
+        )
+        assert mapped["image_url"] == "https://cdn.example/start.png"
+        assert "image_urls" not in mapped
+
+    def test_tiered_cogs_follow_the_requested_resolution(self):
+        from litellm.cost_calculator import default_video_cost_calculator
+
+        litellm.model_cost = litellm.get_model_cost_map(url="")
+        base = default_video_cost_calculator(
+            model="bytedance/seedance-2.5/reference-to-video",
+            duration_seconds=5,
+            custom_llm_provider="fal_ai",
+        )
+        assert base == pytest.approx(0.4622 * 5), "the untiered request must price at the 720p default"

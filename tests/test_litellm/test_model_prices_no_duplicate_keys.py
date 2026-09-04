@@ -22,9 +22,7 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 _MODULE_PATH = REPO_ROOT / "scripts" / "check_model_prices_duplicate_keys.py"
-_spec = importlib.util.spec_from_file_location(
-    "check_model_prices_duplicate_keys", _MODULE_PATH
-)
+_spec = importlib.util.spec_from_file_location("check_model_prices_duplicate_keys", _MODULE_PATH)
 guard = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(guard)
 
@@ -60,9 +58,7 @@ def test_jp_anthropic_claude_sonnet_4_6_matches_across_price_maps():
     with open(REPO_ROOT / "litellm" / "model_prices_and_context_window_backup.json") as f:
         backup = json.load(f)
 
-    assert backup[model] == root[model], (
-        f"{model} differs between the price map and its backup copy"
-    )
+    assert backup[model] == root[model], f"{model} differs between the price map and its backup copy"
     assert backup[model]["cache_creation_input_token_cost_above_1hr"] == 6.6e-06
 
 
@@ -127,8 +123,7 @@ def test_nol535_zero_cogs_entries_match_across_price_maps():
         "untiered request must price as hd rather than $0"
     )
     assert "output_cost_per_video_per_second" not in flux3, (
-        "output_cost_per_video_per_second is checked before the tiered keys and "
-        "would flatten every tier to one rate"
+        "output_cost_per_video_per_second is checked before the tiered keys and would flatten every tier to one rate"
     )
 
     r2v = root["fal_ai/bytedance/seedance-2.0/reference-to-video"]
@@ -143,8 +138,7 @@ def test_nol535_zero_cogs_entries_match_across_price_maps():
     clarity = root["fal_ai/fal-ai/clarity-upscaler"]
     assert clarity["output_cost_per_pixel"] == 3e-08, "fal bills clarity at $0.03 per megapixel"
     assert "output_cost_per_image" not in clarity, (
-        "a flat per-image rate would shadow nothing but would misprice any "
-        "dimension-less fallback as nonzero guesswork"
+        "a flat per-image rate would shadow nothing but would misprice any dimension-less fallback as nonzero guesswork"
     )
 
 
@@ -214,17 +208,15 @@ def test_guard_detects_duplicate_top_level_key(tmp_path):
     """The exact shape NOL-90 fixed: one model key written twice."""
     path = tmp_path / "dup.json"
     path.write_text(
-        '{\n'
+        "{\n"
         '    "a-model": {"input_cost_per_token": 1e-06},\n'
         '    "jp.anthropic.claude-sonnet-4-6": {"input_cost_per_token": 3.3e-06},\n'
         '    "jp.anthropic.claude-sonnet-4-6": {"input_cost_per_token": 9.9e-06}\n'
-        '}\n'
+        "}\n"
     )
 
     # json.load is blind to this - that is the whole problem.
-    assert json.loads(path.read_text())["jp.anthropic.claude-sonnet-4-6"] == {
-        "input_cost_per_token": 9.9e-06
-    }
+    assert json.loads(path.read_text())["jp.anthropic.claude-sonnet-4-6"] == {"input_cost_per_token": 9.9e-06}
 
     duplicates = guard.find_duplicate_keys(path)
     assert [d.key for d in duplicates] == ["jp.anthropic.claude-sonnet-4-6"]
@@ -237,14 +229,7 @@ def test_guard_detects_duplicate_top_level_key(tmp_path):
 def test_guard_detects_duplicate_nested_key(tmp_path):
     """Duplicates below the top level count too (e.g. a repeated pricing field)."""
     path = tmp_path / "nested.json"
-    path.write_text(
-        '{\n'
-        '    "a-model": {\n'
-        '        "mode": "chat",\n'
-        '        "mode": "video_generation"\n'
-        '    }\n'
-        '}\n'
-    )
+    path.write_text('{\n    "a-model": {\n        "mode": "chat",\n        "mode": "video_generation"\n    }\n}\n')
 
     duplicates = guard.find_duplicate_keys(path)
     assert [d.key for d in duplicates] == ["mode"]
@@ -253,12 +238,7 @@ def test_guard_detects_duplicate_nested_key(tmp_path):
 
 def test_guard_passes_on_clean_file(tmp_path):
     path = tmp_path / "clean.json"
-    path.write_text(
-        '{\n'
-        '    "a-model": {"mode": "chat"},\n'
-        '    "b-model": {"mode": "video_generation"}\n'
-        '}\n'
-    )
+    path.write_text('{\n    "a-model": {"mode": "chat"},\n    "b-model": {"mode": "video_generation"}\n}\n')
 
     assert guard.find_duplicate_keys(path) == []
     assert guard.check(path) is True
@@ -290,3 +270,38 @@ def test_guard_default_targets_are_the_tracked_price_maps():
     """Bare `python scripts/check_model_prices_duplicate_keys.py` must cover both."""
     assert set(guard.DEFAULT_TARGETS) == set(PRICE_MAPS)
     assert guard.main([]) == 0
+
+
+def test_seedance_25_fal_rows_match_across_price_maps():
+    """Seedance 2.5 on fal (2026-09-03): the three app rows must exist in both maps
+    byte-identical (the NOL-90 invariant; deployments read the backup), price per
+    OUTPUT second by tier (fal bills per video token, tokens = w x h x 24 / 1024,
+    $0.0214/1k at 480p and 720p, $0.0234/1k at 1080p), and the reference-to-video
+    row - the only 2.5 route that takes a reference VIDEO - must not diverge from
+    its siblings, the NOL-535 defect on 2.0 replayed onto 2.5."""
+    with open(REPO_ROOT / "model_prices_and_context_window.json") as f:
+        root = json.load(f)
+    with open(REPO_ROOT / "litellm" / "model_prices_and_context_window_backup.json") as f:
+        backup = json.load(f)
+
+    rows = (
+        "fal_ai/bytedance/seedance-2.5/text-to-video",
+        "fal_ai/bytedance/seedance-2.5/image-to-video",
+        "fal_ai/bytedance/seedance-2.5/reference-to-video",
+    )
+    for model in rows:
+        assert model in root, f"{model} missing from canonical price map"
+        assert model in backup, f"{model} missing from backup price map"
+        assert root[model] == backup[model], f"{model} differs between the price map and its backup copy"
+        entry = root[model]
+        assert entry["output_cost_per_second_480p"] == 0.2056
+        assert entry["output_cost_per_second_720p"] == 0.4622
+        assert entry["output_cost_per_second_1080p"] == 1.1372
+        assert entry["output_cost_per_second"] == entry["output_cost_per_second_720p"], (
+            "the base rate must be the 720p tier - 720p is the deployment default"
+        )
+        assert "output_cost_per_video_per_second" not in entry, (
+            "output_cost_per_video_per_second is checked before the tiered keys and would flatten every tier"
+        )
+    r2v = root["fal_ai/bytedance/seedance-2.5/reference-to-video"]
+    assert r2v["supported_modalities"] == ["text", "image", "video", "audio"]

@@ -79,6 +79,11 @@ _SINGLE_IMAGE_URL = _ReferenceField(name="image_url", is_list=False)
 _REFERENCE_FIELD_BY_MODEL_MARKER: tuple[tuple[str, _ReferenceField], ...] = (
     ("kling-video/v3", _ReferenceField(name="start_image_url", is_list=False)),
     ("seedance-2.0/reference-to-video", _ReferenceField(name="image_urls", is_list=True)),
+    # Seedance 2.5 reference-to-video (fal bytedance/seedance-2.5/reference-to-video,
+    # schema read 2026-09-03): the same array field, now up to 30 images beside up to
+    # 10 video_urls and 10 audio_urls (30s combined each). Its t2v sibling takes no
+    # reference field and its i2v sibling takes the single `image_url`, exactly like 2.0.
+    ("seedance-2.5/reference-to-video", _ReferenceField(name="image_urls", is_list=True)),
     ("seedvr/upscale/video", _ReferenceField(name="video_url", is_list=False, fallback_content_type="video/mp4")),
 )
 
@@ -285,7 +290,12 @@ def _supports_negative_prompt(normalized_model: str) -> bool:
 # was audited are listed below; every other app id stays undeclared, which keeps its
 # verbatim passthrough intact rather than 4xx-ing a vocabulary param the app may well
 # accept under a name this transformation has never seen.
-_AUDITED_MODEL_FAMILY_MARKERS: tuple[str, ...] = ("seedance-2.0", "kling-video/v3")
+# seedance-2.5 joined the audit on 2026-09-03: its three fal apps publish the same
+# vocabulary shape as 2.0 (t2v: prompt + generate_audio; i2v: image_url + end_image_url;
+# reference-to-video: image_urls / video_urls / audio_urls + bitrate_mode), with wider
+# reference limits (30 images, 10 videos, 10 audios, 30s combined) that fal validates
+# itself. Neither family exposes camera_fixed, seed on t2v, or enable_safety_checker.
+_AUDITED_MODEL_FAMILY_MARKERS: tuple[str, ...] = ("seedance-2.0", "seedance-2.5", "kling-video/v3")
 
 _H3_MAX_I2V_MODEL_MARKER = "minimax/h3-max/image-to-video"
 
