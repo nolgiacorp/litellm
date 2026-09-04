@@ -2,10 +2,11 @@ import base64
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from json import JSONDecodeError, loads
-from typing import TYPE_CHECKING, Any, Literal, assert_never
+from typing import TYPE_CHECKING, Any, Literal
 
 import httpx
 from httpx._types import RequestFiles
+from typing_extensions import assert_never
 
 import litellm
 from litellm.constants import FAL_AI_DEFAULT_API_BASE
