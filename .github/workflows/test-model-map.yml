@@ -1,0 +1,53 @@
+name: Validate model_prices_and_context_window.json
+
+on:
+  pull_request:
+    branches:
+      - main
+      - litellm_internal_staging
+      - litellm_oss_staging
+      - "litellm_**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  validate-model-prices-json:
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+        with:
+          persist-credentials: false
+
+      - name: Validate model_prices_and_context_window.json
+        run: |
+          jq empty model_prices_and_context_window.json
+          jq empty litellm/model_prices_and_context_window_backup.json
+
+      # jq empty (and json.load) accept a repeated key and silently keep the LAST
+      # occurrence, so a duplicated model entry parses clean while the entry a
+      # reader finds first is dead text. Upstream has handed us two of these
+      # (gemini-omni-flash-preview, jp.anthropic.claude-sonnet-4-6); this catches
+      # the next one at the sync PR instead of in production pricing.
+      - name: Check for duplicate keys in the price maps
+        run: |
+          python3 scripts/check_model_prices_duplicate_keys.py
+
+      - name: Set up uv
+        uses: ./.github/actions/setup-uv-with-retries
+        with:
+          version: "0.10.9"
+
+      # `uv run` installs the project, which builds the litellm-rust bridge through
+      # maturin; the locked aws-sdk crates need a newer rustc than the runner image
+      # preinstalls, so this job must not rely on the image's default toolchain.
+      - name: Set up Rust toolchain
+        uses: ./.github/actions/setup-rust-toolchain
+
+      - name: Check model_prices_and_context_window.schema.json is in sync
+        run: |
+          uv run --frozen python ci_cd/generate_model_prices_schema.py --check

@@ -29,8 +29,9 @@ wrong one here. This module scopes strictness to a closed vocabulary, so the gen
    what the customer actually receives.
 """
 
+from collections.abc import Mapping  # noqa: TID251  # OpenAI-shaped video params are untyped at this boundary
 from dataclasses import dataclass
-from typing import Any, Mapping, NoReturn  # noqa: TID251  # OpenAI-shaped video params are untyped at this boundary
+from typing import Any, NoReturn
 
 import litellm
 

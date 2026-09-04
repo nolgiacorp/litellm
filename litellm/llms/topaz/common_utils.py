@@ -1,11 +1,8 @@
-from typing import List, Optional
-
 from litellm.secret_managers.main import get_secret_str
 from litellm.types.llms.openai import AllMessageValues
 
 from ..base_llm.base_utils import BaseLLMModelInfo
 from ..base_llm.chat.transformation import BaseLLMException
-
 
 TOPAZ_IMAGE_VARIATION_MODELS = (
     "Standard V2",
@@ -70,11 +67,11 @@ class TopazModelInfo(BaseLLMModelInfo):
         self,
         headers: dict,
         model: str,
-        messages: List[AllMessageValues],
+        messages: list[AllMessageValues],
         optional_params: dict,
         litellm_params: dict,
-        api_key: Optional[str] = None,
-        api_base: Optional[str] = None,
+        api_key: str | None = None,
+        api_base: str | None = None,
     ) -> dict:
         if api_key is None:
             raise ValueError("API key is required for Topaz image variations. Set via `TOPAZ_API_KEY` or `api_key=..`")
@@ -84,17 +81,17 @@ class TopazModelInfo(BaseLLMModelInfo):
             "X-API-Key": api_key,
         }
 
-    def get_models(self, api_key: Optional[str] = None, api_base: Optional[str] = None) -> List[str]:
+    def get_models(self, api_key: str | None = None, api_base: str | None = None) -> list[str]:
         return [  # mutable-ok: BaseLLMModelInfo contract returns List[str]
             f"topaz/{model}" for model in (*TOPAZ_IMAGE_VARIATION_MODELS, *sorted(TOPAZ_VIDEO_MODELS))
         ]
 
     @staticmethod
-    def get_api_key(api_key: Optional[str] = None) -> Optional[str]:
+    def get_api_key(api_key: str | None = None) -> str | None:
         return api_key or get_secret_str("TOPAZ_API_KEY")
 
     @staticmethod
-    def get_api_base(api_base: Optional[str] = None) -> Optional[str]:
+    def get_api_base(api_base: str | None = None) -> str | None:
         return api_base or get_secret_str("TOPAZ_API_BASE") or "https://api.topazlabs.com"
 
     @staticmethod

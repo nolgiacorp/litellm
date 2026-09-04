@@ -4,12 +4,6 @@ ignoreUntil = 2026-09-09
 reason = "diskcache has no fixed release published; remove this entry once one exists"
 
 [[IgnoredVulns]]
-id = "GHSA-fp3f-mc75-235c"
-ignoreUntil = 2026-08-14
-reason = "pypdf 6.15.0 fixes this but was published 2026-08-06, inside the 3-day uv exclude-newer cooldown; relock once it is resolvable"
-
-[[IgnoredVulns]]
-id = "GHSA-fwg2-594c-jp42"
-ignoreUntil = 2026-08-14
-reason = "pypdf 6.15.0 fixes this but was published 2026-08-06, inside the 3-day uv exclude-newer cooldown; relock once it is resolvable"
-
+id = "GHSA-h7x2-h6g9-p789"
+ignoreUntil = 2026-09-14
+reason = "mlflow has no fixed release published; remove this entry once one exists"
