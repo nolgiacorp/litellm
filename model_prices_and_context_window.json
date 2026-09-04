@@ -20884,6 +20884,8 @@
         "output_cost_per_reasoning_token": 3.75e-06,
         "output_cost_per_token": 3.75e-06,
         "output_cost_per_token_batches": 1.875e-06,
+        "rpm": 2000,
+        "tpm": 800000,
         "source": "https://ai.google.dev/gemini-api/docs/models/gemini-3.8-flash",
         "supported_endpoints": [
             "/v1/chat/completions",
