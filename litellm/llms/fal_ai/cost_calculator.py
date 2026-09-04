@@ -54,10 +54,14 @@ def _vendor_image_rate(model: str, optional_params: Mapping[str, object], defaul
     if normalized_model.startswith("ideogram/v4"):
         rendering_speed = optional_params.get("rendering_speed")
         if rendering_speed is None:
-            rendering_speed = {"low": "TURBO", "high": "QUALITY"}.get(
-                str(optional_params.get("quality") or "medium").lower(), "BALANCED"
-            )
-        per_megapixel = {"TURBO": 0.0075, "QUALITY": 0.025}.get(str(rendering_speed).upper(), 0.015)
+            rendering_speed = {  # mutable-ok: local lookup table is not exposed or mutated
+                "low": "TURBO",
+                "high": "QUALITY",
+            }.get(str(optional_params.get("quality") or "medium").lower(), "BALANCED")
+        per_megapixel = {  # mutable-ok: local lookup table is not exposed or mutated
+            "TURBO": 0.0075,
+            "QUALITY": 0.025,
+        }.get(str(rendering_speed).upper(), 0.015)
         resolved = dimensions(optional_params.get("image_size") or optional_params.get("size"))
         megapixels = resolved[0] * resolved[1] / 1_000_000 if resolved is not None else 1.0
         return per_megapixel * megapixels
@@ -94,7 +98,7 @@ def cost_calculator(
     if entry is None:
         return 0.0
     output_cost_per_pixel: float = entry.get("output_cost_per_pixel") or 0.0
-    params = optional_params or {}
+    params = optional_params or {}  # mutable-ok: empty fallback is read-only
     output_cost_per_image = _vendor_image_rate(model, params, entry.get("output_cost_per_image") or 0.0)
     output_cost = sum(
         _image_cost(image, output_cost_per_pixel, output_cost_per_image) for image in (image_response.data or ())
