@@ -132,6 +132,11 @@ class TestEndpoint:
     def test_owner_is_prefixed_when_missing(self, config, model, expected):
         assert _url(config, model) == expected
 
+    def test_owner_casing_is_normalized_without_duplicate_prefix(self):
+        assert _url(FalAISeedreamV5Config(), "Bytedance/Seedream/V5/Pro/Edit") == (
+            "https://fal.run/bytedance/seedream/v5/pro/edit"
+        )
+
     def test_api_base_override(self):
         assert _url(FalAIReveConfig(), REVE_EDIT, api_base="https://proxy.internal/") == (
             "https://proxy.internal/reve/2.1/edit"
@@ -344,3 +349,33 @@ class TestPricing:
         image_response = ImageResponse(data=[ImageObject(url="https://x/1.png"), ImageObject(url="https://x/2.png")])
         assert cost_calculator(model=model, image_response=image_response) == pytest.approx(2 * rate)
         assert cost_calculator(model=model, image_response=image_response) > 0
+
+    @pytest.mark.parametrize("model", [SEEDREAM_T2I, SEEDREAM_EDIT])
+    def test_seedream_2k_uses_upper_tier(self, model):
+        response = ImageResponse(data=[ImageObject(url="https://x/1.png")])
+        assert cost_calculator(model, response, {"image_size": "auto_2K"}) == pytest.approx(0.135)
+
+    def test_seedream_edit_charges_for_extra_input_images(self):
+        response = ImageResponse(data=[ImageObject(url="https://x/1.png")])
+        params = {"image_urls": ["https://x/a.png", "https://x/b.png", "https://x/c.png"]}
+        assert cost_calculator(SEEDREAM_EDIT, response, params) == pytest.approx(0.0675 + 2 * 0.0045)
+
+    @pytest.mark.parametrize("speed,rate", [("TURBO", 0.0075), ("BALANCED", 0.015), ("QUALITY", 0.025)])
+    def test_ideogram_rendering_speed_selects_rate(self, speed, rate):
+        response = ImageResponse(data=[ImageObject(url="https://x/1.png")])
+        assert cost_calculator(IDEOGRAM_T2I, response, {"rendering_speed": speed}) == pytest.approx(rate)
+
+    @pytest.mark.parametrize("quality,rate", [("low", 0.0075), ("medium", 0.015), ("high", 0.025)])
+    def test_ideogram_openai_quality_selects_rate(self, quality, rate):
+        response = ImageResponse(data=[ImageObject(url="https://x/1.png")])
+        assert cost_calculator(IDEOGRAM_T2I, response, {"quality": quality}) == pytest.approx(rate)
+
+    def test_ideogram_rate_scales_with_requested_megapixels(self):
+        response = ImageResponse(data=[ImageObject(url="https://x/1.png")])
+        params = {"rendering_speed": "QUALITY", "image_size": {"width": 2048, "height": 1024}}
+        assert cost_calculator(IDEOGRAM_T2I, response, params) == pytest.approx(0.025 * 2.097152)
+
+    @pytest.mark.parametrize("model", [QWEN_T2I, QWEN_EDIT])
+    def test_qwen_2k_uses_upper_tier(self, model):
+        response = ImageResponse(data=[ImageObject(url="https://x/1.png")])
+        assert cost_calculator(model, response, {"image_size": "auto_2K"}) == pytest.approx(0.075)

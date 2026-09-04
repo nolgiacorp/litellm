@@ -137,7 +137,12 @@ class FalAIVendorAppConfig(FalAIBaseConfig):
         stream: bool | None = None,
     ) -> str:
         base_url = (api_base or get_secret_str("FAL_AI_API_BASE") or self.DEFAULT_BASE_URL).rstrip("/")
-        endpoint = model if model.startswith(f"{self.APP_OWNER}/") else f"{self.APP_OWNER}/{model}"
+        normalized_model = model.lower()
+        endpoint = (
+            normalized_model
+            if normalized_model.startswith(f"{self.APP_OWNER}/")
+            else f"{self.APP_OWNER}/{normalized_model}"
+        )
         return f"{base_url}/{endpoint}"
 
     def get_supported_openai_params(
