@@ -148,6 +148,37 @@ def test_nol535_zero_cogs_entries_match_across_price_maps():
     )
 
 
+def test_fal_vendor_app_image_entries_match_across_price_maps():
+    """Reve 2.1, Seedream 5 Pro, Ideogram v4 and Qwen Image 3 are dispatched by the
+    fal image provider off their vendor-namespaced ids, so their price-map keys are
+    fal_ai/<vendor>/... rather than fal_ai/fal-ai/.... Pin that every route (text-
+    to-image and edit) exists in both maps, is byte-identical between them (the
+    NOL-90 invariant; our deployments read the backup), and carries fal's published
+    default-tier per-image rate, so a request cannot generate at $0 COGS."""
+    with open(REPO_ROOT / "model_prices_and_context_window.json") as f:
+        root = json.load(f)
+    with open(REPO_ROOT / "litellm" / "model_prices_and_context_window_backup.json") as f:
+        backup = json.load(f)
+
+    expected_rates = {
+        "fal_ai/reve/2.1/text-to-image": 0.25,
+        "fal_ai/reve/2.1/edit": 0.25,
+        "fal_ai/bytedance/seedream/v5/pro/text-to-image": 0.0675,
+        "fal_ai/bytedance/seedream/v5/pro/edit": 0.0675,
+        "fal_ai/ideogram/v4": 0.015,
+        "fal_ai/ideogram/v4/image-to-image": 0.015,
+        "fal_ai/alibaba/qwen-image-3/text-to-image": 0.04,
+        "fal_ai/alibaba/qwen-image-3/edit": 0.04,
+    }
+    for model, rate in expected_rates.items():
+        assert model in root, f"{model} missing from canonical price map"
+        assert model in backup, f"{model} missing from backup price map"
+        assert root[model] == backup[model], f"{model} differs between the price map and its backup copy"
+        assert root[model]["output_cost_per_image"] == rate, f"{model} output_cost_per_image is not {rate}"
+        assert root[model]["mode"] == "image_generation"
+        assert root[model]["litellm_provider"] == "fal_ai"
+
+
 def test_fleet_brain_cache_read_uses_the_key_the_cost_calculator_reads():
     """NOL-376: the fleet brain's cache-read rate has to sit under a consumed key.
 

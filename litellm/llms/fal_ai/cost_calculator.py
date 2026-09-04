@@ -1,4 +1,7 @@
+from collections.abc import Mapping
+
 import litellm
+from litellm.llms.fal_ai.image_generation.vendor_app_transformation import dimensions
 from litellm.types.utils import ImageObject, ImageResponse
 from litellm.utils import _get_model_cost_key
 
@@ -37,9 +40,47 @@ def _image_cost(image: ImageObject, output_cost_per_pixel: float, output_cost_pe
     return output_cost_per_image
 
 
+def _is_2k(size: object) -> bool:
+    if isinstance(size, str) and size.lower() == "auto_2k":
+        return True
+    resolved = dimensions(size)
+    return resolved is not None and resolved[0] * resolved[1] > 1536 * 1536
+
+
+def _vendor_image_rate(model: str, optional_params: Mapping[str, object], default_rate: float) -> float:
+    normalized_model = model.lower()
+    if "bytedance/seedream/v5/pro/" in normalized_model:
+        return 0.135 if _is_2k(optional_params.get("image_size") or optional_params.get("size")) else 0.0675
+    if normalized_model.startswith("ideogram/v4"):
+        rendering_speed = optional_params.get("rendering_speed")
+        if rendering_speed is None:
+            rendering_speed = {  # mutable-ok: local lookup table is not exposed or mutated
+                "low": "TURBO",
+                "high": "QUALITY",
+            }.get(str(optional_params.get("quality") or "medium").lower(), "BALANCED")
+        per_megapixel = {  # mutable-ok: local lookup table is not exposed or mutated
+            "TURBO": 0.0075,
+            "QUALITY": 0.025,
+        }.get(str(rendering_speed).upper(), 0.015)
+        resolved = dimensions(optional_params.get("image_size") or optional_params.get("size"))
+        megapixels = resolved[0] * resolved[1] / 1_000_000 if resolved is not None else 1.0
+        return per_megapixel * megapixels
+    if "alibaba/qwen-image-3/" in normalized_model:
+        return 0.075 if _is_2k(optional_params.get("image_size") or optional_params.get("size")) else 0.04
+    return default_rate
+
+
+def _seedream_input_surcharge(model: str, optional_params: Mapping[str, object]) -> float:
+    if "bytedance/seedream/v5/pro/edit" not in model.lower():
+        return 0.0
+    image_urls = optional_params.get("image_urls")
+    return max(len(image_urls) - 1, 0) * 0.0045 if isinstance(image_urls, (list, tuple)) else 0.0
+
+
 def cost_calculator(
     model: str,
     image_response: object,
+    optional_params: Mapping[str, object] | None = None,
 ) -> float:
     """
     fal.ai image generation cost calculator.
@@ -57,7 +98,9 @@ def cost_calculator(
     if entry is None:
         return 0.0
     output_cost_per_pixel: float = entry.get("output_cost_per_pixel") or 0.0
-    output_cost_per_image: float = entry.get("output_cost_per_image") or 0.0
-    return sum(
+    params = optional_params or {}  # mutable-ok: empty fallback is read-only
+    output_cost_per_image = _vendor_image_rate(model, params, entry.get("output_cost_per_image") or 0.0)
+    output_cost = sum(
         _image_cost(image, output_cost_per_pixel, output_cost_per_image) for image in (image_response.data or ())
     )
+    return output_cost + _seedream_input_surcharge(model, params)

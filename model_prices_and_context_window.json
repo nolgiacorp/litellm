@@ -16473,6 +16473,96 @@
             "/v1/images/generations"
         ]
     },
+    "fal_ai/reve/2.1/text-to-image": {
+        "litellm_provider": "fal_ai",
+        "mode": "image_generation",
+        "output_cost_per_image": 0.25,
+        "source": "https://fal.ai/models/reve/2.1/text-to-image",
+        "supported_endpoints": [
+            "/v1/images/generations"
+        ]
+    },
+    "fal_ai/reve/2.1/edit": {
+        "litellm_provider": "fal_ai",
+        "mode": "image_generation",
+        "output_cost_per_image": 0.25,
+        "source": "https://fal.ai/models/reve/2.1/edit",
+        "supported_endpoints": [
+            "/v1/images/generations"
+        ]
+    },
+    "fal_ai/bytedance/seedream/v5/pro/text-to-image": {
+        "litellm_provider": "fal_ai",
+        "mode": "image_generation",
+        "output_cost_per_image": 0.0675,
+        "source": "https://fal.ai/models/bytedance/seedream/v5/pro/text-to-image",
+        "metadata": {
+            "comment": "fal bills $0.0675 per image up to 1536x1536 total pixels and $0.135 per image between 1536x1536 and 2048x2048; the flat rate here is the lower tier"
+        },
+        "supported_endpoints": [
+            "/v1/images/generations"
+        ]
+    },
+    "fal_ai/bytedance/seedream/v5/pro/edit": {
+        "litellm_provider": "fal_ai",
+        "mode": "image_generation",
+        "output_cost_per_image": 0.0675,
+        "source": "https://fal.ai/models/bytedance/seedream/v5/pro/edit",
+        "metadata": {
+            "comment": "fal bills $0.0675 per image up to 1536x1536 total pixels and $0.135 per image between 1536x1536 and 2048x2048; the flat rate here is the lower tier. The edit route also bills $0.0045 per input image after the first"
+        },
+        "supported_endpoints": [
+            "/v1/images/generations"
+        ]
+    },
+    "fal_ai/ideogram/v4": {
+        "litellm_provider": "fal_ai",
+        "mode": "image_generation",
+        "output_cost_per_image": 0.015,
+        "source": "https://fal.ai/models/ideogram/v4",
+        "metadata": {
+            "comment": "fal bills per output megapixel by rendering_speed: $0.0075 TURBO, $0.015 BALANCED, $0.025 QUALITY; the flat rate here is BALANCED at 1 megapixel"
+        },
+        "supported_endpoints": [
+            "/v1/images/generations"
+        ]
+    },
+    "fal_ai/ideogram/v4/image-to-image": {
+        "litellm_provider": "fal_ai",
+        "mode": "image_generation",
+        "output_cost_per_image": 0.015,
+        "source": "https://fal.ai/models/ideogram/v4/image-to-image",
+        "metadata": {
+            "comment": "fal bills per output megapixel by rendering_speed: $0.0075 TURBO, $0.015 BALANCED, $0.025 QUALITY; the flat rate here is BALANCED at 1 megapixel"
+        },
+        "supported_endpoints": [
+            "/v1/images/generations"
+        ]
+    },
+    "fal_ai/alibaba/qwen-image-3/text-to-image": {
+        "litellm_provider": "fal_ai",
+        "mode": "image_generation",
+        "output_cost_per_image": 0.04,
+        "source": "https://fal.ai/models/alibaba/qwen-image-3/text-to-image",
+        "metadata": {
+            "comment": "fal bills $0.04 per image at 1K resolution and $0.075 at 2K; the flat rate here is the 1K tier, which fal's default image_size (square_hd) renders"
+        },
+        "supported_endpoints": [
+            "/v1/images/generations"
+        ]
+    },
+    "fal_ai/alibaba/qwen-image-3/edit": {
+        "litellm_provider": "fal_ai",
+        "mode": "image_generation",
+        "output_cost_per_image": 0.04,
+        "source": "https://fal.ai/models/alibaba/qwen-image-3/edit",
+        "metadata": {
+            "comment": "fal bills $0.04 per image at 1K resolution and $0.075 at 2K; the flat rate here is the 1K tier, which fal's default image_size (square_hd) renders"
+        },
+        "supported_endpoints": [
+            "/v1/images/generations"
+        ]
+    },
     "fal_ai/fal-ai/seedvr/upscale/video": {
         "litellm_provider": "fal_ai",
         "mode": "video_generation",
