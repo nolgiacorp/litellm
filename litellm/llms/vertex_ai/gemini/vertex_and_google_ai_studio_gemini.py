@@ -2,6 +2,7 @@
 ## httpx client for vertex ai calls
 ## Initial implementation - covers gemini + image gen calls
 import json
+import re
 import time
 from copy import deepcopy
 from functools import partial
@@ -118,6 +119,10 @@ if TYPE_CHECKING:
 else:
     LoggingClass = Any
     StreamingChoices = Any
+
+
+_GEMINI_FLASH_GENERATION = re.compile(r"gemini-(\d+)(?:\.(\d+))?-flash")
+_GEMINI_3_8_FLASH_DROPPED_SAMPLING_PARAMS = ("temperature", "top_p", "top_k")
 
 
 class VertexAIBaseConfig:
@@ -300,6 +305,21 @@ class VertexGeminiConfig(VertexAIBaseConfig, BaseConfig):
             "gemini-flash-lite-latest",
             "gemini-pro-latest",
         )
+
+    @staticmethod
+    def _is_gemini_3_8_flash_or_newer(model: str) -> bool:
+        """
+        Whether the model is Gemini 3.8 Flash or a later Flash generation (3.9, 4.x, ...).
+
+        From 3.8 Flash on, Google strips `temperature`, `top_p` and `top_k` from generation configs and
+        `thinkingLevel` accepts only low, medium and high (minimal is not supported), so these models drop the
+        sampling params instead of forwarding them and map minimal/disable/none to low. False for 3.7 and earlier
+        and for every non-Flash model.
+        """
+        match = _GEMINI_FLASH_GENERATION.search(model.lower())
+        if match is None:
+            return False
+        return (int(match.group(1)), int(match.group(2) or 0)) >= (3, 8)
 
     @staticmethod
     def _forward_gemini_function_call_id(model: str) -> bool:
@@ -892,10 +912,12 @@ class VertexGeminiConfig(VertexAIBaseConfig, BaseConfig):
         # Check if this is gemini-3-flash which supports MINIMAL thinking level
         # Covers gemini-3-flash, gemini-3-flash-preview, gemini-3.1-flash, gemini-3.1-flash-lite-preview,
         # gemini-3.5-flash, and any future 3.x-flash variants.
-        is_gemini3flash = model and ("flash" in model.lower() and "gemini-3" in model.lower())
-        is_gemini31pro = model and ("gemini-3.1-pro-preview" in model.lower())
+        model_name = (model or "").lower()
+        is_gemini3flash = "flash" in model_name and "gemini-3" in model_name
+        is_gemini31pro = "gemini-3.1-pro-preview" in model_name
+        supports_minimal_level = is_gemini3flash and not VertexGeminiConfig._is_gemini_3_8_flash_or_newer(model_name)
         if reasoning_effort == "minimal":
-            if is_gemini3flash:
+            if supports_minimal_level:
                 return {"thinkingLevel": "minimal", "includeThoughts": True}
             else:
                 return {"thinkingLevel": "low", "includeThoughts": True}
@@ -910,13 +932,13 @@ class VertexGeminiConfig(VertexAIBaseConfig, BaseConfig):
             return {"thinkingLevel": "high", "includeThoughts": True}
         elif reasoning_effort == "disable":
             # Gemini 3 cannot fully disable thinking, so we use "minimal" for gemini-3-flash-preview, "low" for others
-            if is_gemini3flash:
+            if supports_minimal_level:
                 return {"thinkingLevel": "minimal", "includeThoughts": False}
             else:
                 return {"thinkingLevel": "low", "includeThoughts": False}
         elif reasoning_effort == "none":
             # For gemini-3-flash-preview, use "minimal" instead of "low"
-            if is_gemini3flash:
+            if supports_minimal_level:
                 return {"thinkingLevel": "minimal", "includeThoughts": False}
             else:
                 return {"thinkingLevel": "low", "includeThoughts": False}
@@ -987,7 +1009,10 @@ class VertexGeminiConfig(VertexAIBaseConfig, BaseConfig):
                     # Follow provider defaults unless explicitly opted into legacy behavior.
                     if litellm.enable_gemini_default_thinking_level_low is True:
                         is_gemini3flash = "gemini-3" in model.lower() and "flash" in model.lower()
-                        params["thinkingLevel"] = "minimal" if is_gemini3flash else "low"
+                        supports_minimal_level = (
+                            is_gemini3flash and not VertexGeminiConfig._is_gemini_3_8_flash_or_newer(model)
+                        )
+                        params["thinkingLevel"] = "minimal" if supports_minimal_level else "low"
             else:
                 # Thinking disabled
                 params["includeThoughts"] = False
@@ -1104,7 +1129,14 @@ class VertexGeminiConfig(VertexAIBaseConfig, BaseConfig):
     ) -> Dict:
         self._apply_include_server_side_tool_invocations(non_default_params, optional_params)
         gemini_sampling_params_warned: bool = False
+        drops_sampling_params = VertexGeminiConfig._is_gemini_3_8_flash_or_newer(model)
         for param, value in non_default_params.items():
+            if drops_sampling_params and param in _GEMINI_3_8_FLASH_DROPPED_SAMPLING_PARAMS:
+                verbose_logger.info(
+                    f"Dropping `{param}` for {model}: Gemini 3.8 Flash and later Flash models no longer accept "
+                    "`temperature`, `top_p` or `top_k`. Move sampling guidance into the system instructions instead."
+                )
+                continue
             if param == "temperature":
                 if VertexGeminiConfig._is_gemini_3_or_newer(model):
                     if value is not None and value < 1.0:
@@ -1147,7 +1179,12 @@ class VertexGeminiConfig(VertexAIBaseConfig, BaseConfig):
             ):  # sending stream = False, can cause it to get passed unchecked and raise issues
                 optional_params["stream"] = value
             elif param == "n":
-                optional_params["candidate_count"] = value
+                if VertexGeminiConfig._is_gemini_3_or_newer(model):
+                    verbose_logger.info(
+                        f"Dropping `n` for {model}: `candidate_count` is unsupported on Gemini 3 and later."
+                    )
+                else:
+                    optional_params["candidate_count"] = value
             elif param == "audio" and isinstance(value, dict):
                 optional_params["speechConfig"] = self._map_audio_params(value)
             elif param == "stop":
@@ -1247,7 +1284,7 @@ class VertexGeminiConfig(VertexAIBaseConfig, BaseConfig):
                 optional_params["responseModalities"].append("AUDIO")
 
         # Set default temperature to 1.0 for Gemini 3 models if not specified
-        if VertexGeminiConfig._is_gemini_3_or_newer(model):
+        if VertexGeminiConfig._is_gemini_3_or_newer(model) and not drops_sampling_params:
             if "temperature" not in optional_params:
                 optional_params["temperature"] = 1.0
 
