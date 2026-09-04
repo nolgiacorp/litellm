@@ -5588,6 +5588,10 @@ def test_accumulated_json_skips_non_dict_leading_value():
         "gemini-4-flash",
         "gemini-4.0-flash",
         "gemini-4.2-flash-lite-preview",
+        "gemini-flash-latest",
+        "gemini/gemini-flash-latest",
+        "gemini-flash-lite-latest",
+        "vertex_ai/gemini-flash-lite-latest",
     ],
 )
 def test_is_gemini_3_8_flash_or_newer(model):
@@ -5607,7 +5611,7 @@ def test_is_gemini_3_8_flash_or_newer(model):
         "gemini-3-flash-preview",
         "gemini-3.8-pro",
         "gemini-2.5-flash",
-        "gemini-flash-latest",
+        "gemini-pro-latest",
         "",
     ],
 )
@@ -5615,7 +5619,11 @@ def test_is_gemini_3_8_flash_or_newer_excludes_older_and_non_flash(model):
     assert VertexGeminiConfig._is_gemini_3_8_flash_or_newer(model) is False
 
 
-def test_gemini_3_8_flash_drops_sampling_params_and_candidate_count():
+@pytest.mark.parametrize(
+    "model",
+    ["gemini-3.8-flash", "gemini-flash-latest", "gemini-flash-lite-latest"],
+)
+def test_gemini_3_8_flash_drops_sampling_params_and_candidate_count(model):
     """Google's 3.8 Flash migration guide: strip temperature, top_p and top_k from generation configs and
     remove candidate_count. The params must not reach the request; everything else still maps."""
     result = VertexGeminiConfig().map_openai_params(
@@ -5627,7 +5635,7 @@ def test_gemini_3_8_flash_drops_sampling_params_and_candidate_count():
             "max_tokens": 128,
         },
         optional_params={},
-        model="gemini-3.8-flash",
+        model=model,
         drop_params=False,
     )
     assert "temperature" not in result

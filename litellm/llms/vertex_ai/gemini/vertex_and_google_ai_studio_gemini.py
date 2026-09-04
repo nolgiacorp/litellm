@@ -316,7 +316,10 @@ class VertexGeminiConfig(VertexAIBaseConfig, BaseConfig):
         sampling params instead of forwarding them and map minimal/disable/none to low. False for 3.7 and earlier
         and for every non-Flash model.
         """
-        match = _GEMINI_FLASH_GENERATION.search(model.lower())
+        model_id = model.rsplit("/", 1)[-1].lower()
+        if model_id in ("gemini-flash-latest", "gemini-flash-lite-latest"):
+            return True
+        match = _GEMINI_FLASH_GENERATION.search(model_id)
         if match is None:
             return False
         return (int(match.group(1)), int(match.group(2) or 0)) >= (3, 8)
