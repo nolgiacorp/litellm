@@ -1,3 +1,5 @@
+from collections.abc import Callable
+
 from litellm.llms.base_llm.image_generation.transformation import (
     BaseImageGenerationConfig,
 )
@@ -17,6 +19,13 @@ from .nano_banana_transformation import FalAINanoBananaConfig
 from .recraft_v3_transformation import FalAIRecraftV3Config
 from .stable_diffusion_transformation import FalAIStableDiffusionConfig
 from .transformation import FalAIBaseConfig, FalAIImageGenerationConfig
+from .vendor_app_transformation import (
+    FalAIIdeogramV4Config,
+    FalAIQwenImage3Config,
+    FalAIReveConfig,
+    FalAISeedreamV5Config,
+    FalAIVendorAppConfig,
+)
 
 __all__ = [
     "FalAIBaseConfig",
@@ -28,12 +37,39 @@ __all__ = [
     "FalAIFluxProV11UltraConfig",
     "FalAIFluxSchnellConfig",
     "FalAIIdeogramV3Config",
+    "FalAIIdeogramV4Config",
     "FalAIImageGenerationConfig",
     "FalAIImagen4Config",
     "FalAINanoBananaConfig",
+    "FalAIQwenImage3Config",
     "FalAIRecraftV3Config",
+    "FalAIReveConfig",
+    "FalAISeedreamV5Config",
     "FalAIStableDiffusionConfig",
+    "FalAIVendorAppConfig",
 ]
+
+_CONFIG_BY_SUBSTRINGS: tuple[tuple[tuple[str, ...], Callable[[], BaseImageGenerationConfig]], ...] = (
+    (("clarity-upscaler",), FalAIClarityUpscalerConfig),
+    (("clarity_upscaler",), FalAIClarityUpscalerConfig),
+    (("nano-banana",), FalAINanoBananaConfig),
+    (("gemini-25-flash-image",), FalAINanoBananaConfig),
+    (("imagen4",), FalAIImagen4Config),
+    (("imagen-4",), FalAIImagen4Config),
+    (("recraft",), FalAIRecraftV3Config),
+    (("bria",), FalAIBriaConfig),
+    (("flux-pro", "ultra"), FalAIFluxProV11UltraConfig),
+    (("flux-pro",), FalAIFluxProV11Config),
+    (("schnell",), FalAIFluxSchnellConfig),
+    (("reve/",), FalAIReveConfig),
+    (("qwen-image-3",), FalAIQwenImage3Config),
+    (("seedream/v5",), FalAISeedreamV5Config),
+    (("bytedance/seedream",), FalAIBytedanceSeedreamV3Config),
+    (("bytedance/dreamina",), FalAIBytedanceDreaminaV31Config),
+    (("ideogram/v4",), FalAIIdeogramV4Config),
+    (("ideogram",), FalAIIdeogramV3Config),
+    (("stable-diffusion",), FalAIStableDiffusionConfig),
+)
 
 
 def get_fal_ai_image_generation_config(model: str) -> BaseImageGenerationConfig:
@@ -41,38 +77,19 @@ def get_fal_ai_image_generation_config(model: str) -> BaseImageGenerationConfig:
     Get the appropriate Fal AI image generation configuration based on the model.
 
     Args:
-        model: The Fal AI model name (e.g., "fal-ai/imagen4/preview", "fal-ai/recraft/v3/text-to-image")
+        model: The Fal AI model name (e.g., "fal-ai/imagen4/preview", "reve/2.1/edit")
 
     Returns:
-        The appropriate configuration class for the specified model
+        The appropriate configuration class for the specified model. Entries are
+        matched in order, so a versioned family (seedream/v5, ideogram/v4) precedes
+        its broader match.
     """
     model_lower = model.lower()
-
-    # Map model names to their corresponding configuration classes
-    if "clarity-upscaler" in model_lower or "clarity_upscaler" in model_lower:
-        return FalAIClarityUpscalerConfig()
-    elif "nano-banana" in model_lower or "gemini-25-flash-image" in model_lower:
-        return FalAINanoBananaConfig()
-    elif "imagen4" in model_lower or "imagen-4" in model_lower:
-        return FalAIImagen4Config()
-    elif "recraft" in model_lower:
-        return FalAIRecraftV3Config()
-    elif "bria" in model_lower:
-        return FalAIBriaConfig()
-    elif "flux-pro" in model_lower:
-        if "ultra" in model_lower:
-            return FalAIFluxProV11UltraConfig()
-        return FalAIFluxProV11Config()
-    elif "flux/schnell" in model_lower or "flux-schnell" in model_lower or "schnell" in model_lower:
-        return FalAIFluxSchnellConfig()
-    elif "bytedance/seedream" in model_lower:
-        return FalAIBytedanceSeedreamV3Config()
-    elif "bytedance/dreamina" in model_lower:
-        return FalAIBytedanceDreaminaV31Config()
-    elif "ideogram" in model_lower:
-        return FalAIIdeogramV3Config()
-    elif "stable-diffusion" in model_lower:
-        return FalAIStableDiffusionConfig()
-
-    # Default to generic Fal AI configuration
-    return FalAIImageGenerationConfig()
+    return next(
+        (
+            config()
+            for substrings, config in _CONFIG_BY_SUBSTRINGS
+            if all(substring in model_lower for substring in substrings)
+        ),
+        FalAIImageGenerationConfig(),
+    )
