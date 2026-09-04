@@ -5574,3 +5574,193 @@ def test_accumulated_json_skips_non_dict_leading_value():
 
     assert len(out) == 1
     assert out[0].choices[0].delta.content == "a"
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "gemini-3.8-flash",
+        "gemini/gemini-3.8-flash",
+        "vertex_ai/gemini-3.8-flash",
+        "gemini-3.8-flash-lite",
+        "gemini-3.9-flash",
+        "gemini-3.10-flash",
+        "gemini-4-flash",
+        "gemini-4.0-flash",
+        "gemini-4.2-flash-lite-preview",
+        "gemini-flash-latest",
+        "gemini/gemini-flash-latest",
+        "gemini-flash-lite-latest",
+        "vertex_ai/gemini-flash-lite-latest",
+    ],
+)
+def test_is_gemini_3_8_flash_or_newer(model):
+    """3.8 Flash and every later Flash generation, with or without a provider prefix, and the minor
+    version compared numerically (3.10 is newer than 3.8, not older)."""
+    assert VertexGeminiConfig._is_gemini_3_8_flash_or_newer(model) is True
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "gemini-3.7-flash",
+        "gemini-3.6-flash",
+        "gemini/gemini-3.6-flash",
+        "gemini-3.5-flash",
+        "gemini-3.1-flash-lite-preview",
+        "gemini-3-flash-preview",
+        "gemini-3.8-pro",
+        "gemini-2.5-flash",
+        "gemini-pro-latest",
+        "",
+    ],
+)
+def test_is_gemini_3_8_flash_or_newer_excludes_older_and_non_flash(model):
+    assert VertexGeminiConfig._is_gemini_3_8_flash_or_newer(model) is False
+
+
+@pytest.mark.parametrize(
+    "model",
+    ["gemini-3.8-flash", "gemini-flash-latest", "gemini-flash-lite-latest"],
+)
+def test_gemini_3_8_flash_drops_sampling_params_and_candidate_count(model):
+    """Google's 3.8 Flash migration guide: strip temperature, top_p and top_k from generation configs and
+    remove candidate_count. The params must not reach the request; everything else still maps."""
+    result = VertexGeminiConfig().map_openai_params(
+        non_default_params={
+            "temperature": 0.2,
+            "top_p": 0.9,
+            "top_k": 40,
+            "n": 2,
+            "max_tokens": 128,
+        },
+        optional_params={},
+        model=model,
+        drop_params=False,
+    )
+    assert "temperature" not in result
+    assert "top_p" not in result
+    assert "top_k" not in result
+    assert "candidate_count" not in result
+    assert result["max_output_tokens"] == 128
+
+
+def test_gemini_3_8_flash_gets_no_default_temperature():
+    """The Gemini 3 default temperature of 1.0 is a sampling param too; 3.8 Flash must not receive it."""
+    result = VertexGeminiConfig().map_openai_params(
+        non_default_params={},
+        optional_params={},
+        model="gemini-3.8-flash",
+        drop_params=False,
+    )
+    assert "temperature" not in result
+
+
+def test_gemini_3_6_flash_still_forwards_sampling_params():
+    """Pin the pre-3.8 behaviour: 3.6 Flash forwards the sampling params and keeps the 1.0 default."""
+    v = VertexGeminiConfig()
+    result = v.map_openai_params(
+        non_default_params={"temperature": 0.2, "top_p": 0.9, "top_k": 40},
+        optional_params={},
+        model="gemini-3.6-flash",
+        drop_params=False,
+    )
+    assert result["temperature"] == 0.2
+    assert result["top_p"] == 0.9
+    assert result["top_k"] == 40
+
+    defaulted = v.map_openai_params(
+        non_default_params={},
+        optional_params={},
+        model="gemini-3.6-flash",
+        drop_params=False,
+    )
+    assert defaulted["temperature"] == 1.0
+
+
+@pytest.mark.parametrize("model", ["gemini-3-pro-preview", "gemini-3.6-flash"])
+def test_gemini_3_drops_n_but_gemini_2_5_keeps_candidate_count(model):
+    """candidate_count is unsupported on Gemini 3 and later, so n is dropped there and still mapped for 2.5."""
+    v = VertexGeminiConfig()
+    assert "candidate_count" not in v.map_openai_params(
+        non_default_params={"n": 2}, optional_params={}, model=model, drop_params=False
+    )
+    legacy = v.map_openai_params(
+        non_default_params={"n": 2},
+        optional_params={},
+        model="gemini-2.5-flash",
+        drop_params=False,
+    )
+    assert legacy["candidate_count"] == 2
+
+
+@pytest.mark.parametrize(
+    ("reasoning_effort", "expected_level", "expected_include_thoughts"),
+    [
+        ("minimal", "low", True),
+        ("low", "low", True),
+        ("medium", "medium", True),
+        ("high", "high", True),
+        ("disable", "low", False),
+        ("none", "low", False),
+    ],
+)
+def test_gemini_3_8_flash_reasoning_effort_never_requests_minimal_level(
+    reasoning_effort, expected_level, expected_include_thoughts
+):
+    """3.8 Flash supports thinkingLevel low, medium and high only; minimal is rejected, so the efforts that
+    used to map to minimal on 3.x Flash land on low while medium and high pass through unchanged."""
+    result = VertexGeminiConfig().map_openai_params(
+        non_default_params={"reasoning_effort": reasoning_effort},
+        optional_params={},
+        model="gemini-3.8-flash",
+        drop_params=False,
+    )
+    assert result["thinkingConfig"] == {
+        "thinkingLevel": expected_level,
+        "includeThoughts": expected_include_thoughts,
+    }
+
+
+@pytest.mark.parametrize(
+    ("reasoning_effort", "expected_include_thoughts"),
+    [("minimal", True), ("disable", False), ("none", False)],
+)
+def test_gemini_3_6_flash_still_requests_minimal_level(reasoning_effort, expected_include_thoughts):
+    result = VertexGeminiConfig._map_reasoning_effort_to_thinking_level(reasoning_effort, "gemini-3.6-flash")
+    assert result == {
+        "thinkingLevel": "minimal",
+        "includeThoughts": expected_include_thoughts,
+    }
+
+
+@pytest.mark.parametrize(
+    ("model", "expected_level"),
+    [("gemini-3.8-flash", "low"), ("gemini-3.6-flash", "minimal")],
+)
+def test_thinking_param_default_level_never_requests_minimal_on_3_8_flash(monkeypatch, model, expected_level):
+    """The legacy enable_gemini_default_thinking_level_low path picked minimal for every 3.x Flash."""
+    monkeypatch.setattr(litellm, "enable_gemini_default_thinking_level_low", True)
+    result = VertexGeminiConfig._map_thinking_param({"type": "enabled", "budget_tokens": 1024}, model=model)
+    assert result == {"includeThoughts": True, "thinkingLevel": expected_level}
+
+
+@pytest.mark.parametrize("model", ["gemini/gemini-3.8-flash", "vertex_ai/gemini-3.8-flash"])
+def test_gemini_3_8_flash_model_info_prices(monkeypatch, model):
+    """Paid-tier rates through 2026-12-31: $0.75/M in, $3.75/M out (thinking included), $0.075/M cache read."""
+    from litellm.utils import get_model_info
+
+    monkeypatch.setenv("LITELLM_LOCAL_MODEL_COST_MAP", "True")
+    monkeypatch.setattr(litellm, "model_cost", litellm.get_model_cost_map(url=""))
+
+    info = get_model_info(model)
+    assert info["input_cost_per_token"] == 7.5e-07
+    assert info["output_cost_per_token"] == 3.75e-06
+    assert info["cache_read_input_token_cost"] == 7.5e-08
+    assert info["max_input_tokens"] == 1048576
+    assert info["max_output_tokens"] == 65536
+    assert info["mode"] == "chat"
+    assert info["supports_reasoning"] is True
+    assert info["supports_function_calling"] is True
+    assert info["supports_vision"] is True
+    assert info["supports_audio_output"] is not True

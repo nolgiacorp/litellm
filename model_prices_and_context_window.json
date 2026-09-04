@@ -19248,6 +19248,58 @@
         },
         "web_search_billing_unit": "per_query"
     },
+    "vertex_ai/gemini-3.8-flash":     {
+        "cache_read_input_token_cost": 7.5e-08,
+        "input_cost_per_token": 7.5e-07,
+        "input_cost_per_token_batches": 3.75e-07,
+        "litellm_provider": "vertex_ai",
+        "max_input_tokens": 1048576,
+        "max_output_tokens": 65536,
+        "max_tokens": 65536,
+        "mode": "chat",
+        "output_cost_per_reasoning_token": 3.75e-06,
+        "output_cost_per_token": 3.75e-06,
+        "output_cost_per_token_batches": 1.875e-06,
+        "source": "https://ai.google.dev/gemini-api/docs/models/gemini-3.8-flash",
+        "supported_endpoints": [
+            "/v1/chat/completions",
+            "/v1/completions",
+            "/v1/batch"
+        ],
+        "supported_modalities": [
+            "text",
+            "image",
+            "audio",
+            "video"
+        ],
+        "supported_output_modalities": [
+            "text"
+        ],
+        "supports_audio_input": true,
+        "supports_function_calling": true,
+        "supports_parallel_function_calling": true,
+        "supports_pdf_input": true,
+        "supports_prompt_caching": true,
+        "supports_reasoning": true,
+        "supports_response_schema": true,
+        "supports_system_messages": true,
+        "supports_tool_choice": true,
+        "supports_url_context": true,
+        "supports_video_input": true,
+        "supports_vision": true,
+        "supports_web_search": true,
+        "supports_native_streaming": true,
+        "search_context_cost_per_query": {
+            "search_context_size_low": 0.014,
+            "search_context_size_medium": 0.014,
+            "search_context_size_high": 0.014
+        },
+        "web_search_billing_unit": "per_query",
+        "supports_minimal_reasoning_effort": false,
+        "metadata": {
+            "notes": "Gemini API paid-tier rates valid through 2026-12-31 (read 2026-09-04): $0.75/M input, $3.75/M output with thinking included, $0.075/M cache read, $0.50/M/hour cache storage, batch 50% off. From 2027-01-01 Google doubles every rate to $1.50/M input, $7.50/M output, $0.15/M cache read, $1.00/M/hour storage; bump this entry then. Flex and priority tiers are not published for this model, so they are omitted and those service tiers bill at the standard rate. The grounding query rate mirrors the Gemini 3 family rate. Thinking levels are low, medium and high only; minimal is not supported on 3.8 Flash."
+        }
+    },
     "vertex_ai/gemini-3.1-pro-preview": {
         "cache_read_input_token_cost": 2e-07,
         "cache_read_input_token_cost_above_200k_tokens": 4e-07,
@@ -20820,6 +20872,61 @@
         },
         "web_search_billing_unit": "per_query"
     },
+    "gemini/gemini-3.8-flash":     {
+        "cache_read_input_token_cost": 7.5e-08,
+        "input_cost_per_token": 7.5e-07,
+        "input_cost_per_token_batches": 3.75e-07,
+        "litellm_provider": "gemini",
+        "max_input_tokens": 1048576,
+        "max_output_tokens": 65536,
+        "max_tokens": 65536,
+        "mode": "chat",
+        "output_cost_per_reasoning_token": 3.75e-06,
+        "output_cost_per_token": 3.75e-06,
+        "output_cost_per_token_batches": 1.875e-06,
+        "rpm": 2000,
+        "tpm": 800000,
+        "source": "https://ai.google.dev/gemini-api/docs/models/gemini-3.8-flash",
+        "supported_endpoints": [
+            "/v1/chat/completions",
+            "/v1/completions",
+            "/v1/batch"
+        ],
+        "supported_modalities": [
+            "text",
+            "image",
+            "audio",
+            "video"
+        ],
+        "supported_output_modalities": [
+            "text"
+        ],
+        "supports_audio_output": false,
+        "supports_audio_input": true,
+        "supports_function_calling": true,
+        "supports_parallel_function_calling": true,
+        "supports_pdf_input": true,
+        "supports_prompt_caching": true,
+        "supports_reasoning": true,
+        "supports_response_schema": true,
+        "supports_system_messages": true,
+        "supports_tool_choice": true,
+        "supports_url_context": true,
+        "supports_video_input": true,
+        "supports_vision": true,
+        "supports_web_search": true,
+        "supports_native_streaming": true,
+        "search_context_cost_per_query": {
+            "search_context_size_low": 0.014,
+            "search_context_size_medium": 0.014,
+            "search_context_size_high": 0.014
+        },
+        "web_search_billing_unit": "per_query",
+        "supports_minimal_reasoning_effort": false,
+        "metadata": {
+            "notes": "Gemini API paid-tier rates valid through 2026-12-31 (read 2026-09-04): $0.75/M input, $3.75/M output with thinking included, $0.075/M cache read, $0.50/M/hour cache storage, batch 50% off. From 2027-01-01 Google doubles every rate to $1.50/M input, $7.50/M output, $0.15/M cache read, $1.00/M/hour storage; bump this entry then. Flex and priority tiers are not published for this model, so they are omitted and those service tiers bill at the standard rate. The grounding query rate mirrors the Gemini 3 family rate. Thinking levels are low, medium and high only; minimal is not supported on 3.8 Flash."
+        }
+    },
     "gemini/gemini-3.1-pro-preview": {
         "cache_read_input_token_cost": 2e-07,
         "cache_read_input_token_cost_above_200k_tokens": 4e-07,
@@ -21121,6 +21228,59 @@
             "search_context_size_high": 0.014
         },
         "web_search_billing_unit": "per_query"
+    },
+    "gemini-3.8-flash":     {
+        "cache_read_input_token_cost": 7.5e-08,
+        "input_cost_per_token": 7.5e-07,
+        "input_cost_per_token_batches": 3.75e-07,
+        "litellm_provider": "vertex_ai-language-models",
+        "max_input_tokens": 1048576,
+        "max_output_tokens": 65536,
+        "max_tokens": 65536,
+        "mode": "chat",
+        "output_cost_per_reasoning_token": 3.75e-06,
+        "output_cost_per_token": 3.75e-06,
+        "output_cost_per_token_batches": 1.875e-06,
+        "source": "https://ai.google.dev/gemini-api/docs/models/gemini-3.8-flash",
+        "supported_endpoints": [
+            "/v1/chat/completions",
+            "/v1/completions",
+            "/v1/batch"
+        ],
+        "supported_modalities": [
+            "text",
+            "image",
+            "audio",
+            "video"
+        ],
+        "supported_output_modalities": [
+            "text"
+        ],
+        "supports_audio_output": false,
+        "supports_audio_input": true,
+        "supports_function_calling": true,
+        "supports_parallel_function_calling": true,
+        "supports_pdf_input": true,
+        "supports_prompt_caching": true,
+        "supports_reasoning": true,
+        "supports_response_schema": true,
+        "supports_system_messages": true,
+        "supports_tool_choice": true,
+        "supports_url_context": true,
+        "supports_video_input": true,
+        "supports_vision": true,
+        "supports_web_search": true,
+        "supports_native_streaming": true,
+        "search_context_cost_per_query": {
+            "search_context_size_low": 0.014,
+            "search_context_size_medium": 0.014,
+            "search_context_size_high": 0.014
+        },
+        "web_search_billing_unit": "per_query",
+        "supports_minimal_reasoning_effort": false,
+        "metadata": {
+            "notes": "Gemini API paid-tier rates valid through 2026-12-31 (read 2026-09-04): $0.75/M input, $3.75/M output with thinking included, $0.075/M cache read, $0.50/M/hour cache storage, batch 50% off. From 2027-01-01 Google doubles every rate to $1.50/M input, $7.50/M output, $0.15/M cache read, $1.00/M/hour storage; bump this entry then. Flex and priority tiers are not published for this model, so they are omitted and those service tiers bill at the standard rate. The grounding query rate mirrors the Gemini 3 family rate. Thinking levels are low, medium and high only; minimal is not supported on 3.8 Flash."
+        }
     },
     "gemini/gemini-2.5-pro-preview-tts": {
         "cache_read_input_token_cost": 1.25e-07,

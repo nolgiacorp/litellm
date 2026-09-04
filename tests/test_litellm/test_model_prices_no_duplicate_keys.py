@@ -290,3 +290,37 @@ def test_guard_default_targets_are_the_tracked_price_maps():
     """Bare `python scripts/check_model_prices_duplicate_keys.py` must cover both."""
     assert set(guard.DEFAULT_TARGETS) == set(PRICE_MAPS)
     assert guard.main([]) == 0
+
+
+def test_gemini_3_8_flash_entries_match_across_price_maps():
+    """gemini-3.8-flash (stable 2026-09-02) is priced in all three forms the 3.6 sibling uses (gemini/,
+    vertex_ai/ and the bare vertex_ai-language-models key). Pin that each exists in both maps, is byte-identical
+    between them (the NOL-90 invariant; our deployments read the backup), and carries Google's paid-tier rates
+    through 2026-12-31 with batch at half price and thinking billed at the output rate."""
+    with open(REPO_ROOT / "model_prices_and_context_window.json") as f:
+        root = json.load(f)
+    with open(REPO_ROOT / "litellm" / "model_prices_and_context_window_backup.json") as f:
+        backup = json.load(f)
+
+    for model in (
+        "gemini/gemini-3.8-flash",
+        "vertex_ai/gemini-3.8-flash",
+        "gemini-3.8-flash",
+    ):
+        assert model in root, f"{model} missing from canonical price map"
+        assert model in backup, f"{model} missing from backup price map"
+        assert root[model] == backup[model], f"{model} differs between the price map and its backup copy"
+        entry = root[model]
+        assert entry["input_cost_per_token"] == 7.5e-07
+        assert entry["output_cost_per_token"] == 3.75e-06
+        assert entry["output_cost_per_reasoning_token"] == entry["output_cost_per_token"]
+        assert entry["cache_read_input_token_cost"] == 7.5e-08
+        assert entry["input_cost_per_token_batches"] == entry["input_cost_per_token"] / 2
+        assert entry["output_cost_per_token_batches"] == entry["output_cost_per_token"] / 2
+        assert entry["max_input_tokens"] == 1048576
+        assert entry["max_output_tokens"] == 65536
+        assert entry["mode"] == "chat"
+        assert entry["supports_reasoning"] is True
+        assert entry["supports_minimal_reasoning_effort"] is False
+        assert entry["supported_output_modalities"] == ["text"]
+        assert "2027-01-01" in entry["metadata"]["notes"], "the 2027 rate step-up must stay documented on the entry"
