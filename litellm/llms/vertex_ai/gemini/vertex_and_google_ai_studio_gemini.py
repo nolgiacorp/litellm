@@ -313,8 +313,9 @@ class VertexGeminiConfig(VertexAIBaseConfig, BaseConfig):
 
         From 3.8 Flash on, Google strips `temperature`, `top_p` and `top_k` from generation configs and
         `thinkingLevel` accepts only low, medium and high (minimal is not supported), so these models drop the
-        sampling params instead of forwarding them and map minimal/disable/none to low. False for 3.7 and earlier
-        and for every non-Flash model.
+        sampling params instead of forwarding them and map minimal/disable/none to low. The rolling
+        gemini-flash-latest and gemini-flash-lite-latest aliases resolve to the newest Flash generation and take
+        this path too. False for 3.7 and earlier and for every non-Flash model, gemini-pro-latest included.
         """
         model_id = model.rsplit("/", 1)[-1].lower()
         if model_id in ("gemini-flash-latest", "gemini-flash-lite-latest"):
