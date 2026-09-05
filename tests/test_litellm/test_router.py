@@ -7603,6 +7603,64 @@ async def test_acreate_batch_still_falls_back_within_the_owning_model_group():
 
 
 @pytest.mark.asyncio
+async def test_rejected_request_walks_the_ordered_deployments_then_the_repair_fallback():
+    """A rejection still walks the owning group's later `order` deployments, and the
+    request-transforming client-side fallback runs after them; combining the two
+    lists must not trip over the repair entries being a tuple.
+
+    The rejections ride in as `mock_response` exceptions. Router deep-copies the model
+    list and litellm's exceptions cannot be copied, so the test's subclass copies as itself."""
+
+    class _Rejection(litellm.BadRequestError):
+        def __deepcopy__(self, memo):
+            return self
+
+    def _rejection(model):
+        return _Rejection(message="Invalid value: 'bad_param' is not supported", model=model, llm_provider="openai")
+
+    router = litellm.Router(
+        model_list=[
+            {
+                "model_name": "my-gpt",
+                "litellm_params": {
+                    "model": "openai/gpt-4o-mini",
+                    "api_key": "sk-owning",
+                    "order": 1,
+                    "mock_response": _rejection("openai/gpt-4o-mini"),
+                },
+                "model_info": {"id": "my-gpt-1"},
+            },
+            {
+                "model_name": "my-gpt",
+                "litellm_params": {
+                    "model": "openai/gpt-4o-mini-backup",
+                    "api_key": "sk-owning",
+                    "order": 2,
+                    "mock_response": _rejection("openai/gpt-4o-mini-backup"),
+                },
+                "model_info": {"id": "my-gpt-2"},
+            },
+            {
+                "model_name": "repair-gpt",
+                "litellm_params": {"model": "openai/repair-model", "api_key": "sk-repair", "mock_response": "repaired"},
+                "model_info": {"id": "repair-gpt-1"},
+            },
+        ],
+        num_retries=0,
+    )
+
+    response = await router.acompletion(
+        model="my-gpt",
+        messages=[{"role": "user", "content": "original"}],
+        fallbacks=[{"model": "repair-gpt", "messages": [{"role": "user", "content": "repaired"}]}],
+    )
+
+    assert [m for m, n in router.fail_calls.items() if n] == ["openai/gpt-4o-mini", "openai/gpt-4o-mini-backup"]
+    assert {m: n for m, n in router.success_calls.items() if n} == {"openai/repair-model": 1}
+    assert response.choices[0].message.content == "repaired"
+
+
+@pytest.mark.asyncio
 async def test_acreate_batch_request_bedrock_tags_override_deployment_tags():
     import httpx
 

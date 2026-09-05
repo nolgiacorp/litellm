@@ -7154,7 +7154,7 @@ class Router:
             # Get external fallbacks — handle both standard and non-standard formats
             external_fallback_group: list | None = None
             if rejects_request:
-                external_fallback_group = request_repair_fallbacks
+                external_fallback_group = list(request_repair_fallbacks)
             elif fallbacks is not None and lookup_groups:
                 if _check_non_standard_fallback_format(fallbacks=fallbacks):
                     # Non-standard formats (e.g. ["claude-3-haiku"] or
