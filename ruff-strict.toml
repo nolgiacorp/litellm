@@ -16,7 +16,9 @@ external = [
     "PLC0415", "E402", "BLE001", "ARG002", "S102", "S324", "S606", "D401", "F403", "F405",
 ]
 
-[lint.per-file-ignores]
+# extend-, not a plain per-file-ignores table: a child table replaces the inherited one, and
+# ruff.toml's F401 ignores for the re-export hubs must keep applying under this config.
+[lint.extend-per-file-ignores]
 # ANN401 (explicit `Any` disallowed) has no per-line/function-level ignore mechanism
 # in ruff, only file-level. These two files each have a handful of parameters that
 # are genuinely heterogeneous with no fitting concrete type: a response object that
