@@ -430,7 +430,7 @@ class TestBflVideoCreateResponse:
     def test_create_response_rejects_non_bfl_polling_url(self):
         response = Mock(spec=httpx.Response)
         response.json.return_value = {"id": "req-123", "polling_url": "https://evil.example.com/get_result?id=x"}
-        with pytest.raises(BlackForestLabsError, match="not within the bfl.ai domain"):
+        with pytest.raises(BlackForestLabsError, match=r"not within the bfl\.ai domain"):
             self.config.transform_video_create_response(
                 model=MODEL,
                 raw_response=response,
@@ -465,7 +465,7 @@ class TestBflVideoStatusAndContentRequests:
 
     def test_status_request_rejects_forged_non_bfl_polling_url(self):
         forged = encode_video_id_with_provider("https://evil.example.com/get_result?id=x", PROVIDER, "flux-3-video")
-        with pytest.raises(BlackForestLabsError, match="not within the bfl.ai domain"):
+        with pytest.raises(BlackForestLabsError, match=r"not within the bfl\.ai domain"):
             self.config.transform_video_status_retrieve_request(
                 video_id=forged,
                 api_base=API_BASE,

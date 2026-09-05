@@ -81,8 +81,8 @@ def test_grok_imagine_entries_match_across_price_maps():
     expected_rates = {
         "xai/grok-imagine-video": ("output_cost_per_video_per_second", 0.05),
         "xai/grok-imagine-video-1.5": ("output_cost_per_video_per_second", 0.08),
-        "xai/grok-imagine-image": ("output_cost_per_image", 0.02),
-        "xai/grok-imagine-image-quality": ("output_cost_per_image", 0.05),
+        "xai/grok-imagine-image": ("input_cost_per_image", 0.02),
+        "xai/grok-imagine-image-quality": ("input_cost_per_image", 0.05),
     }
     for model, (cost_key, rate) in expected_rates.items():
         assert model in root, f"{model} missing from canonical price map"

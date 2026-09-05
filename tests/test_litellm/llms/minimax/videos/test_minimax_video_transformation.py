@@ -195,7 +195,7 @@ class TestMinimaxVideoTransformation:
         assert "ratio" not in mapped
 
     def test_map_v2_reference_videos_rejected_because_input_seconds_are_billed(self):
-        with pytest.raises(litellm.BadRequestError, match="usage.input_seconds"):
+        with pytest.raises(litellm.BadRequestError, match=r"usage\.input_seconds"):
             self.config.map_openai_params(
                 video_create_optional_params={
                     "seconds": 5,
@@ -363,7 +363,7 @@ class TestMinimaxVideoTransformation:
             )
 
     def test_map_v2_reference_videos_still_rejected_alongside_base_video(self):
-        with pytest.raises(litellm.BadRequestError, match="usage.input_seconds"):
+        with pytest.raises(litellm.BadRequestError, match=r"usage\.input_seconds"):
             self.config.map_openai_params(
                 video_create_optional_params={
                     "seconds": 6,

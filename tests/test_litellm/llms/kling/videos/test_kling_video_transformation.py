@@ -3,9 +3,11 @@ import io
 from unittest.mock import Mock
 
 import httpx
+import openai
 import pytest
 
 import litellm
+from litellm.llms.base_llm.chat.transformation import BaseLLMException
 from litellm.llms.kling.videos.transformation import KlingVideoConfig
 from litellm.types.router import GenericLiteLLMParams
 from litellm.types.videos.main import VideoObject
@@ -347,7 +349,7 @@ class TestKlingVideoTransformation:
     def test_create_response_raises_when_task_id_missing(self):
         response = Mock(spec=httpx.Response)
         response.json.return_value = {"code": 0, "data": {}}
-        with pytest.raises(ValueError, match="missing data.task_id"):
+        with pytest.raises(ValueError, match=r"missing data\.task_id"):
             self.config.transform_video_create_response(
                 model=MODEL,
                 raw_response=response,
@@ -591,7 +593,7 @@ class TestKlingErrorMapping:
 
     def test_other_body_codes_stay_client_errors(self):
         """A refused request is not a saturation signal; only known codes are remapped."""
-        with pytest.raises(Exception) as excinfo:
+        with pytest.raises(BaseLLMException) as excinfo:
             self.config._raise_for_kling_error({"code": 1201, "message": "invalid parameter"})
         assert not isinstance(excinfo.value, litellm.RateLimitError)
         assert excinfo.value.status_code == 400
@@ -641,11 +643,12 @@ class TestKlingErrorMapping:
             exception_str=str(error),
         )
 
-    def test_a_bare_base_llm_exception_would_still_regress(self, monkeypatch):
+    def test_a_bare_base_llm_exception_is_a_client_error_cooldown_ignores(self, monkeypatch):
         """
         Pins WHY the fix has to change the exception type rather than just the
-        status. This is exactly what the old code produced for code 1303, and it
-        still becomes an APIConnectionError that cooldown ignores.
+        status. This is exactly what the old code produced for code 1303: a bare
+        400 BaseLLMException, which the mapper turns into a client error that
+        cooldown ignores, so saturation never tripped a cooldown.
         """
         from litellm.litellm_core_utils.exception_mapping_utils import exception_type
         from litellm.llms.base_llm.chat.transformation import BaseLLMException
@@ -654,13 +657,13 @@ class TestKlingErrorMapping:
         monkeypatch.setattr(litellm, "suppress_debug_info", True)
         old_shape = BaseLLMException(status_code=400, message="parallel task over limit", headers={})
 
-        with pytest.raises(litellm.APIConnectionError) as excinfo:
+        with pytest.raises(litellm.BadRequestError) as excinfo:
             exception_type(model=MODEL, original_exception=old_shape, custom_llm_provider="kling")
 
         assert not _is_cooldown_required(
             litellm_router_instance=None,
             model_id="kling-deployment-1",
-            exception_status=500,
+            exception_status=excinfo.value.status_code,
             exception_str=str(excinfo.value),
         )
 
@@ -686,7 +689,7 @@ class TestKlingErrorMessageSurvivesRewrapping:
     def _rewrap(self, error):
         from litellm.llms.custom_httpx.llm_http_handler import BaseLLMHTTPHandler
 
-        with pytest.raises(Exception) as excinfo:
+        with pytest.raises((openai.APIError, BaseLLMException)) as excinfo:
             BaseLLMHTTPHandler()._handle_error(e=error, provider_config=self.config)
         return excinfo.value
 
@@ -703,7 +706,7 @@ class TestKlingErrorMessageSurvivesRewrapping:
 
     def test_client_error_message_survives(self, monkeypatch):
         monkeypatch.setattr(litellm, "suppress_debug_info", True)
-        with pytest.raises(Exception) as excinfo:
+        with pytest.raises(BaseLLMException) as excinfo:
             self.config._raise_for_kling_error({"code": 1201, "message": "invalid parameter"})
 
         rewrapped = self._rewrap(excinfo.value)

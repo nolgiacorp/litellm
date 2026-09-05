@@ -17,12 +17,10 @@ get_llm_provider and ProviderConfigManager exactly as video_generation does, so 
 cannot drift from the code that serves the request.
 """
 
+from collections.abc import Collection, Iterable, Mapping
 from dataclasses import dataclass
 from typing import (
-    Any,  # noqa: TID251  # router deployment dicts are untyped at this boundary
-    Collection,
-    Iterable,
-    Mapping,
+    Any,
     TypedDict,
 )
 

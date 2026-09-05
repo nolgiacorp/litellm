@@ -31,6 +31,9 @@ import litellm
 from litellm.integrations.custom_logger import CustomLogger
 from litellm.llms.kling.videos.transformation import KlingVideoConfig
 
+# Prices come from the bundled map: the network-fetched copy is upstream's and has no kling entries.
+pytestmark = pytest.mark.usefixtures("local_model_cost_map")
+
 # Kling's published direct API rates, audio-on at 720p/1080p (audio is on by
 # default on this route), flat at 4K where Kling charges no uplift.
 RATE_720P = 0.126
@@ -48,13 +51,16 @@ TIERS = [
 
 
 class _CostCapture(CustomLogger):
+    """Keyed by model group so a success event still draining from a previous test cannot be
+    mistaken for this test's own; the callback list is process-global."""
+
     def __init__(self):
         super().__init__()
-        self.costs: list = []
+        self.costs: dict = {}
 
     async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):
         slp = kwargs.get("standard_logging_object") or {}
-        self.costs.append(slp.get("response_cost"))
+        self.costs[slp.get("model_group")] = slp.get("response_cost")
 
 
 def _submit(*args, **kwargs) -> httpx.Response:
@@ -90,11 +96,11 @@ async def _cost_of(model_name: str, seconds: int):
 
     # the success callback is fired off-thread; poll rather than race a fixed sleep
     for _ in range(50):
-        if capture.costs:
+        if model_name in capture.costs:
             break
         await asyncio.sleep(0.05)
-    assert capture.costs, "no success event logged"
-    return capture.costs[-1]
+    assert model_name in capture.costs, f"no success event logged for {model_name}: {capture.costs}"
+    return capture.costs[model_name]
 
 
 class TestKlingResolutionIsReportedForCosting:
@@ -164,13 +170,14 @@ class TestKlingVideoCOGS:
             for name in ("kling-v3", "kling-v3-pro", "kling-v3-master"):
                 await router.avideo_generation(model=name, prompt="a drop of water", seconds=5)
 
+        names = ("kling-v3", "kling-v3-pro", "kling-v3-master")
         for _ in range(50):
-            if len(capture.costs) >= 3:
+            if all(name in capture.costs for name in names):
                 break
             await asyncio.sleep(0.05)
 
-        assert len(capture.costs) >= 3, f"expected 3 cost events, got {capture.costs}"
-        cheap, mid, dear = capture.costs[:3]
+        assert all(name in capture.costs for name in names), f"expected 3 cost events, got {capture.costs}"
+        cheap, mid, dear = (capture.costs[name] for name in names)
         assert cheap < mid < dear, f"tiers not distinguished: {cheap} / {mid} / {dear}"
         assert (cheap, mid, dear) == pytest.approx((0.63, 0.84, 2.10))
 

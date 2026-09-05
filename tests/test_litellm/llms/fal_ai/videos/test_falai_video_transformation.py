@@ -165,7 +165,7 @@ class TestFalAIVideoTransformation:
     def test_validate_environment_raises_when_missing(self, monkeypatch):
         monkeypatch.delenv("FAL_AI_API_KEY", raising=False)
         monkeypatch.delenv("FAL_KEY", raising=False)
-        with pytest.raises(ValueError, match="fal.ai API key is required"):
+        with pytest.raises(ValueError, match=r"fal\.ai API key is required"):
             self.config.validate_environment(headers={}, model=SORA_2_MODEL)
 
     def test_get_complete_url_uses_default_base(self, monkeypatch):
@@ -652,7 +652,7 @@ class TestFalAIVideoTransformation:
         )
         config = FalAIVideoConfig(sync_client=result_client)
 
-        with pytest.raises(Exception) as exc_info:
+        with pytest.raises((BaseLLMException, litellm.RateLimitError)) as exc_info:
             config.transform_video_status_retrieve_response(
                 raw_response=_fal_status_response(FAL_QUEUE_COMPLETED_STATUS),
                 logging_obj=self.mock_logging_obj,

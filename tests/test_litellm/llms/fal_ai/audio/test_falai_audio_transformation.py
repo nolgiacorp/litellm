@@ -51,7 +51,7 @@ class TestFalAIAudioBasics:
     def test_validate_environment_raises_when_missing(self, monkeypatch):
         monkeypatch.delenv("FAL_AI_API_KEY", raising=False)
         monkeypatch.delenv("FAL_KEY", raising=False)
-        with pytest.raises(ValueError, match="fal.ai API key is required"):
+        with pytest.raises(ValueError, match=r"fal\.ai API key is required"):
             self.config.validate_environment(headers={}, model=ELEVEN_V3)
 
     def test_get_complete_url_default(self, monkeypatch):

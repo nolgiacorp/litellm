@@ -13,6 +13,7 @@ from .clarity_upscaler_transformation import FalAIClarityUpscalerConfig
 from .flux_pro_v11_transformation import FalAIFluxProV11Config
 from .flux_pro_v11_ultra_transformation import FalAIFluxProV11UltraConfig
 from .flux_schnell_transformation import FalAIFluxSchnellConfig
+from .gpt_image_2_transformation import FalAIGPTImage2Config
 from .ideogram_v3_transformation import FalAIIdeogramV3Config
 from .imagen4_transformation import FalAIImagen4Config
 from .nano_banana_transformation import FalAINanoBananaConfig
@@ -36,6 +37,7 @@ __all__ = [
     "FalAIFluxProV11Config",
     "FalAIFluxProV11UltraConfig",
     "FalAIFluxSchnellConfig",
+    "FalAIGPTImage2Config",
     "FalAIIdeogramV3Config",
     "FalAIIdeogramV4Config",
     "FalAIImageGenerationConfig",
@@ -50,6 +52,7 @@ __all__ = [
 ]
 
 _CONFIG_BY_SUBSTRINGS: tuple[tuple[tuple[str, ...], Callable[[], BaseImageGenerationConfig]], ...] = (
+    (("gpt-image-2",), FalAIGPTImage2Config),
     (("clarity-upscaler",), FalAIClarityUpscalerConfig),
     (("clarity_upscaler",), FalAIClarityUpscalerConfig),
     (("nano-banana",), FalAINanoBananaConfig),

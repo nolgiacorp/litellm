@@ -1,7 +1,7 @@
 import base64
 import re
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Any, Dict, Tuple, Union
+from typing import TYPE_CHECKING, Any, Final
 
 import httpx
 from httpx._types import RequestFiles
@@ -152,7 +152,7 @@ def fetch_image_as_base64(image_url: str) -> tuple[str, str]:
     return base64.b64encode(response.content).decode("utf-8"), _image_mime_type_from_response(response)
 
 
-def _convert_image_to_gemini_format(image_file) -> Dict[str, str]:
+def _convert_image_to_gemini_format(image_file) -> dict[str, str]:
     """
     Convert image file to Gemini format with base64 encoding and MIME type.
 
@@ -162,21 +162,26 @@ def _convert_image_to_gemini_format(image_file) -> Dict[str, str]:
     Returns:
         Dict with bytesBase64Encoded and mimeType
     """
-    mime_type = ImageEditRequestUtils.get_image_content_type(image_file)
+    mime_type: Final = ImageEditRequestUtils.get_image_content_type(image_file)
 
     if hasattr(image_file, "seek"):
         image_file.seek(0)
-    image_bytes = image_file.read()
-    base64_encoded = base64.b64encode(image_bytes).decode("utf-8")
+    image_bytes: Final = image_file.read()
+    base64_encoded: Final = base64.b64encode(image_bytes).decode("utf-8")
 
     return {"bytesBase64Encoded": base64_encoded, "mimeType": mime_type}
 
 
+def _json_payload(raw_response: httpx.Response) -> object:
+    """Read an HTTP response body as an opaque JSON payload."""
+    return raw_response.json()
+
+
 def _usage_video_resolution_from_parameters(
-    parameters: Dict[str, Any],
+    parameters: Mapping[str, object],
 ) -> str | None:
     """Normalize Veo ``parameters.resolution`` for usage and cost tracking."""
-    res = parameters.get("resolution")
+    res: Final = parameters.get("resolution")
     if res is None or res == "":
         return None
     return str(res).strip().lower()
@@ -204,7 +209,7 @@ class GeminiVideoConfig(BaseVideoConfig):
     4. Download video using file API
     """
 
-    _OPENAI_VIDEO_SIZE_TO_ASPECT_RATIO: Dict[str, str] = {
+    _OPENAI_VIDEO_SIZE_TO_ASPECT_RATIO: dict[str, str] = {
         "1280x720": "16:9",
         "1920x1080": "16:9",
         "720x1280": "9:16",
@@ -247,7 +252,7 @@ class GeminiVideoConfig(BaseVideoConfig):
         video_create_optional_params: VideoCreateOptionalRequestParams,
         model: str,
         drop_params: bool,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, object]:
         """
         Map OpenAI-style parameters to Veo format.
 
@@ -261,11 +266,11 @@ class GeminiVideoConfig(BaseVideoConfig):
 
         All other params are passed through as-is to support Gemini-specific parameters.
         """
-        mapped_params: Dict[str, Any] = {}
+        mapped_params: Final[dict[str, object]] = {}
 
         # Get supported OpenAI params (exclude "model" and "prompt" which are handled separately)
-        supported_openai_params = self.get_supported_openai_params(model)
-        openai_params_to_map = {param for param in supported_openai_params if param not in {"model", "prompt"}}
+        supported_openai_params: Final = self.get_supported_openai_params(model)
+        openai_params_to_map: Final = {param for param in supported_openai_params if param not in {"model", "prompt"}}
 
         # Map input_reference to image
         if "input_reference" in video_create_optional_params:
@@ -273,21 +278,21 @@ class GeminiVideoConfig(BaseVideoConfig):
 
         # Map size to aspectRatio
         if "size" in video_create_optional_params:
-            size = video_create_optional_params["size"]
+            size: Final = video_create_optional_params["size"]
             if size is not None:
-                aspect_ratio = self._convert_size_to_aspect_ratio(size)
+                aspect_ratio: Final = self._convert_size_to_aspect_ratio(size)
                 if aspect_ratio:
                     mapped_params["aspectRatio"] = aspect_ratio
                 if not video_create_optional_params.get("resolution"):
-                    inferred_resolution = self._convert_size_to_resolution(size)
+                    inferred_resolution: Final = self._convert_size_to_resolution(size)
                     if inferred_resolution is not None:
                         mapped_params["resolution"] = inferred_resolution
 
         # Map seconds to durationSeconds, default to 4 seconds (matching OpenAI)
         if "seconds" in video_create_optional_params:
-            seconds = video_create_optional_params["seconds"]
+            seconds: Final = video_create_optional_params["seconds"]
             try:
-                duration = int(seconds) if isinstance(seconds, str) else seconds
+                duration: Final = int(seconds) if isinstance(seconds, str) else seconds
                 if duration is not None:
                     mapped_params["durationSeconds"] = duration
             except (ValueError, TypeError):
@@ -340,7 +345,7 @@ class GeminiVideoConfig(BaseVideoConfig):
             return None
         try:
             w_str, h_str = size.split("x", 1)
-            smaller = min(int(w_str), int(h_str))
+            smaller: Final = min(int(w_str), int(h_str))
         except (ValueError, TypeError):
             return None
         if smaller == 720:
@@ -397,8 +402,8 @@ class GeminiVideoConfig(BaseVideoConfig):
         if not model or model == "":
             return api_base.rstrip("/")
 
-        model_name = model.replace("gemini/", "")
-        url = f"{api_base.rstrip('/')}/v1beta/models/{model_name}:predictLongRunning"
+        model_name: Final = model.replace("gemini/", "")
+        url: Final = f"{api_base.rstrip('/')}/v1beta/models/{model_name}:predictLongRunning"
 
         return url
 
@@ -407,10 +412,10 @@ class GeminiVideoConfig(BaseVideoConfig):
         model: str,
         prompt: str,
         api_base: str,
-        video_create_optional_request_params: Dict,
+        video_create_optional_request_params: dict,
         litellm_params: GenericLiteLLMParams,
         headers: dict,
-    ) -> Tuple[Dict, RequestFiles, str]:
+    ) -> tuple[dict, RequestFiles, str]:
         """
         Transform the video creation request for Veo API.
 
@@ -432,12 +437,12 @@ class GeminiVideoConfig(BaseVideoConfig):
             }
         }
         """
-        instance: GeminiVideoGenerationInstance = {"prompt": prompt}
+        instance: Final[GeminiVideoGenerationInstance] = {"prompt": prompt}
 
-        params_copy = video_create_optional_request_params.copy()
+        params_copy: Final = video_create_optional_request_params.copy()
 
         if "image" in params_copy:
-            image = params_copy.pop("image")
+            image: Final = params_copy.pop("image")
             if image is not None:
                 if isinstance(image, dict):
                     instance["image"] = image
@@ -484,11 +489,11 @@ class GeminiVideoConfig(BaseVideoConfig):
             model, instance, params_copy
         )
 
-        parameters = GeminiVideoGenerationParameters(**params_copy)
+        parameters: Final = GeminiVideoGenerationParameters(**params_copy)
 
-        request_body_obj = GeminiVideoGenerationRequest(instances=[instance], parameters=parameters)
+        request_body_obj: Final = GeminiVideoGenerationRequest(instances=[instance], parameters=parameters)
 
-        request_data = request_body_obj.model_dump(exclude_none=True)
+        request_data: Final = request_body_obj.model_dump(exclude_none=True)
 
         return request_data, [], api_base
 
@@ -498,7 +503,7 @@ class GeminiVideoConfig(BaseVideoConfig):
         raw_response: httpx.Response,
         logging_obj: LiteLLMLoggingObj,
         custom_llm_provider: str | None = None,
-        request_data: Dict | None = None,
+        request_data: dict | None = None,
     ) -> VideoObject:
         """
         Transform the Veo video creation response.
@@ -516,15 +521,15 @@ class GeminiVideoConfig(BaseVideoConfig):
         - status: "processing"
         - usage: includes duration_seconds and optional video_resolution for cost calculation
         """
-        response_data = raw_response.json()
+        response_data: Final = _json_payload(raw_response)
 
         # Parse response using Pydantic model for type safety
         try:
-            operation_response = GeminiLongRunningOperationResponse(**response_data)
+            operation_response: Final = GeminiLongRunningOperationResponse.model_validate(response_data)
         except Exception as e:
             raise ValueError(f"Failed to parse operation response: {e}")
 
-        operation_name = operation_response.name
+        operation_name: Final = operation_response.name
         if not operation_name:
             raise ValueError(f"No operation name in Veo response: {response_data}")
 
@@ -533,23 +538,23 @@ class GeminiVideoConfig(BaseVideoConfig):
         else:
             video_id = operation_name
 
-        video_obj = VideoObject(
+        video_obj: Final = VideoObject(
             id=video_id,
             object="video",
             status="processing",
             model=model,
         )
 
-        usage_data: Dict[str, Any] = {}
+        usage_data: Final[dict[str, float | str]] = {}
         if request_data:
-            parameters = request_data.get("parameters", {})
-            duration = parameters.get("durationSeconds") or DEFAULT_GOOGLE_VIDEO_DURATION_SECONDS
+            parameters: Final = request_data.get("parameters", {})
+            duration: Final = parameters.get("durationSeconds") or DEFAULT_GOOGLE_VIDEO_DURATION_SECONDS
             if duration is not None:
                 try:
                     usage_data["duration_seconds"] = float(duration)
                 except (ValueError, TypeError):
                     pass
-            video_resolution = _usage_video_resolution_from_parameters(parameters)
+            video_resolution: Final = _usage_video_resolution_from_parameters(parameters)
             if video_resolution is not None:
                 usage_data["video_resolution"] = video_resolution
 
@@ -562,16 +567,16 @@ class GeminiVideoConfig(BaseVideoConfig):
         api_base: str,
         litellm_params: GenericLiteLLMParams,
         headers: dict,
-    ) -> Tuple[str, Dict]:
+    ) -> tuple[str, dict]:
         """
         Transform the video status retrieve request for Veo API.
 
         Veo polls operations at:
         GET https://generativelanguage.googleapis.com/v1beta/{operation_name}
         """
-        operation_name = extract_original_video_id(video_id)
-        url = f"{api_base.rstrip('/')}/v1beta/{operation_name}"
-        params: Dict[str, Any] = {}
+        operation_name: Final = extract_original_video_id(video_id)
+        url: Final = f"{api_base.rstrip('/')}/v1beta/{operation_name}"
+        params: Final[dict[str, object]] = {}
 
         return url, params
 
@@ -607,12 +612,12 @@ class GeminiVideoConfig(BaseVideoConfig):
             }
         }
         """
-        response_data = raw_response.json()
+        response_data: Final = _json_payload(raw_response)
         # Parse response using Pydantic model for type safety
-        operation_response = GeminiLongRunningOperationResponse(**response_data)
+        operation_response: Final = GeminiLongRunningOperationResponse.model_validate(response_data)
 
-        operation_name = operation_response.name
-        is_done = operation_response.done
+        operation_name: Final = operation_response.name
+        is_done: Final = operation_response.done
 
         if custom_llm_provider:
             video_id = encode_video_id_with_provider(operation_name, custom_llm_provider, None)
@@ -658,7 +663,7 @@ class GeminiVideoConfig(BaseVideoConfig):
         litellm_params: GenericLiteLLMParams,
         headers: dict,
         variant: str | None = None,
-    ) -> Tuple[str, Dict]:
+    ) -> tuple[str, dict]:
         """
         Transform the video content request for Veo API.
 
@@ -666,15 +671,15 @@ class GeminiVideoConfig(BaseVideoConfig):
         1. Get operation status to extract video URI
         2. Return download URL for the video
         """
-        operation_name = extract_original_video_id(video_id)
+        operation_name: Final = extract_original_video_id(video_id)
 
-        status_url = f"{api_base.rstrip('/')}/v1beta/{operation_name}"
-        client = litellm.module_level_client
-        status_response = client.get(url=status_url, headers=headers)
+        status_url: Final = f"{api_base.rstrip('/')}/v1beta/{operation_name}"
+        client: Final = litellm.module_level_client
+        status_response: Final = client.get(url=status_url, headers=headers)
         status_response.raise_for_status()
-        response_data = status_response.json()
+        response_data: Final = _json_payload(status_response)
 
-        operation_response = GeminiLongRunningOperationResponse(**response_data)
+        operation_response: Final = GeminiLongRunningOperationResponse.model_validate(response_data)
 
         if not operation_response.done:
             raise ValueError(
@@ -691,7 +696,7 @@ class GeminiVideoConfig(BaseVideoConfig):
             raise ValueError("No generated samples in completed operation. " + " ".join(reasons))
         download_url = generated_samples[0].video.uri
 
-        params: Dict[str, Any] = {}
+        params: Final[dict[str, object]] = {}
 
         return download_url, params
 
@@ -713,8 +718,8 @@ class GeminiVideoConfig(BaseVideoConfig):
         api_base: str,
         litellm_params: GenericLiteLLMParams,
         headers: dict,
-        extra_body: Dict[str, Any] | None = None,
-    ) -> Tuple[str, Dict]:
+        extra_body: Mapping[str, object] | None = None,
+    ) -> tuple[str, dict]:
         """
         Video remix is not supported by Veo API.
         """
@@ -739,8 +744,8 @@ class GeminiVideoConfig(BaseVideoConfig):
         after: str | None = None,
         limit: int | None = None,
         order: str | None = None,
-        extra_query: Dict[str, Any] | None = None,
-    ) -> Tuple[str, Dict]:
+        extra_query: Mapping[str, object] | None = None,
+    ) -> tuple[str, dict]:
         """
         Video list is not supported by Veo API.
         """
@@ -754,7 +759,7 @@ class GeminiVideoConfig(BaseVideoConfig):
         raw_response: httpx.Response,
         logging_obj: LiteLLMLoggingObj,
         custom_llm_provider: str | None = None,
-    ) -> Dict[str, str]:
+    ) -> dict[str, str]:
         """Video list is not supported."""
         raise NotImplementedError("Video list is not supported by Google Veo.")
 
@@ -764,7 +769,7 @@ class GeminiVideoConfig(BaseVideoConfig):
         api_base: str,
         litellm_params: GenericLiteLLMParams,
         headers: dict,
-    ) -> Tuple[str, Dict]:
+    ) -> tuple[str, dict]:
         """
         Video delete is not supported by Veo API.
         """
@@ -780,7 +785,7 @@ class GeminiVideoConfig(BaseVideoConfig):
         """Video delete is not supported."""
         raise NotImplementedError("Video delete is not supported by Google Veo.")
 
-    def transform_video_create_character_request(self, name, video, api_base, litellm_params, headers):
+    def transform_video_create_character_request(self, name, video: object, api_base, litellm_params, headers):
         raise NotImplementedError("video create character is not supported for Gemini")
 
     def transform_video_create_character_response(self, raw_response, logging_obj):
@@ -799,6 +804,7 @@ class GeminiVideoConfig(BaseVideoConfig):
         api_base,
         litellm_params,
         headers,
+        video_file=None,
         extra_body=None,
         prefetched_source_data=None,
     ):
@@ -828,9 +834,7 @@ class GeminiVideoConfig(BaseVideoConfig):
     def transform_video_extension_response(self, raw_response, logging_obj, custom_llm_provider=None):
         raise NotImplementedError("video extension is not supported for Gemini")
 
-    def get_error_class(
-        self, error_message: str, status_code: int, headers: Union[dict, httpx.Headers]
-    ) -> BaseLLMException:
+    def get_error_class(self, error_message: str, status_code: int, headers: dict | httpx.Headers) -> BaseLLMException:
         from ..common_utils import GeminiError
 
         return GeminiError(

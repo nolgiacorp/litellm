@@ -1,4 +1,4 @@
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Literal
 
 from pydantic import BaseModel
 from typing_extensions import TypedDict
@@ -18,12 +18,12 @@ class ContainerObject(BaseModel):
     object: Literal["container"]
     created_at: int
     status: str
-    expires_after: Optional[ExpiresAfter] = None
-    last_active_at: Optional[int] = None
-    name: Optional[str] = None
-    _hidden_params: Dict[str, Any] = {}
+    expires_after: ExpiresAfter | None = None
+    last_active_at: int | None = None
+    name: str | None = None
+    _hidden_params: dict[str, Any] = {}
 
-    def __contains__(self, key):
+    def __contains__(self, key) -> bool:
         # Define custom behavior for the 'in' operator
         return hasattr(self, key)
 
@@ -35,10 +35,10 @@ class ContainerObject(BaseModel):
         # Allow dictionary-style access to attributes
         return getattr(self, key)
 
-    def json(self, **kwargs):  # type: ignore
+    def json(self, **kwargs):
         try:
             return self.model_dump(**kwargs)
-        except Exception:
+        except AttributeError:
             # if using pydantic v1
             return self.dict()
 
@@ -50,7 +50,7 @@ class DeleteContainerResult(BaseModel):
     object: Literal["container.deleted"]
     deleted: bool
 
-    def __contains__(self, key):
+    def __contains__(self, key) -> bool:
         return hasattr(self, key)
 
     def get(self, key, default=None):
@@ -59,10 +59,10 @@ class DeleteContainerResult(BaseModel):
     def __getitem__(self, key):
         return getattr(self, key)
 
-    def json(self, **kwargs):  # type: ignore
+    def json(self, **kwargs):
         try:
             return self.model_dump(**kwargs)
-        except Exception:
+        except AttributeError:
             return self.dict()
 
 
@@ -70,12 +70,12 @@ class ContainerListResponse(BaseModel):
     """Response object for list containers request."""
 
     object: Literal["list"]
-    data: List[ContainerObject]
-    first_id: Optional[str] = None
-    last_id: Optional[str] = None
+    data: list[ContainerObject]
+    first_id: str | None = None
+    last_id: str | None = None
     has_more: bool
 
-    def __contains__(self, key):
+    def __contains__(self, key) -> bool:
         return hasattr(self, key)
 
     def get(self, key, default=None):
@@ -84,10 +84,10 @@ class ContainerListResponse(BaseModel):
     def __getitem__(self, key):
         return getattr(self, key)
 
-    def json(self, **kwargs):  # type: ignore
+    def json(self, **kwargs):
         try:
             return self.model_dump(**kwargs)
-        except Exception:
+        except AttributeError:
             return self.dict()
 
 
@@ -98,10 +98,10 @@ class ContainerCreateOptionalRequestParams(TypedDict, total=False):
     Params here: https://platform.openai.com/docs/api-reference/containers/create
     """
 
-    expires_after: Optional[Dict[str, Any]]  # ExpiresAfter object
-    file_ids: Optional[List[str]]
-    extra_headers: Optional[Dict[str, str]]
-    extra_body: Optional[Dict[str, str]]
+    expires_after: dict[str, Any] | None  # ExpiresAfter object
+    file_ids: list[str] | None
+    extra_headers: dict[str, str] | None
+    extra_body: dict[str, str] | None
 
 
 class ContainerCreateRequestParams(ContainerCreateOptionalRequestParams, total=False):
@@ -121,11 +121,11 @@ class ContainerListOptionalRequestParams(TypedDict, total=False):
     Params here: https://platform.openai.com/docs/api-reference/containers/list
     """
 
-    after: Optional[str]
-    limit: Optional[int]
-    order: Optional[str]
-    extra_headers: Optional[Dict[str, str]]
-    extra_query: Optional[Dict[str, str]]
+    after: str | None
+    limit: int | None
+    order: str | None
+    extra_headers: dict[str, str] | None
+    extra_query: dict[str, str] | None
 
 
 class ContainerFileObject(BaseModel):
@@ -134,13 +134,13 @@ class ContainerFileObject(BaseModel):
     id: str
     object: Literal["container.file", "container_file"]  # OpenAI returns "container.file"
     container_id: str
-    bytes: Optional[int] = None  # Can be null for some files
+    bytes: int | None = None  # Can be null for some files
     created_at: int
     path: str
     source: str
-    _hidden_params: Dict[str, Any] = {}
+    _hidden_params: dict[str, Any] = {}
 
-    def __contains__(self, key):
+    def __contains__(self, key) -> bool:
         return hasattr(self, key)
 
     def get(self, key, default=None):
@@ -149,10 +149,10 @@ class ContainerFileObject(BaseModel):
     def __getitem__(self, key):
         return getattr(self, key)
 
-    def json(self, **kwargs):  # type: ignore
+    def json(self, **kwargs):
         try:
             return self.model_dump(**kwargs)
-        except Exception:
+        except AttributeError:
             return self.dict()
 
 
@@ -160,12 +160,12 @@ class ContainerFileListResponse(BaseModel):
     """Response object for list container files request."""
 
     object: Literal["list"]
-    data: List[ContainerFileObject]
-    first_id: Optional[str] = None
-    last_id: Optional[str] = None
+    data: list[ContainerFileObject]
+    first_id: str | None = None
+    last_id: str | None = None
     has_more: bool
 
-    def __contains__(self, key):
+    def __contains__(self, key) -> bool:
         return hasattr(self, key)
 
     def get(self, key, default=None):
@@ -174,10 +174,10 @@ class ContainerFileListResponse(BaseModel):
     def __getitem__(self, key):
         return getattr(self, key)
 
-    def json(self, **kwargs):  # type: ignore
+    def json(self, **kwargs):
         try:
             return self.model_dump(**kwargs)
-        except Exception:
+        except AttributeError:
             return self.dict()
 
 
@@ -189,7 +189,7 @@ class DeleteContainerFileResponse(BaseModel):
     object: Literal["container.file.deleted", "container_file.deleted"]
     deleted: bool
 
-    def __contains__(self, key):
+    def __contains__(self, key) -> bool:
         return hasattr(self, key)
 
     def get(self, key, default=None):
@@ -198,8 +198,8 @@ class DeleteContainerFileResponse(BaseModel):
     def __getitem__(self, key):
         return getattr(self, key)
 
-    def json(self, **kwargs):  # type: ignore
+    def json(self, **kwargs):
         try:
             return self.model_dump(**kwargs)
-        except Exception:
+        except AttributeError:
             return self.dict()

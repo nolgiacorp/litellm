@@ -1,3 +1,5 @@
+from typing import Final
+
 import litellm
 from litellm.types.utils import ImageResponse
 
@@ -9,11 +11,11 @@ def cost_calculator(
     """
     Recraft image generation cost calculator
     """
-    _model_info = litellm.get_model_info(
+    _model_info: Final = litellm.get_model_info(
         model=model,
         custom_llm_provider=litellm.LlmProviders.RECRAFT.value,
     )
-    output_cost_per_image: float = _model_info.get("output_cost_per_image") or 0.0
+    output_cost_per_image: Final[float] = _model_info.get("output_cost_per_image") or 0.0
     num_images: int = 0
     if isinstance(image_response, ImageResponse):
         if image_response.data:

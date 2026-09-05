@@ -6,7 +6,10 @@ Common utilities, constants, and error handling for Black Forest Labs API.
 
 from collections.abc import Mapping
 from types import MappingProxyType
-from typing import Any, Dict  # noqa: TID251  # base transformation contracts type these payloads as Any
+from typing import (
+    Any,  # noqa: TID251  # base transformation contracts type these payloads as Any
+    Final,
+)
 from urllib.parse import urlparse
 
 from litellm.llms.base_llm.chat.transformation import BaseLLMException
@@ -18,11 +21,9 @@ EMPTY_MAP: Mapping[str, Any] = MappingProxyType({})  # mutable-ok: frozen shared
 class BlackForestLabsError(BaseLLMException):
     """Exception class for Black Forest Labs API errors."""
 
-    pass
-
 
 # API Constants
-DEFAULT_API_BASE = "https://api.bfl.ai"
+DEFAULT_API_BASE: Final = "https://api.bfl.ai"
 
 
 def resolve_bfl_api_base(api_base: str | None) -> str:
@@ -53,7 +54,7 @@ def bfl_auth_headers(api_key: str | None) -> Mapping[str, str]:
 # BFL uses regional subdomains (e.g. gateway.bfl.ai) for polling URLs that
 # differ from the submission host (api.bfl.ai). We validate against the
 # registered domain rather than doing a strict same-origin check.
-_BFL_REGISTERED_DOMAIN = "bfl.ai"
+_BFL_REGISTERED_DOMAIN: Final = "bfl.ai"
 
 
 def assert_bfl_polling_url(polling_url: str) -> None:
@@ -68,8 +69,8 @@ def assert_bfl_polling_url(polling_url: str) -> None:
     Raises:
         BlackForestLabsError: If the polling URL scheme or host is not trusted.
     """
-    parsed = urlparse(polling_url)
-    host = (parsed.hostname or "").lower()
+    parsed: Final = urlparse(polling_url)
+    host: Final = (parsed.hostname or "").lower()
 
     if parsed.scheme != "https":
         raise BlackForestLabsError(
@@ -85,11 +86,11 @@ def assert_bfl_polling_url(polling_url: str) -> None:
 
 
 # Polling configuration
-DEFAULT_POLLING_INTERVAL = 1.5  # seconds
-DEFAULT_MAX_POLLING_TIME = 300  # 5 minutes
+DEFAULT_POLLING_INTERVAL: Final = 1.5  # seconds
+DEFAULT_MAX_POLLING_TIME: Final = 300  # 5 minutes
 
 # Model to endpoint mapping for image edit
-IMAGE_EDIT_MODELS: Dict[str, str] = {
+IMAGE_EDIT_MODELS: Final[dict[str, str]] = {
     "flux-kontext-pro": "/v1/flux-kontext-pro",
     "flux-kontext-max": "/v1/flux-kontext-max",
     "flux-pro-1.0-fill": "/v1/flux-pro-1.0-fill",
@@ -110,7 +111,7 @@ VIDEO_GENERATION_MODELS: Mapping[str, str] = MappingProxyType(
 )
 
 # Model to endpoint mapping for image generation
-IMAGE_GENERATION_MODELS: Dict[str, str] = {
+IMAGE_GENERATION_MODELS: Final[dict[str, str]] = {
     "flux-pro-1.1": "/v1/flux-pro-1.1",
     "flux-pro-1.1-ultra": "/v1/flux-pro-1.1-ultra",
     "flux-dev": "/v1/flux-dev",
