@@ -173,7 +173,7 @@ class SCIMPatchOperation(BaseModel):
 
     @field_validator("op", mode="before")
     @classmethod
-    def normalize_op(cls, v):
+    def normalize_op(cls, v) -> object:
         if isinstance(v, str):
             v_lower: Final = v.lower()
             if v_lower not in {"add", "remove", "replace"}:

@@ -14,22 +14,22 @@ from typing import (
 import httpx
 from openai._models import BaseModel as OpenAIObject
 from openai.types.audio.transcription_create_params import (
-    FileTypes as FileTypes,
+    FileTypes as FileTypes,  # noqa: PLC0414  # explicit re-export
 )
-from openai.types.chat.chat_completion import ChatCompletion as ChatCompletion
+from openai.types.chat.chat_completion import ChatCompletion as ChatCompletion  # noqa: PLC0414  # explicit re-export
 from openai.types.completion_usage import (
     CompletionTokensDetails,
     CompletionUsage,
     PromptTokensDetails,
 )
-from openai.types.moderation import Categories as Categories
+from openai.types.moderation import Categories as Categories  # noqa: PLC0414  # explicit re-export
 from openai.types.moderation import (
-    CategoryAppliedInputTypes as CategoryAppliedInputTypes,
+    CategoryAppliedInputTypes as CategoryAppliedInputTypes,  # noqa: PLC0414  # explicit re-export
 )
-from openai.types.moderation import CategoryScores as CategoryScores
-from openai.types.moderation_create_response import Moderation as Moderation
+from openai.types.moderation import CategoryScores as CategoryScores  # noqa: PLC0414  # explicit re-export
+from openai.types.moderation_create_response import Moderation as Moderation  # noqa: PLC0414  # explicit re-export
 from openai.types.moderation_create_response import (
-    ModerationCreateResponse as ModerationCreateResponse,
+    ModerationCreateResponse as ModerationCreateResponse,  # noqa: PLC0414  # explicit re-export
 )
 from pydantic import (
     BaseModel,
@@ -75,7 +75,7 @@ from .llms.openai import (
     ResponsesAPIResponse,
     WebSearchOptions,
 )
-from .rerank import RerankResponse as RerankResponse
+from .rerank import RerankResponse as RerankResponse  # noqa: PLC0414  # explicit re-export
 
 if TYPE_CHECKING:
     from .vector_stores import VectorStoreSearchResponse
@@ -1038,7 +1038,7 @@ class ChatCompletionTokenLogprob(OpenAIObject):
     # omitted; normalize to [] to preserve the typed List[TopLogprob] contract.
     @field_validator("top_logprobs", mode="before")
     @classmethod
-    def ensure_top_logprobs_is_list(cls, v):
+    def ensure_top_logprobs_is_list(cls, v) -> object:
         """Normalize null top_logprobs to empty list.
 
         Some providers return null instead of [] when logprobs=true but
@@ -1102,10 +1102,6 @@ class Function(OpenAIObject):
                 arguments = ""
         elif isinstance(arguments, dict):
             arguments = json.dumps(arguments)
-        else:
-            arguments = arguments
-
-        name = name
 
         # Build a dictionary with the structure your BaseModel expects
         data: Final = {"arguments": arguments, "name": name}
@@ -1256,9 +1252,7 @@ class ChatCompletionAudioResponse(ChatCompletionAudio):
         id: str | None = None,
         **params,
     ) -> None:
-        if id is not None:
-            id = id
-        else:
+        if id is None:
             id = f"{uuid.uuid4()}"
         super().__init__(data=data, expires_at=expires_at, transcript=transcript, id=id, **params)
 
@@ -1693,7 +1687,7 @@ class PromptTokensDetailsWrapper(
         elif name == "cache_creation_tokens":
             super().__setattr__("cache_write_tokens", value)
 
-    def __init__(self, *args, **kwargs) -> None:
+    def __init__(self, *args: object, **kwargs: object) -> None:
         super().__init__(*args, **kwargs)
         extra_fields: Final = self.model_extra
         nested_cache_creation_input_tokens: Final = (
@@ -2018,12 +2012,8 @@ class ModelResponseStream(ModelResponseBase):
 
         if id is None:
             id = _generate_id()
-        else:
-            id = id
         if created is None:
             created = int(time.time())
-        else:
-            created = created
 
         usage_to_set = None
         if "usage" in kwargs and kwargs["usage"] is not None:
@@ -2106,21 +2096,14 @@ class ModelResponse(ModelResponseBase):
             choices = [Choices()]
         if id is None:
             id = _generate_id()
-        else:
-            id = id
         if created is None:
             created = int(time.time())
-        else:
-            created = created
-        model = model
         if usage is not None:
             if isinstance(usage, dict):
                 usage = Usage(**usage)
             elif isinstance(usage, BaseModel):
                 dump = usage.model_dump() if hasattr(usage, "model_dump") else usage.dict()
                 usage = Usage(**dump)
-            else:
-                usage = usage
         elif stream is None or stream is False:
             usage = None  # avoid constructing throwaway Usage; set by convert_to_model_response_object
         if hidden_params:
@@ -2216,20 +2199,15 @@ class EmbeddingResponse(OpenAIObject):
             _response_ms = response_ms
         else:
             _response_ms = None
-        if data:
-            data = data
-        else:
+        if not data:
             data = []
 
-        if usage:
-            usage = usage
-        else:
+        if not usage:
             usage = Usage()
 
         if _response_headers:
             self._response_headers = _response_headers
 
-        model = model
         super().__init__(model=model, object=object, data=data, usage=usage)
 
         if hidden_params:
@@ -2367,21 +2345,12 @@ class TextCompletionResponse(OpenAIObject):
                 choices = new_choices
             else:
                 choices = [TextChoices()]
-        if object is not None:
-            object = object
         if id is None:
             id = _generate_id()
-        else:
-            id = id
         if created is None:
             created = int(time.time())
-        else:
-            created = created
 
-        model = model
-        if usage:
-            usage = usage
-        else:
+        if not usage:
             usage = Usage()
 
         super().__init__(
@@ -2523,14 +2492,10 @@ class ImageResponse(OpenAIImageResponse, BaseLiteLLMOpenAIResponseObject):
             _response_ms = response_ms
         else:
             _response_ms = None
-        if data:
-            data = data
-        else:
+        if not data:
             data = []
 
-        if created:
-            created = created
-        else:
+        if not created:
             created = int(time.time())
 
         _data: Final[list[OpenAIImage]] = []
@@ -4133,10 +4098,10 @@ class RawRequestTypedDict(TypedDict, total=False):
 
 
 from litellm.models.credentials import (  # noqa: E402
-    CreateCredentialItem as CreateCredentialItem,
+    CreateCredentialItem as CreateCredentialItem,  # noqa: PLC0414  # explicit re-export
 )
-from litellm.models.credentials import CredentialBase as CredentialBase  # noqa: E402
-from litellm.models.credentials import CredentialItem as CredentialItem  # noqa: E402
+from litellm.models.credentials import CredentialBase as CredentialBase  # noqa: E402, PLC0414  # explicit re-export
+from litellm.models.credentials import CredentialItem as CredentialItem  # noqa: E402, PLC0414  # explicit re-export
 
 
 class ExtractedFileData(TypedDict):

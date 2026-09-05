@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, Final, Literal
 
 import httpx
-from pydantic import PrivateAttr
+from pydantic import ConfigDict, PrivateAttr
 
 from litellm.llms.base_llm.chat.transformation import BaseLLMException
 from litellm.types.llms.base import LiteLLMPydanticObjectBase
@@ -57,7 +57,7 @@ class OCRPageImage(LiteLLMPydanticObjectBase):
     image_base64: str | None = None
     bbox: dict[str, Any] | None = None
 
-    model_config = {"extra": "allow"}
+    model_config = ConfigDict(extra="allow")
 
 
 class OCRPage(LiteLLMPydanticObjectBase):
@@ -68,7 +68,7 @@ class OCRPage(LiteLLMPydanticObjectBase):
     images: list[OCRPageImage] | None = None
     dimensions: OCRPageDimensions | None = None
 
-    model_config = {"extra": "allow"}
+    model_config = ConfigDict(extra="allow")
 
 
 class OCRUsageInfo(LiteLLMPydanticObjectBase):
@@ -79,7 +79,7 @@ class OCRUsageInfo(LiteLLMPydanticObjectBase):
     credits: float | None = None
     doc_size_bytes: int | None = None
 
-    model_config = {"extra": "allow"}
+    model_config = ConfigDict(extra="allow")
 
 
 class OCRResponse(LiteLLMPydanticObjectBase):
@@ -97,7 +97,7 @@ class OCRResponse(LiteLLMPydanticObjectBase):
     keyValuePairs: list[dict[str, object]] | None = None
     object: str = "ocr"
 
-    model_config = {"extra": "allow"}
+    model_config = ConfigDict(extra="allow")
 
     # Define private attributes using PrivateAttr
     _hidden_params: dict = PrivateAttr(default_factory=dict)

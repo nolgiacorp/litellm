@@ -38,7 +38,7 @@ class ContainerObject(BaseModel):
     def json(self, **kwargs):
         try:
             return self.model_dump(**kwargs)
-        except Exception:
+        except AttributeError:
             # if using pydantic v1
             return self.dict()
 
@@ -62,7 +62,7 @@ class DeleteContainerResult(BaseModel):
     def json(self, **kwargs):
         try:
             return self.model_dump(**kwargs)
-        except Exception:
+        except AttributeError:
             return self.dict()
 
 
@@ -87,7 +87,7 @@ class ContainerListResponse(BaseModel):
     def json(self, **kwargs):
         try:
             return self.model_dump(**kwargs)
-        except Exception:
+        except AttributeError:
             return self.dict()
 
 
@@ -152,7 +152,7 @@ class ContainerFileObject(BaseModel):
     def json(self, **kwargs):
         try:
             return self.model_dump(**kwargs)
-        except Exception:
+        except AttributeError:
             return self.dict()
 
 
@@ -177,7 +177,7 @@ class ContainerFileListResponse(BaseModel):
     def json(self, **kwargs):
         try:
             return self.model_dump(**kwargs)
-        except Exception:
+        except AttributeError:
             return self.dict()
 
 
@@ -201,5 +201,5 @@ class DeleteContainerFileResponse(BaseModel):
     def json(self, **kwargs):
         try:
             return self.model_dump(**kwargs)
-        except Exception:
+        except AttributeError:
             return self.dict()

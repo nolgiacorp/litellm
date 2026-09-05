@@ -51,7 +51,7 @@ def _b64decode_urlsafe_or_standard(value: str) -> str:
     padded = _add_base64_padding(value)
     try:
         return base64.urlsafe_b64decode(padded.encode("utf-8")).decode("utf-8")
-    except Exception:
+    except ValueError:
         return base64.b64decode(padded.encode("utf-8")).decode("utf-8")
 
 
@@ -122,7 +122,7 @@ def decode_video_id_with_provider(encoded_video_id: str) -> DecodedVideoId:
             model_id=model_id,
             video_id=decoded_video_id,
         )
-    except Exception as e:
+    except ValueError as e:
         verbose_logger.debug("Error decoding video_id '%s': %s", encoded_video_id, e)
         return DecodedVideoId(
             custom_llm_provider=None,
@@ -199,7 +199,7 @@ def decode_character_id_with_provider(encoded_character_id: str) -> DecodedChara
             model_id=model_id,
             character_id=decoded_character_id,
         )
-    except Exception as e:
+    except ValueError as e:
         verbose_logger.debug("Error decoding character_id '%s': %s", encoded_character_id, e)
         return DecodedCharacterId(
             custom_llm_provider=None,

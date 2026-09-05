@@ -40,7 +40,7 @@ class ToolPermissionRule(BaseModel):
 
     @field_validator("decision", mode="before")
     @classmethod
-    def normalize_decision(cls, v):
+    def normalize_decision(cls, v) -> object:
         """Normalize decision to lowercase to handle case-insensitive input."""
         if isinstance(v, str):
             return v.lower()
@@ -91,7 +91,7 @@ class ToolPermissionGuardrailConfigModel(GuardrailConfigModel):
 
     @field_validator("default_action", mode="before")
     @classmethod
-    def normalize_default_action(cls, v):
+    def normalize_default_action(cls, v) -> object:
         """Normalize default_action to lowercase to handle case-insensitive input."""
         if isinstance(v, str):
             return v.lower()
@@ -99,7 +99,7 @@ class ToolPermissionGuardrailConfigModel(GuardrailConfigModel):
 
     @field_validator("on_disallowed_action", mode="before")
     @classmethod
-    def normalize_on_disallowed_action(cls, v):
+    def normalize_on_disallowed_action(cls, v) -> object:
         """Normalize on_disallowed_action to lowercase to handle case-insensitive input."""
         if isinstance(v, str):
             return v.lower()

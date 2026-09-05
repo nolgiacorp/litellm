@@ -1015,7 +1015,7 @@ class BaseLitellmParams(ContentFilterConfigModel):  # works for new and patch up
         check_fields=False,
     )
     @classmethod
-    def normalize_lowercase(cls, v):
+    def normalize_lowercase(cls, v) -> object:
         """Normalize string and list fields to lowercase for ALL guardrail types."""
         if isinstance(v, str):
             return v.lower()
@@ -1074,7 +1074,7 @@ class LitellmParams(  # pyright: ignore[reportIncompatibleVariableOverride]  # o
 
     @field_validator("timeout", mode="before", check_fields=False)
     @classmethod
-    def coerce_timeout(cls, v):
+    def coerce_timeout(cls, v) -> float | None:
         """Accept string-valued timeouts (dashboard UI sends JSON strings)
         and coerce to float before any handler reads the value."""
         if v is None or v == "":

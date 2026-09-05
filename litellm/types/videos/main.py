@@ -38,7 +38,7 @@ class VideoObject(BaseModel):
     def json(self, **kwargs):
         try:
             return self.model_dump(**kwargs)
-        except Exception:
+        except AttributeError:
             # if using pydantic v1
             return self.dict()
 
@@ -61,7 +61,7 @@ class VideoResponse(BaseModel):
     def json(self, **kwargs):
         try:
             return self.model_dump(**kwargs)
-        except Exception:
+        except AttributeError:
             return self.dict()
 
 
@@ -124,7 +124,7 @@ class CharacterObject(BaseModel):
     def json(self, **kwargs):
         try:
             return self.model_dump(**kwargs)
-        except Exception:
+        except AttributeError:
             return self.dict()
 
 

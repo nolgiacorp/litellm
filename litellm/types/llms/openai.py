@@ -1281,7 +1281,7 @@ class OutputTokensDetails(BaseLiteLLMOpenAIResponseObject):
 
     text_tokens: int | None = None
 
-    model_config = {"extra": "allow"}
+    model_config = ConfigDict(extra="allow")
 
 
 class InputTokensDetails(BaseLiteLLMOpenAIResponseObject):
@@ -1289,7 +1289,7 @@ class InputTokensDetails(BaseLiteLLMOpenAIResponseObject):
     cached_tokens: int = 0
     text_tokens: int | None = None
 
-    model_config = {"extra": "allow"}
+    model_config = ConfigDict(extra="allow")
 
 
 class ResponseAPIUsage(BaseLiteLLMOpenAIResponseObject):
@@ -1319,7 +1319,7 @@ class ResponseAPIUsage(BaseLiteLLMOpenAIResponseObject):
             return v.get("total_cost")
         return v
 
-    model_config = {"extra": "allow"}
+    model_config = ConfigDict(extra="allow")
 
 
 class WebSearchToolUsage(BaseModel):
@@ -1392,7 +1392,7 @@ class ResponsesAPIResponse(BaseLiteLLMOpenAIResponseObject):
 
     @field_validator("usage", mode="before")
     @classmethod
-    def validate_usage(cls, value):
+    def validate_usage(cls, value) -> object:
         """Convert usage dict to ResponseAPIUsage object if needed"""
         if value is None:
             return value
@@ -1402,7 +1402,7 @@ class ResponsesAPIResponse(BaseLiteLLMOpenAIResponseObject):
 
     @field_serializer("output", mode="wrap")
     @classmethod
-    def _serialize_output_filter_reasoning_nulls(cls, value, handler, _info):
+    def _serialize_output_filter_reasoning_nulls(cls, value, handler, _info) -> object:
         """
         Filter null status/content/encrypted_content from reasoning output items.
 

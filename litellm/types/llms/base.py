@@ -12,14 +12,14 @@ class LiteLLMPydanticObjectBase(BaseModel):
     def json(self, **kwargs):
         try:
             return self.model_dump(**kwargs)
-        except Exception:
+        except AttributeError:
             # if using pydantic v1
             return self.dict(**kwargs)
 
     def fields_set(self):
         try:
             return self.model_fields_set
-        except Exception:
+        except AttributeError:
             # if using pydantic v1
             return self.__fields_set__
 
@@ -66,7 +66,7 @@ class HiddenParams(OpenAIObject):
     def json(self, **kwargs):
         try:
             return self.model_dump()
-        except Exception:
+        except AttributeError:
             # if using pydantic v1
             return self.dict()
 

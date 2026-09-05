@@ -2,7 +2,7 @@ from collections.abc import Mapping
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Final, Literal
 
-from pydantic import BaseModel, PrivateAttr, StrictInt
+from pydantic import BaseModel, ConfigDict, PrivateAttr, StrictInt
 from typing_extensions import Required, TypedDict
 
 from litellm.types.llms.base import LiteLLMPydanticObjectBase
@@ -250,7 +250,7 @@ class AgentCreateResponse(LiteLLMPydanticObjectBase):
 
     id: str | None = None
     name: str | None = None
-    model_config = {"extra": "allow"}
+    model_config = ConfigDict(extra="allow")
 
     _hidden_params: dict[str, object] = PrivateAttr(default_factory=dict)
 
@@ -264,7 +264,7 @@ class AgentDeleteResult(LiteLLMPydanticObjectBase):
 
     name: str
     deleted: bool = True
-    model_config = {"extra": "allow"}
+    model_config = ConfigDict(extra="allow")
 
     _hidden_params: dict[str, object] = PrivateAttr(default_factory=dict)
 
@@ -278,7 +278,7 @@ class AgentListResponse(LiteLLMPydanticObjectBase):
 
     agents: list[dict[str, object]] = []
     next_page_token: str | None = None
-    model_config = {"extra": "allow"}
+    model_config = ConfigDict(extra="allow")
 
     _hidden_params: dict[str, object] = PrivateAttr(default_factory=dict)
 
@@ -292,7 +292,7 @@ class AgentVersionsResponse(LiteLLMPydanticObjectBase):
 
     agent_versions: list[dict[str, object]] = []
     next_page_token: str | None = None
-    model_config = {"extra": "allow"}
+    model_config = ConfigDict(extra="allow")
 
     _hidden_params: dict[str, object] = PrivateAttr(default_factory=dict)
 
@@ -354,7 +354,7 @@ class LiteLLMSendMessageResponse(LiteLLMPydanticObjectBase):
     # LiteLLM usage tracking
     usage: dict[str, object] | None = None
 
-    model_config = {"extra": "allow"}
+    model_config = ConfigDict(extra="allow")
 
     # LiteLLM private attributes for logging/cost tracking
     _hidden_params: dict[str, object] = PrivateAttr(default_factory=dict)

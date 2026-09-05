@@ -2310,9 +2310,7 @@ class UserHeaderMapping(LiteLLMPydanticObjectBase):
         LitellmUserRoles.CUSTOMER,
     ]
 
-    model_config = {
-        "extra": "forbid",
-    }
+    model_config = ConfigDict(extra="forbid")
 
 
 UserMCPManagementMode = Literal["restricted", "view_all"]
@@ -4560,9 +4558,7 @@ class OIDCPermissions(LiteLLMPydanticObjectBase):
 class RoleBasedPermissions(OIDCPermissions):
     role: RBAC_ROLES
 
-    model_config = {
-        "extra": "forbid",
-    }
+    model_config = ConfigDict(extra="forbid")
 
 
 class RoleMapping(BaseModel):
@@ -4578,9 +4574,7 @@ class JWTLiteLLMRoleMap(BaseModel):
 class ScopeMapping(OIDCPermissions):
     scope: str
 
-    model_config = {
-        "extra": "forbid",
-    }
+    model_config = ConfigDict(extra="forbid")
 
 
 class JWTRoutingOverride(BaseModel):

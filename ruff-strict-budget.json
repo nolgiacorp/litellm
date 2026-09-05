@@ -3,13 +3,13 @@
     "limit": 3012
   },
   "ANN002": {
-    "limit": 71
+    "limit": 64
   },
   "ANN003": {
-    "limit": 818
+    "limit": 812
   },
   "ANN201": {
-    "limit": 2007
+    "limit": 2006
   },
   "ANN202": {
     "limit": 798
@@ -21,7 +21,7 @@
     "limit": 107
   },
   "ANN206": {
-    "limit": 133
+    "limit": 122
   },
   "ANN401": {
     "limit": 0
@@ -57,7 +57,7 @@
     "limit": 3
   },
   "BLE001": {
-    "limit": 2916
+    "limit": 2896
   },
   "C401": {
     "limit": 8
@@ -135,7 +135,7 @@
     "limit": 23
   },
   "PLC0414": {
-    "limit": 46
+    "limit": 35
   },
   "PLR0124": {
     "limit": 1
@@ -150,7 +150,7 @@
     "limit": 251
   },
   "PLW0127": {
-    "limit": 57
+    "limit": 38
   },
   "PLW0602": {
     "limit": 214
@@ -171,7 +171,7 @@
     "limit": 0
   },
   "RUF012": {
-    "limit": 241
+    "limit": 165
   },
   "RUF015": {
     "limit": 7

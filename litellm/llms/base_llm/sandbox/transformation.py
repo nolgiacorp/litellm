@@ -9,7 +9,7 @@ run code -> delete container; `code_interpreter_tool` combines all three.
 from typing import Any, Final
 
 import httpx
-from pydantic import Field, PrivateAttr
+from pydantic import ConfigDict, Field, PrivateAttr
 
 from litellm.types.llms.base import LiteLLMPydanticObjectBase
 
@@ -23,7 +23,7 @@ class ContainerHandle(LiteLLMPydanticObjectBase):
     provider: str
     domain: str | None = None
 
-    model_config = {"extra": "allow"}
+    model_config = ConfigDict(extra="allow")
 
     _hidden_params: dict = PrivateAttr(default_factory=dict)
 
@@ -38,7 +38,7 @@ class CodeExecutionResult(LiteLLMPydanticObjectBase):
     execution_count: int | None = None
     object: str = "code_execution"
 
-    model_config = {"extra": "allow"}
+    model_config = ConfigDict(extra="allow")
 
     _hidden_params: dict = PrivateAttr(default_factory=dict)
 

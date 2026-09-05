@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any, Final, Literal
 from urllib.parse import urlsplit
 
 import httpx
-from pydantic import PrivateAttr
+from pydantic import ConfigDict, PrivateAttr
 
 from litellm.llms.base_llm.chat.transformation import BaseLLMException
 from litellm.secret_managers.main import get_secret_str
@@ -60,7 +60,7 @@ class SearchResult(LiteLLMPydanticObjectBase):
     date: str | None = None
     last_updated: str | None = None
 
-    model_config = {"extra": "allow"}
+    model_config = ConfigDict(extra="allow")
 
 
 class SearchResponse(LiteLLMPydanticObjectBase):
@@ -72,7 +72,7 @@ class SearchResponse(LiteLLMPydanticObjectBase):
     results: list[SearchResult]
     object: str = "search"
 
-    model_config = {"extra": "allow"}
+    model_config = ConfigDict(extra="allow")
 
     # Define private attributes using PrivateAttr
     _hidden_params: dict = PrivateAttr(default_factory=dict)
