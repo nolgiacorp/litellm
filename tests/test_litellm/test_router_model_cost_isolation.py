@@ -586,12 +586,10 @@ def test_inherit_builtin_base_rates_for_off_peak_carries_threshold_rates():
 
     assert model_info["input_cost_per_token"] == builtin_info["input_cost_per_token"]
     assert (
-        model_info["input_cost_per_token_above_200k_tokens"]
-        == builtin_info["input_cost_per_token_above_200k_tokens"]
+        model_info["input_cost_per_token_above_200k_tokens"] == builtin_info["input_cost_per_token_above_200k_tokens"]
     )
     assert (
-        model_info["output_cost_per_token_above_200k_tokens"]
-        == builtin_info["output_cost_per_token_above_200k_tokens"]
+        model_info["output_cost_per_token_above_200k_tokens"] == builtin_info["output_cost_per_token_above_200k_tokens"]
     )
 
 
@@ -2361,3 +2359,167 @@ def test_a_config_deployment_dropped_for_a_permanent_reason_is_not_retried_on_re
 
     assert router.get_model_names() == ["control-model"]
     assert router.deployment_names == names_after_boot
+
+
+def _pinned_image_deployment(backend_model, pinned_cost):
+    return Router(
+        model_list=[
+            {
+                "model_name": "pinned-alias",
+                "litellm_params": {"model": backend_model, "api_key": "sk-fake"},
+                "model_info": {"mode": "image_generation", "output_cost_per_image": pinned_cost},
+            },
+            {
+                "model_name": "unpinned-alias",
+                "litellm_params": {"model": backend_model, "api_key": "sk-fake"},
+                "model_info": {"mode": "image_generation"},
+            },
+        ]
+    )
+
+
+def _image_cost(model, custom_llm_provider, router_model_id, images=1, custom_pricing=True):
+    from litellm.types.utils import ImageObject, ImageResponse
+
+    response = ImageResponse(
+        created=1,
+        data=[ImageObject(url=f"https://example.com/{index}.png") for index in range(images)],
+    )
+    response._hidden_params = {"custom_llm_provider": custom_llm_provider, "model_id": router_model_id}
+    return litellm.completion_cost(
+        completion_response=response,
+        model=model,
+        custom_llm_provider=custom_llm_provider,
+        call_type="image_generation",
+        custom_pricing=custom_pricing,
+        router_model_id=router_model_id,
+    )
+
+
+@pytest.mark.usefixtures("local_model_cost_map")
+def test_output_cost_per_image_pin_bills_the_pinned_rate():
+    """An `output_cost_per_image` pin on a deployment must bill that rate.
+
+    The pin is stripped from the shared `{provider}/{model}` cost-map key, so
+    before this fix `_select_model_name_for_cost_calc` handed the image
+    calculator the shared key and the deployment was billed the built-in rate
+    instead of its pin.
+    """
+    backend_model = "black_forest_labs/flux-2-pro"
+    builtin_cost = litellm.model_cost[backend_model]["output_cost_per_image"]
+    pinned_cost = builtin_cost + 0.069
+    router = _pinned_image_deployment(backend_model, pinned_cost)
+    pinned_id = router.model_list[0]["model_info"]["id"]
+    unpinned_id = router.model_list[1]["model_info"]["id"]
+
+    assert _image_cost(backend_model, "black_forest_labs", pinned_id) == pytest.approx(pinned_cost)
+    assert _image_cost(backend_model, "black_forest_labs", pinned_id, images=3) == pytest.approx(3 * pinned_cost)
+
+    # A sibling deployment on the same backend keeps the built-in rate, and the
+    # shared cost-map key is never written with one deployment's pin.
+    assert _image_cost(backend_model, "black_forest_labs", unpinned_id, custom_pricing=False) == pytest.approx(
+        builtin_cost
+    )
+    assert litellm.model_cost[backend_model]["output_cost_per_image"] == builtin_cost
+
+
+@pytest.mark.usefixtures("local_model_cost_map")
+def test_output_cost_per_image_pin_beats_a_builtin_input_cost_per_image():
+    """The default image calculator only read `input_cost_per_image`.
+
+    xAI image models are priced that way in the cost map, so a deployment
+    pinning `output_cost_per_image` fell through to the built-in rate. The pin
+    has to win, and the built-in rate has to survive for everyone else.
+    """
+    backend_model = "xai/grok-imagine-image-2.0"
+    builtin_cost = litellm.model_cost[backend_model]["input_cost_per_image"]
+    pinned_cost = builtin_cost / 2
+    router = _pinned_image_deployment(backend_model, pinned_cost)
+    pinned_id = router.model_list[0]["model_info"]["id"]
+    unpinned_id = router.model_list[1]["model_info"]["id"]
+
+    assert _image_cost(backend_model, "xai", pinned_id) == pytest.approx(pinned_cost)
+    assert _image_cost(backend_model, "xai", unpinned_id, custom_pricing=False) == pytest.approx(builtin_cost)
+    assert litellm.model_cost[backend_model]["input_cost_per_image"] == builtin_cost
+    assert litellm.model_cost[backend_model].get("output_cost_per_image") is None
+
+
+@pytest.mark.usefixtures("local_model_cost_map")
+def test_input_cost_per_character_pin_bills_per_character():
+    """An `input_cost_per_character` pin on a speech deployment must bill per character.
+
+    The pin is stripped from the shared key, so the speech path used to resolve
+    the built-in rate, and a model with no built-in per-character rate raised
+    "does not have 'input_cost_per_character' or 'input_cost_per_token'" and
+    logged nothing.
+    """
+    backend_model = "elevenlabs/eleven_v3"
+    builtin_cost = litellm.model_cost[backend_model]["input_cost_per_character"]
+    pinned_cost = 5.0e-05
+    assert pinned_cost != builtin_cost, "Test requires the pin to differ from the built-in rate"
+
+    router = Router(
+        model_list=[
+            {
+                "model_name": "tts-pinned",
+                "litellm_params": {"model": backend_model, "api_key": "sk-fake"},
+                "model_info": {"mode": "audio_speech", "input_cost_per_character": pinned_cost},
+            },
+            {
+                "model_name": "tts-unpinned",
+                "litellm_params": {"model": backend_model, "api_key": "sk-fake"},
+                "model_info": {"mode": "audio_speech"},
+            },
+        ]
+    )
+    pinned_id = router.model_list[0]["model_info"]["id"]
+    unpinned_id = router.model_list[1]["model_info"]["id"]
+
+    def speech_cost(router_model_id, characters, custom_pricing=True):
+        return litellm.completion_cost(
+            completion_response=None,
+            model=backend_model,
+            prompt="a" * characters,
+            custom_llm_provider="elevenlabs",
+            call_type="aspeech",
+            custom_pricing=custom_pricing,
+            router_model_id=router_model_id,
+        )
+
+    assert speech_cost(pinned_id, 1000) == pytest.approx(1000 * pinned_cost)
+    assert speech_cost(pinned_id, 250) == pytest.approx(250 * pinned_cost)
+    assert speech_cost(unpinned_id, 1000, custom_pricing=False) == pytest.approx(1000 * builtin_cost)
+    assert litellm.model_cost[backend_model]["input_cost_per_character"] == builtin_cost
+
+
+@pytest.mark.usefixtures("local_model_cost_map")
+def test_a_deployment_with_no_pricing_still_resolves_the_shared_backend_key():
+    """Widening the pin gate must not make every deployment resolve to its own id.
+
+    A deployment with no pricing fields has nothing to bill from, so cost has to
+    keep resolving through the shared `{provider}/{model}` key.
+    """
+    from litellm.cost_calculator import _select_model_name_for_cost_calc
+
+    backend_model = "black_forest_labs/flux-2-pro"
+    router = Router(
+        model_list=[
+            {
+                "model_name": "unpinned-alias",
+                "litellm_params": {"model": backend_model, "api_key": "sk-fake"},
+                "model_info": {"mode": "image_generation"},
+            }
+        ]
+    )
+    router_model_id = router.model_list[0]["model_info"]["id"]
+    assert router_model_id in litellm.model_cost
+
+    selected = _select_model_name_for_cost_calc(
+        model=backend_model,
+        completion_response=None,
+        custom_pricing=True,
+        custom_llm_provider="black_forest_labs",
+        router_model_id=router_model_id,
+    )
+    assert selected == backend_model
+    assert router_model_id not in selected

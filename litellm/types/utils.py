@@ -3515,6 +3515,12 @@ SHARED_BACKEND_MODEL_INFO_FIELDS: Final[frozenset[str]] = (
     - DEPLOYMENT_SCOPED_PRICING_FIELDS
 )
 
+# Exactly the pricing fields ``shared_backend_model_info`` strips, so a deployment
+# carrying any of them can only be billed off its own ``model_cost`` entry.
+DEPLOYMENT_PRICING_FIELDS: Final[frozenset[str]] = (
+    frozenset(CustomPricingLiteLLMParams.model_fields) | DEPLOYMENT_SCOPED_PRICING_FIELDS
+)
+
 
 def shared_backend_model_info(model_info: dict[str, Any]) -> dict[str, Any]:
     """Return only the fields safe to register under a shared ``{provider}/{model}``
