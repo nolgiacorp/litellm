@@ -239,6 +239,7 @@ from litellm.types.router import (
 from litellm.types.services import ServiceTypes
 from litellm.types.utils import (
     AUTOROUTER_CLASSIFIER_CALL_ORIGIN,
+    DEPLOYMENT_PRICING_FIELDS,
     PROMPT_QUOTING_ROUTING_DECISION_FIELDS,
     CustomPricingLiteLLMParams,
     GenericBudgetConfigType,
@@ -8617,6 +8618,47 @@ class Router:
             model_info[field] = copy.deepcopy(backend_value)
 
     @staticmethod
+    def _inherit_builtin_flat_token_rates(
+        model_info: dict,  # mutable-ok: cost-map entry filled in place
+        backend_model: str,
+        custom_llm_provider: str | None,
+    ) -> None:
+        """Fill missing flat token rates on a deployment that prices some other
+        dimension, from the backend model's built-in cost map entry.
+
+        Cost lookup routes to a deployment's own entry as soon as that entry carries
+        any pricing field the shared backend key strips, and ``get_model_info``
+        synthesizes a zero for a flat token rate the entry does not hold. Without
+        this, a deployment pinning only an output rate, a cache rate or a per-image
+        rate would bill the undeclared token direction free instead of at the
+        published rate. Entries already carrying a rate the lookup selected on
+        before are left alone, so this only completes records that used to be billed
+        off the shared key.
+
+        The raw ``litellm.model_cost`` entry is the copy source rather than
+        ``get_model_info``'s view of it, since that view synthesizes the very zeros
+        this exists to keep out of the entry.
+        """
+        if not any(model_info.get(field) is not None for field in DEPLOYMENT_PRICING_FIELDS):
+            return
+        if any(
+            model_info.get(field) is not None
+            for field in ("input_cost_per_token", "input_cost_per_second", "tiered_pricing")
+        ):
+            return
+        try:
+            backend_info: Final = litellm.get_model_info(model=backend_model, custom_llm_provider=custom_llm_provider)
+        except Exception:  # noqa: BLE001  # get_model_info raises plain Exception for an unmapped backend model
+            return
+        backend_entry: Final = litellm.model_cost.get(backend_info.get("key") or "")
+        if not isinstance(backend_entry, dict):
+            return
+        for field in ("input_cost_per_token", "output_cost_per_token"):
+            backend_value = backend_entry.get(field)
+            if model_info.get(field) is None and backend_value is not None:
+                model_info[field] = backend_value  # rebind-ok: fills the caller's cost-map entry in place
+
+    @staticmethod
     def _inherit_builtin_tiered_output_rate(
         model_info: dict, backend_model: str, custom_llm_provider: str | None
     ) -> None:
@@ -8705,6 +8747,11 @@ class Router:
                     _model_info[field] = deployment.litellm_params[field]
 
             Router._inherit_builtin_base_rates_for_off_peak(
+                model_info=_model_info,
+                backend_model=deployment.litellm_params.model,
+                custom_llm_provider=deployment.litellm_params.custom_llm_provider,
+            )
+            Router._inherit_builtin_flat_token_rates(
                 model_info=_model_info,
                 backend_model=deployment.litellm_params.model,
                 custom_llm_provider=deployment.litellm_params.custom_llm_provider,
@@ -9763,6 +9810,11 @@ class Router:
             if field_value is not None:
                 model_info[field] = field_value
         Router._inherit_builtin_base_rates_for_off_peak(
+            model_info=model_info,
+            backend_model=deployment.litellm_params.model,
+            custom_llm_provider=deployment.litellm_params.custom_llm_provider,
+        )
+        Router._inherit_builtin_flat_token_rates(
             model_info=model_info,
             backend_model=deployment.litellm_params.model,
             custom_llm_provider=deployment.litellm_params.custom_llm_provider,

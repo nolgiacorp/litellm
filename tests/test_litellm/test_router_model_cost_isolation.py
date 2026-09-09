@@ -20,6 +20,7 @@ import litellm
 from litellm import Router
 from litellm.litellm_core_utils.ptu_pricing import ptu_config_error
 from litellm.types.router import Deployment, LiteLLM_Params, ModelInfo
+from litellm.types.utils import Choices, Message, ModelResponse, Usage
 from litellm.utils import (
     _invalidate_model_cost_lowercase_map,
     reapply_runtime_model_cost_registrations,
@@ -2523,3 +2524,47 @@ def test_a_deployment_with_no_pricing_still_resolves_the_shared_backend_key():
     )
     assert selected == backend_model
     assert router_model_id not in selected
+
+
+@pytest.mark.usefixtures("local_model_cost_map")
+def test_output_only_token_pin_keeps_the_published_input_rate():
+    """Routing a partly-priced deployment to its own entry must not zero the rest.
+
+    `get_model_info` synthesizes a zero for a flat token rate the deployment
+    entry does not hold, so a deployment pinning only `output_cost_per_token`
+    would bill every input token free once cost resolves against that entry.
+    The undeclared direction has to keep the backend's published rate.
+    """
+    backend_model = "openai/gpt-4o"
+    builtin = litellm.get_model_info(model=backend_model)
+    builtin_input_cost = builtin["input_cost_per_token"]
+    pinned_output_cost = builtin["output_cost_per_token"] / 2
+    assert builtin_input_cost > 0, "Test requires a model with non-zero built-in input pricing"
+
+    router = Router(
+        model_list=[
+            {
+                "model_name": "output-pinned",
+                "litellm_params": {"model": backend_model, "api_key": "sk-fake"},
+                "model_info": {"output_cost_per_token": pinned_output_cost},
+            }
+        ]
+    )
+    router_model_id = router.model_list[0]["model_info"]["id"]
+    assert litellm.model_cost[router_model_id]["input_cost_per_token"] == builtin_input_cost
+
+    response = ModelResponse(
+        model=backend_model,
+        choices=[Choices(index=0, message=Message(role="assistant", content="hi"))],
+        usage=Usage(prompt_tokens=1000, completion_tokens=1000, total_tokens=2000),
+    )
+    response._hidden_params = {"custom_llm_provider": "openai", "model_id": router_model_id}
+
+    cost = litellm.completion_cost(
+        completion_response=response,
+        model=backend_model,
+        custom_llm_provider="openai",
+        custom_pricing=True,
+        router_model_id=router_model_id,
+    )
+    assert cost == pytest.approx(1000 * builtin_input_cost + 1000 * pinned_output_cost)
