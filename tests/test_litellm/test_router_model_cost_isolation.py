@@ -505,13 +505,17 @@ def test_partial_pricing_does_not_overwrite_explicit_cache_fields():
     ],
 )
 def test_inherit_builtin_flat_token_rates_preserves_partial_pins(monkeypatch, pin):
-    backend = {"input_cost_per_token": 0.000002, "output_cost_per_token": 0.000008}
-    monkeypatch.setitem(litellm.model_cost, "flat-rate-test-backend", backend)
+    rates = {"input_cost_per_token": 0.000002, "output_cost_per_token": 0.000008}
+    backend = {"litellm_provider": "openai", "mode": "chat", **rates}
+    monkeypatch.setitem(litellm.model_cost, "openai/flat-rate-test-backend", backend)
+    _invalidate_model_cost_lowercase_map()
     payload = dict(pin)
-    with patch.object(litellm, "get_model_info", return_value={"key": "flat-rate-test-backend"}):
-        Router._inherit_builtin_flat_token_rates(payload, "openai/test-backend", "openai")
-    assert payload == {**backend, **pin}
-    assert backend == {"input_cost_per_token": 0.000002, "output_cost_per_token": 0.000008}
+    try:
+        Router._inherit_builtin_flat_token_rates(payload, "openai/flat-rate-test-backend", "openai")
+        assert payload == {**rates, **pin}
+        assert backend == {"litellm_provider": "openai", "mode": "chat", **rates}
+    finally:
+        _invalidate_model_cost_lowercase_map()
 
 
 @pytest.mark.parametrize(
@@ -525,22 +529,26 @@ def test_inherit_builtin_flat_token_rates_preserves_partial_pins(monkeypatch, pi
 )
 def test_inherit_builtin_flat_token_rates_leaves_existing_pricing_modes_alone(pin):
     payload = copy.deepcopy(pin)
-    with patch.object(litellm, "get_model_info") as get_model_info:
-        Router._inherit_builtin_flat_token_rates(payload, "openai/test-backend", "openai")
-    get_model_info.assert_not_called()
+    Router._inherit_builtin_flat_token_rates(payload, "openai/gpt-4o", "openai")
     assert payload == pin
 
 
 def test_inherit_builtin_flat_token_rates_does_not_store_synthesized_zeros(monkeypatch):
-    monkeypatch.setitem(litellm.model_cost, "flat-rate-test-backend", {"mode": "image_generation"})
+    monkeypatch.setitem(
+        litellm.model_cost,
+        "openai/flat-rate-test-backend",
+        {"litellm_provider": "openai", "mode": "image_generation"},
+    )
+    _invalidate_model_cost_lowercase_map()
     payload = {"output_cost_per_image": 0.04}
-    with patch.object(
-        litellm,
-        "get_model_info",
-        return_value={"key": "flat-rate-test-backend", "input_cost_per_token": 0, "output_cost_per_token": 0},
-    ):
-        Router._inherit_builtin_flat_token_rates(payload, "openai/test-backend", "openai")
-    assert payload == {"output_cost_per_image": 0.04}
+    try:
+        info = litellm.get_model_info(model="openai/flat-rate-test-backend", custom_llm_provider="openai")
+        assert info["input_cost_per_token"] == 0
+        assert info["output_cost_per_token"] == 0
+        Router._inherit_builtin_flat_token_rates(payload, "openai/flat-rate-test-backend", "openai")
+        assert payload == {"output_cost_per_image": 0.04}
+    finally:
+        _invalidate_model_cost_lowercase_map()
 
 
 def test_inherit_builtin_cache_pricing_fills_only_missing_fields():
