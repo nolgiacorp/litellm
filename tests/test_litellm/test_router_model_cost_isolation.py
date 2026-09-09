@@ -495,6 +495,54 @@ def test_partial_pricing_does_not_overwrite_explicit_cache_fields():
         _restore_model_cost_entries(model_keys)
 
 
+@pytest.mark.parametrize(
+    "pin",
+    [
+        {"output_cost_per_token": 0.00002},
+        {"output_cost_per_token": 0.0},
+        {"cache_read_input_token_cost": 0.000001},
+        {"output_cost_per_image": 0.04},
+    ],
+)
+def test_inherit_builtin_flat_token_rates_preserves_partial_pins(monkeypatch, pin):
+    backend = {"input_cost_per_token": 0.000002, "output_cost_per_token": 0.000008}
+    monkeypatch.setitem(litellm.model_cost, "flat-rate-test-backend", backend)
+    payload = dict(pin)
+    with patch.object(litellm, "get_model_info", return_value={"key": "flat-rate-test-backend"}):
+        Router._inherit_builtin_flat_token_rates(payload, "openai/test-backend", "openai")
+    assert payload == {**backend, **pin}
+    assert backend == {"input_cost_per_token": 0.000002, "output_cost_per_token": 0.000008}
+
+
+@pytest.mark.parametrize(
+    "pin",
+    [
+        {},
+        {"input_cost_per_token": 0.0},
+        {"input_cost_per_second": 0.02},
+        {"tiered_pricing": [{"input_cost_per_token": 0.00001}]},
+    ],
+)
+def test_inherit_builtin_flat_token_rates_leaves_existing_pricing_modes_alone(pin):
+    payload = copy.deepcopy(pin)
+    with patch.object(litellm, "get_model_info") as get_model_info:
+        Router._inherit_builtin_flat_token_rates(payload, "openai/test-backend", "openai")
+    get_model_info.assert_not_called()
+    assert payload == pin
+
+
+def test_inherit_builtin_flat_token_rates_does_not_store_synthesized_zeros(monkeypatch):
+    monkeypatch.setitem(litellm.model_cost, "flat-rate-test-backend", {"mode": "image_generation"})
+    payload = {"output_cost_per_image": 0.04}
+    with patch.object(
+        litellm,
+        "get_model_info",
+        return_value={"key": "flat-rate-test-backend", "input_cost_per_token": 0, "output_cost_per_token": 0},
+    ):
+        Router._inherit_builtin_flat_token_rates(payload, "openai/test-backend", "openai")
+    assert payload == {"output_cost_per_image": 0.04}
+
+
 def test_inherit_builtin_cache_pricing_fills_only_missing_fields():
     """Direct unit test of the helper: missing cache fields are filled from the
     backend model's built-in entry, while an explicitly set cache field and the
