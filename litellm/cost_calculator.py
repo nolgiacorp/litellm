@@ -103,6 +103,7 @@ from litellm.types.llms.openai import (
 )
 from litellm.types.rerank import RerankBilledUnits, RerankResponse
 from litellm.types.utils import (
+    DEPLOYMENT_PRICING_FIELDS,
     CallTypesLiteral,
     LiteLLMRealtimeStreamLoggingObject,
     LlmProviders,
@@ -799,14 +800,8 @@ def _select_model_name_for_cost_calc(
     if custom_pricing is True:
         if router_model_id is not None and router_model_id in litellm.model_cost:
             entry: Final = litellm.model_cost[router_model_id]
-            if (
-                entry.get("input_cost_per_token") is not None
-                or entry.get("input_cost_per_second") is not None
-                or entry.get("tiered_pricing") is not None
-            ):
-                return_model = router_model_id
-            else:
-                return_model = model
+            has_deployment_pricing: Final = any(entry.get(field) is not None for field in DEPLOYMENT_PRICING_FIELDS)
+            return_model = router_model_id if has_deployment_pricing else model
         else:
             return_model = model
 
@@ -2116,13 +2111,18 @@ def default_image_cost_calculator(
         raise Exception(f"Model not found in cost map. Tried checking {models_to_check}")
 
     # Priority 1: Use per-image pricing if available (for gpt-image-1 and similar models)
-    if "input_cost_per_image" in cost_info and cost_info["input_cost_per_image"] is not None:
+    if cost_info.get("input_cost_per_image") is not None:
         return cost_info["input_cost_per_image"] * n
     # Priority 2: Fall back to per-pixel pricing for backward compatibility
-    elif "input_cost_per_pixel" in cost_info and cost_info["input_cost_per_pixel"] is not None:
+    if cost_info.get("input_cost_per_pixel") is not None:
         return cost_info["input_cost_per_pixel"] * height * width * n
-    else:
-        raise Exception(f"No pricing information found for model {model}. Tried checking {models_to_check}")
+    # Priority 3: providers that key generated-image price as an output cost, and
+    # every deployment pin, which only ever lands on the deployment's own entry.
+    if cost_info.get("output_cost_per_image") is not None:
+        return cost_info["output_cost_per_image"] * n
+    if cost_info.get("output_cost_per_pixel") is not None:
+        return cost_info["output_cost_per_pixel"] * height * width * n
+    raise Exception(f"No pricing information found for model {model}. Tried checking {models_to_check}")
 
 
 def default_video_cost_calculator(

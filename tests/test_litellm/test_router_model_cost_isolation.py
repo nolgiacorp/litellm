@@ -20,6 +20,7 @@ import litellm
 from litellm import Router
 from litellm.litellm_core_utils.ptu_pricing import ptu_config_error
 from litellm.types.router import Deployment, LiteLLM_Params, ModelInfo
+from litellm.types.utils import Choices, Message, ModelResponse, Usage
 from litellm.utils import (
     _invalidate_model_cost_lowercase_map,
     reapply_runtime_model_cost_registrations,
@@ -494,6 +495,62 @@ def test_partial_pricing_does_not_overwrite_explicit_cache_fields():
         _restore_model_cost_entries(model_keys)
 
 
+@pytest.mark.parametrize(
+    "pin",
+    [
+        {"output_cost_per_token": 0.00002},
+        {"output_cost_per_token": 0.0},
+        {"cache_read_input_token_cost": 0.000001},
+        {"output_cost_per_image": 0.04},
+    ],
+)
+def test_inherit_builtin_flat_token_rates_preserves_partial_pins(monkeypatch, pin):
+    rates = {"input_cost_per_token": 0.000002, "output_cost_per_token": 0.000008}
+    backend = {"litellm_provider": "openai", "mode": "chat", **rates}
+    monkeypatch.setitem(litellm.model_cost, "openai/flat-rate-test-backend", backend)
+    _invalidate_model_cost_lowercase_map()
+    payload = dict(pin)
+    try:
+        Router._inherit_builtin_flat_token_rates(payload, "openai/flat-rate-test-backend", "openai")
+        assert payload == {**rates, **pin}
+        assert backend == {"litellm_provider": "openai", "mode": "chat", **rates}
+    finally:
+        _invalidate_model_cost_lowercase_map()
+
+
+@pytest.mark.parametrize(
+    "pin",
+    [
+        {},
+        {"input_cost_per_token": 0.0},
+        {"input_cost_per_second": 0.02},
+        {"tiered_pricing": [{"input_cost_per_token": 0.00001}]},
+    ],
+)
+def test_inherit_builtin_flat_token_rates_leaves_existing_pricing_modes_alone(pin):
+    payload = copy.deepcopy(pin)
+    Router._inherit_builtin_flat_token_rates(payload, "openai/gpt-4o", "openai")
+    assert payload == pin
+
+
+def test_inherit_builtin_flat_token_rates_does_not_store_synthesized_zeros(monkeypatch):
+    monkeypatch.setitem(
+        litellm.model_cost,
+        "openai/flat-rate-test-backend",
+        {"litellm_provider": "openai", "mode": "image_generation"},
+    )
+    _invalidate_model_cost_lowercase_map()
+    payload = {"output_cost_per_image": 0.04}
+    try:
+        info = litellm.get_model_info(model="openai/flat-rate-test-backend", custom_llm_provider="openai")
+        assert info["input_cost_per_token"] == 0
+        assert info["output_cost_per_token"] == 0
+        Router._inherit_builtin_flat_token_rates(payload, "openai/flat-rate-test-backend", "openai")
+        assert payload == {"output_cost_per_image": 0.04}
+    finally:
+        _invalidate_model_cost_lowercase_map()
+
+
 def test_inherit_builtin_cache_pricing_fills_only_missing_fields():
     """Direct unit test of the helper: missing cache fields are filled from the
     backend model's built-in entry, while an explicitly set cache field and the
@@ -586,12 +643,10 @@ def test_inherit_builtin_base_rates_for_off_peak_carries_threshold_rates():
 
     assert model_info["input_cost_per_token"] == builtin_info["input_cost_per_token"]
     assert (
-        model_info["input_cost_per_token_above_200k_tokens"]
-        == builtin_info["input_cost_per_token_above_200k_tokens"]
+        model_info["input_cost_per_token_above_200k_tokens"] == builtin_info["input_cost_per_token_above_200k_tokens"]
     )
     assert (
-        model_info["output_cost_per_token_above_200k_tokens"]
-        == builtin_info["output_cost_per_token_above_200k_tokens"]
+        model_info["output_cost_per_token_above_200k_tokens"] == builtin_info["output_cost_per_token_above_200k_tokens"]
     )
 
 
@@ -2361,3 +2416,211 @@ def test_a_config_deployment_dropped_for_a_permanent_reason_is_not_retried_on_re
 
     assert router.get_model_names() == ["control-model"]
     assert router.deployment_names == names_after_boot
+
+
+def _pinned_image_deployment(backend_model, pinned_cost):
+    return Router(
+        model_list=[
+            {
+                "model_name": "pinned-alias",
+                "litellm_params": {"model": backend_model, "api_key": "sk-fake"},
+                "model_info": {"mode": "image_generation", "output_cost_per_image": pinned_cost},
+            },
+            {
+                "model_name": "unpinned-alias",
+                "litellm_params": {"model": backend_model, "api_key": "sk-fake"},
+                "model_info": {"mode": "image_generation"},
+            },
+        ]
+    )
+
+
+def _image_cost(model, custom_llm_provider, router_model_id, images=1, custom_pricing=True):
+    from litellm.types.utils import ImageObject, ImageResponse
+
+    response = ImageResponse(
+        created=1,
+        data=[ImageObject(url=f"https://example.com/{index}.png") for index in range(images)],
+    )
+    response._hidden_params = {"custom_llm_provider": custom_llm_provider, "model_id": router_model_id}
+    return litellm.completion_cost(
+        completion_response=response,
+        model=model,
+        custom_llm_provider=custom_llm_provider,
+        call_type="image_generation",
+        custom_pricing=custom_pricing,
+        router_model_id=router_model_id,
+    )
+
+
+@pytest.mark.usefixtures("local_model_cost_map")
+def test_output_cost_per_image_pin_bills_the_pinned_rate():
+    """An `output_cost_per_image` pin on a deployment must bill that rate.
+
+    The pin is stripped from the shared `{provider}/{model}` cost-map key, so
+    before this fix `_select_model_name_for_cost_calc` handed the image
+    calculator the shared key and the deployment was billed the built-in rate
+    instead of its pin.
+    """
+    backend_model = "black_forest_labs/flux-2-pro"
+    builtin_cost = litellm.model_cost[backend_model]["output_cost_per_image"]
+    pinned_cost = builtin_cost + 0.069
+    router = _pinned_image_deployment(backend_model, pinned_cost)
+    pinned_id = router.model_list[0]["model_info"]["id"]
+    unpinned_id = router.model_list[1]["model_info"]["id"]
+
+    assert _image_cost(backend_model, "black_forest_labs", pinned_id) == pytest.approx(pinned_cost)
+    assert _image_cost(backend_model, "black_forest_labs", pinned_id, images=3) == pytest.approx(3 * pinned_cost)
+
+    # A sibling deployment on the same backend keeps the built-in rate, and the
+    # shared cost-map key is never written with one deployment's pin.
+    assert _image_cost(backend_model, "black_forest_labs", unpinned_id, custom_pricing=False) == pytest.approx(
+        builtin_cost
+    )
+    assert litellm.model_cost[backend_model]["output_cost_per_image"] == builtin_cost
+
+
+@pytest.mark.usefixtures("local_model_cost_map")
+def test_output_cost_per_image_pin_beats_a_builtin_input_cost_per_image():
+    """The default image calculator only read `input_cost_per_image`.
+
+    xAI image models are priced that way in the cost map, so a deployment
+    pinning `output_cost_per_image` fell through to the built-in rate. The pin
+    has to win, and the built-in rate has to survive for everyone else.
+    """
+    backend_model = "xai/grok-imagine-image-2.0"
+    builtin_cost = litellm.model_cost[backend_model]["input_cost_per_image"]
+    pinned_cost = builtin_cost / 2
+    router = _pinned_image_deployment(backend_model, pinned_cost)
+    pinned_id = router.model_list[0]["model_info"]["id"]
+    unpinned_id = router.model_list[1]["model_info"]["id"]
+
+    assert _image_cost(backend_model, "xai", pinned_id) == pytest.approx(pinned_cost)
+    assert _image_cost(backend_model, "xai", unpinned_id, custom_pricing=False) == pytest.approx(builtin_cost)
+    assert litellm.model_cost[backend_model]["input_cost_per_image"] == builtin_cost
+    assert litellm.model_cost[backend_model].get("output_cost_per_image") is None
+
+
+@pytest.mark.usefixtures("local_model_cost_map")
+def test_input_cost_per_character_pin_bills_per_character():
+    """An `input_cost_per_character` pin on a speech deployment must bill per character.
+
+    The pin is stripped from the shared key, so the speech path used to resolve
+    the built-in rate, and a model with no built-in per-character rate raised
+    "does not have 'input_cost_per_character' or 'input_cost_per_token'" and
+    logged nothing.
+    """
+    backend_model = "elevenlabs/eleven_v3"
+    builtin_cost = litellm.model_cost[backend_model]["input_cost_per_character"]
+    pinned_cost = 5.0e-05
+    assert pinned_cost != builtin_cost, "Test requires the pin to differ from the built-in rate"
+
+    router = Router(
+        model_list=[
+            {
+                "model_name": "tts-pinned",
+                "litellm_params": {"model": backend_model, "api_key": "sk-fake"},
+                "model_info": {"mode": "audio_speech", "input_cost_per_character": pinned_cost},
+            },
+            {
+                "model_name": "tts-unpinned",
+                "litellm_params": {"model": backend_model, "api_key": "sk-fake"},
+                "model_info": {"mode": "audio_speech"},
+            },
+        ]
+    )
+    pinned_id = router.model_list[0]["model_info"]["id"]
+    unpinned_id = router.model_list[1]["model_info"]["id"]
+
+    def speech_cost(router_model_id, characters, custom_pricing=True):
+        return litellm.completion_cost(
+            completion_response=None,
+            model=backend_model,
+            prompt="a" * characters,
+            custom_llm_provider="elevenlabs",
+            call_type="aspeech",
+            custom_pricing=custom_pricing,
+            router_model_id=router_model_id,
+        )
+
+    assert speech_cost(pinned_id, 1000) == pytest.approx(1000 * pinned_cost)
+    assert speech_cost(pinned_id, 250) == pytest.approx(250 * pinned_cost)
+    assert speech_cost(unpinned_id, 1000, custom_pricing=False) == pytest.approx(1000 * builtin_cost)
+    assert litellm.model_cost[backend_model]["input_cost_per_character"] == builtin_cost
+
+
+@pytest.mark.usefixtures("local_model_cost_map")
+def test_a_deployment_with_no_pricing_still_resolves_the_shared_backend_key():
+    """Widening the pin gate must not make every deployment resolve to its own id.
+
+    A deployment with no pricing fields has nothing to bill from, so cost has to
+    keep resolving through the shared `{provider}/{model}` key.
+    """
+    from litellm.cost_calculator import _select_model_name_for_cost_calc
+
+    backend_model = "black_forest_labs/flux-2-pro"
+    router = Router(
+        model_list=[
+            {
+                "model_name": "unpinned-alias",
+                "litellm_params": {"model": backend_model, "api_key": "sk-fake"},
+                "model_info": {"mode": "image_generation"},
+            }
+        ]
+    )
+    router_model_id = router.model_list[0]["model_info"]["id"]
+    assert router_model_id in litellm.model_cost
+
+    selected = _select_model_name_for_cost_calc(
+        model=backend_model,
+        completion_response=None,
+        custom_pricing=True,
+        custom_llm_provider="black_forest_labs",
+        router_model_id=router_model_id,
+    )
+    assert selected == backend_model
+    assert router_model_id not in selected
+
+
+@pytest.mark.usefixtures("local_model_cost_map")
+def test_output_only_token_pin_keeps_the_published_input_rate():
+    """Routing a partly-priced deployment to its own entry must not zero the rest.
+
+    `get_model_info` synthesizes a zero for a flat token rate the deployment
+    entry does not hold, so a deployment pinning only `output_cost_per_token`
+    would bill every input token free once cost resolves against that entry.
+    The undeclared direction has to keep the backend's published rate.
+    """
+    backend_model = "openai/gpt-4o"
+    builtin = litellm.get_model_info(model=backend_model)
+    builtin_input_cost = builtin["input_cost_per_token"]
+    pinned_output_cost = builtin["output_cost_per_token"] / 2
+    assert builtin_input_cost > 0, "Test requires a model with non-zero built-in input pricing"
+
+    router = Router(
+        model_list=[
+            {
+                "model_name": "output-pinned",
+                "litellm_params": {"model": backend_model, "api_key": "sk-fake"},
+                "model_info": {"output_cost_per_token": pinned_output_cost},
+            }
+        ]
+    )
+    router_model_id = router.model_list[0]["model_info"]["id"]
+    assert litellm.model_cost[router_model_id]["input_cost_per_token"] == builtin_input_cost
+
+    response = ModelResponse(
+        model=backend_model,
+        choices=[Choices(index=0, message=Message(role="assistant", content="hi"))],
+        usage=Usage(prompt_tokens=1000, completion_tokens=1000, total_tokens=2000),
+    )
+    response._hidden_params = {"custom_llm_provider": "openai", "model_id": router_model_id}
+
+    cost = litellm.completion_cost(
+        completion_response=response,
+        model=backend_model,
+        custom_llm_provider="openai",
+        custom_pricing=True,
+        router_model_id=router_model_id,
+    )
+    assert cost == pytest.approx(1000 * builtin_input_cost + 1000 * pinned_output_cost)

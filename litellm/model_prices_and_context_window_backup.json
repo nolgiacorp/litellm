@@ -19787,6 +19787,19 @@
             "/v1/audio/speech"
         ]
     },
+    "elevenlabs/eleven_v3_conversational": {
+        "input_cost_per_character": 5e-05,
+        "litellm_provider": "elevenlabs",
+        "metadata": {
+            "calculation": "$0.05/1000 characters (v3 Conversational API rate, flat across self-serve plans)",
+            "notes": "ElevenLabs Eleven v3 Conversational - low-latency conversational variant of Eleven v3, half the per-character rate of eleven_v3"
+        },
+        "mode": "audio_speech",
+        "source": "https://elevenlabs.io/pricing/api",
+        "supported_endpoints": [
+            "/v1/audio/speech"
+        ]
+    },
     "elevenlabs/eleven_turbo_v2_5": {
         "input_cost_per_character": 5e-05,
         "litellm_provider": "elevenlabs",

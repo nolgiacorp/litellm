@@ -111,7 +111,7 @@ from litellm.types.mcp import MCPPostCallResponseObject
 from litellm.types.prompts.init_prompts import PromptSpec
 from litellm.types.rerank import RerankResponse
 from litellm.types.utils import (
-    DEPLOYMENT_SCOPED_PRICING_FIELDS,
+    DEPLOYMENT_PRICING_FIELDS,
     CachingDetails,
     CallTypes,
     CostBreakdown,
@@ -256,7 +256,7 @@ _STANDARD_LOGGING_METADATA_KEYS: Final[frozenset[str]] = frozenset(StandardLoggi
 
 # Cache custom pricing keys as frozenset for O(1) lookups instead of looping through 49 keys
 _CUSTOM_PRICING_KEYS: Final[frozenset[str]] = frozenset(CustomPricingLiteLLMParams.model_fields.keys())
-_MODEL_INFO_CUSTOM_PRICING_KEYS: Final[frozenset[str]] = _CUSTOM_PRICING_KEYS | DEPLOYMENT_SCOPED_PRICING_FIELDS
+_MODEL_INFO_CUSTOM_PRICING_KEYS: Final[frozenset[str]] = DEPLOYMENT_PRICING_FIELDS
 
 sentry_sdk_instance = None
 capture_exception = None
