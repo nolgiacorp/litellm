@@ -6,6 +6,8 @@ from unittest.mock import MagicMock, patch
 import httpx
 import pytest
 
+import litellm
+
 
 from litellm.llms.openrouter.common_utils import OpenRouterException
 from litellm.llms.openrouter.image_edit.transformation import (
@@ -219,7 +221,9 @@ class TestOpenRouterImageEditTransformation:
         )
 
         assert data["model"] == self.model
-        assert data["modalities"] == ["image", "text"]
+        # Not sent unless the model is known to emit text as well: OpenRouter
+        # 404s an image-only model on ["image", "text"].
+        assert "modalities" not in data
         assert len(data["messages"]) == 1
         assert data["messages"][0]["role"] == "user"
 
@@ -556,3 +560,69 @@ class TestOpenRouterImageEditTransformation:
         """Test that unsupported image type raises ValueError."""
         with pytest.raises(ValueError, match="Unsupported image type"):
             self.config._read_image_bytes("not_an_image")  # type: ignore
+
+
+class TestOpenRouterImageEditModalities:
+    """`modalities` rides only when the model is known to emit text too.
+
+    OpenRouter matches the field against the model's advertised
+    output_modalities and 404s image-only models ("No endpoints found that
+    support the requested output modalities: image, text"); the Microsoft
+    MAI-Image family, Riverflow, Seedream and Qwen Image 3 Pro all advertise
+    ["image"] alone and render once the field is omitted.
+    """
+
+    def setup_method(self):
+        self.config = OpenRouterImageEditConfig()
+        self.image = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
+
+    def _body(self, model: str, litellm_params: GenericLiteLLMParams, optional: dict | None = None) -> dict:
+        data, _ = self.config.transform_image_edit_request(
+            model=model,
+            prompt="make it night",
+            image=self.image,
+            image_edit_optional_request_params=dict(optional or {}),
+            litellm_params=litellm_params,
+            headers={},
+        )
+        return data
+
+    def test_image_only_model_omits_modalities_by_default(self):
+        body = self._body("microsoft/mai-image-2.6", GenericLiteLLMParams())
+        assert "modalities" not in body
+
+    def test_image_only_model_info_omits_modalities(self):
+        params = GenericLiteLLMParams(model_info={"supported_output_modalities": ["image"]})
+        body = self._body("microsoft/mai-image-2.6", params)
+        assert "modalities" not in body
+
+    def test_text_capable_model_info_sends_image_and_text(self):
+        params = GenericLiteLLMParams(model_info={"supported_output_modalities": ["text", "image"]})
+        body = self._body("google/gemini-2.5-flash-image", params)
+        assert list(body["modalities"]) == ["image", "text"]
+
+    def test_price_map_declaration_is_honoured(self, monkeypatch):
+        monkeypatch.setitem(
+            litellm.model_cost,
+            "openrouter/example/text-and-image",
+            {"mode": "image_generation", "supported_output_modalities": ["image", "text"]},
+        )
+        body = self._body("example/text-and-image", GenericLiteLLMParams())
+        assert list(body["modalities"]) == ["image", "text"]
+
+    def test_model_info_wins_over_price_map(self, monkeypatch):
+        monkeypatch.setitem(
+            litellm.model_cost,
+            "openrouter/example/text-and-image",
+            {"mode": "image_generation", "supported_output_modalities": ["image", "text"]},
+        )
+        params = GenericLiteLLMParams(model_info={"supported_output_modalities": ["image"]})
+        body = self._body("example/text-and-image", params)
+        assert "modalities" not in body
+
+    def test_optional_param_modalities_never_leak_into_the_body(self):
+        """The decision belongs to the model's metadata alone: a stray
+        `modalities` in the optional params is dropped, as it always was."""
+        body = self._body("microsoft/mai-image-2.6", GenericLiteLLMParams(), optional={"modalities": ["image"]})
+        assert "modalities" not in body
+
