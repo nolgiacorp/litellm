@@ -15,8 +15,14 @@ Request format:
             {"type": "text", "text": "Edit this image by..."}
         ]
     }],
-    "modalities": ["image", "text"]
+    "modalities": ["image", "text"]   # only for models that also emit text
 }
+
+`modalities` is sent only for models declared to emit text as well
+(`model_info.supported_output_modalities` on the deployment, else the price
+map entry for `openrouter/<model>`). OpenRouter answers 404 "No endpoints
+found that support the requested output modalities: image, text" for every
+image-only model, and renders the same request with the field omitted.
 
 Response format:
 {
@@ -182,8 +188,11 @@ class OpenRouterImageEditConfig(BaseImageEditConfig):
                     "content": content_parts,
                 }
             ],
-            "modalities": ["image", "text"],
         }
+
+        modalities: Final = self._request_modalities(model=model, litellm_params=litellm_params)
+        if modalities is not None:
+            request_body["modalities"] = modalities
 
         # Add mapped optional params (image_config, n, etc.)
         for key, value in image_edit_optional_request_params.items():
@@ -192,6 +201,20 @@ class OpenRouterImageEditConfig(BaseImageEditConfig):
 
         empty_files: Final = cast(RequestFiles, [])
         return request_body, empty_files
+
+    def _request_modalities(self, model: str, litellm_params: GenericLiteLLMParams) -> tuple[str, ...] | None:
+        """OpenRouter 404s an image-only model on ["image", "text"]; send it only when text output is declared."""
+        model_info: Final = litellm_params.model_info
+        from_route: Final = model_info.get("supported_output_modalities") if model_info else None
+        price_map_entry: Final = litellm.model_cost.get(f"openrouter/{model}")
+        from_price_map: Final = (
+            price_map_entry.get("supported_output_modalities") if isinstance(price_map_entry, dict) else None
+        )
+        declared: Final = from_route if from_route is not None else from_price_map
+        if not isinstance(declared, (list, tuple, set, frozenset)):
+            return None
+        outputs: Final = frozenset(str(item).lower() for item in declared)
+        return ("image", "text") if "image" in outputs and "text" in outputs else None
 
     def transform_image_edit_response(
         self,
