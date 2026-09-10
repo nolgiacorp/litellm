@@ -59,11 +59,23 @@ SILENTLY_DROPPED_BEFORE = (
     # provider verbatim and is ignored, which is why the catalog must not promise it
     # for a kling-routed model.
     (KlingVideoConfig(), "kling/kling-v3", "end_image_url", "https://example.com/end.png"),
-    # OpenRouter's normalized schema has no reference-video or reference-audio slot,
-    # and this transformation drops unknown fields rather than forwarding them.
+    # OpenRouter's input_references[] does carry audio_url and video_url parts, but
+    # only the endpoints that publish an input for them honor those parts; Seedance
+    # via OpenRouter takes still images alone. bitrate_mode has no slot at all.
     (OpenRouterVideoConfig(), "openrouter/bytedance/seedance-2.0", "video_urls", ["https://example.com/r.mp4"]),
     (OpenRouterVideoConfig(), "openrouter/bytedance/seedance-2.0", "audio_urls", ["https://example.com/r.mp3"]),
     (OpenRouterVideoConfig(), "openrouter/bytedance/seedance-2.0", "bitrate_mode", "high"),
+    # Lip sync takes a portrait plus a voice track and no footage; the video-editing
+    # model is the mirror image. Declaring either family-wide would advertise lip
+    # sync on every Seedance render and video editing on every Runway one.
+    (OpenRouterVideoConfig(), "openrouter/heygen/avatar-iv", "video_urls", ["https://example.com/r.mp4"]),
+    (OpenRouterVideoConfig(), "openrouter/heygen/avatar-iv", "image_url", "https://example.com/s.png"),
+    (OpenRouterVideoConfig(), "openrouter/runway/aleph-2", "audio_urls", ["https://example.com/r.mp3"]),
+    (OpenRouterVideoConfig(), "openrouter/runway/aleph-2", "image_urls", ["https://example.com/a.png"]),
+    # gen-4.5 publishes supported_frame_images ["first_frame"], so the end slot is
+    # not there, and it renders silent.
+    (OpenRouterVideoConfig(), "openrouter/runway/gen-4.5", "end_image_url", "https://example.com/e.png"),
+    (OpenRouterVideoConfig(), "openrouter/runway/gen-4.5", "generate_audio", True),
     (MinimaxVideoConfig(), "MiniMax-Hailuo-2.3", "end_image_url", "https://example.com/end.png"),
     (MinimaxVideoConfig(), "MiniMax-Hailuo-2.3", "image_urls", ["https://example.com/a.png"]),
     (FalAIVideoConfig(), "fal_ai/bytedance/seedance-2.0/text-to-video", "end_image_url", "https://e.com/e.png"),
@@ -124,6 +136,13 @@ EXECUTED_CAPABILITIES = (
         "openrouter/bytedance/seedance-2.0",
         {"image_urls": ["https://example.com/a.png"], "end_image_url": "https://example.com/e.png"},
     ),
+    (
+        OpenRouterVideoConfig(),
+        "openrouter/heygen/avatar-iv",
+        {"image_urls": ["https://example.com/portrait.png"], "audio_urls": ["https://example.com/line.mp3"]},
+    ),
+    (OpenRouterVideoConfig(), "openrouter/runway/aleph-2", {"video_urls": ["https://example.com/src.mp4"]}),
+    (OpenRouterVideoConfig(), "openrouter/runway/gen-4.5", {"input_reference": "https://example.com/s.png"}),
     # H3 makes frame conditioning and reference media mutually exclusive provider-side,
     # so they are exercised as separate requests.
     (

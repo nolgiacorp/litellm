@@ -1,5 +1,5 @@
 from json import JSONDecodeError
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 
 import httpx
 from httpx._types import RequestFiles
@@ -64,6 +64,27 @@ _CAPABILITY_PARAMS = frozenset(
     )
 )
 
+# input_references[] is a typed union, so audio and video references ride the
+# same array as images, as audio_url / video_url parts.
+_MEDIA_REFERENCE_KEYS: Final[tuple[tuple[str, tuple[str, ...]], ...]] = (
+    ("image", ("input_references", "image_urls")),
+    ("audio", ("audio_urls",)),
+    ("video", ("video_urls",)),
+)
+
+# Audio and video reference parts are honored only by the endpoints that publish
+# an input for them, and silently ignored everywhere else, so the models whose
+# endpoint metadata (GET /api/v1/videos/models) was read directly declare that
+# endpoint's exact input surface here. Everything else keeps _CAPABILITY_PARAMS.
+_AUDITED_MODEL_CAPABILITY_PARAMS: Final[tuple[tuple[str, frozenset[str]], ...]] = (
+    ("heygen/avatar-iv", frozenset(("image_urls", "audio_urls"))),
+    ("runway/aleph-2", frozenset(("video_urls",))),
+    ("runway/gen-4.5", frozenset(("input_reference", "image_url"))),
+)
+
+# Lip sync renders from a portrait and a voice track, so it takes no prompt.
+_PROMPTLESS_MODEL_MARKERS: Final[tuple[str, ...]] = ("heygen/avatar-iv",)
+
 
 class OpenRouterVideoConfig(BaseVideoConfig):
     """
@@ -79,24 +100,34 @@ class OpenRouterVideoConfig(BaseVideoConfig):
     last_frame. map_openai_params accepts both the canonical OpenAI-shaped params
     and the fal-shaped names nolgia-api already sends (image_url / end_image_url /
     image_urls), so swapping Seedance from fal to OpenRouter needs no client change.
+
+    input_references[] is a typed union rather than an image-only list, so a lip
+    sync voice track and the footage a video-editing model rewrites ride that same
+    array. Only the endpoints publishing an input for them honor those parts, so
+    the capability gate declares them per model.
     """
 
     def get_capability_param_support(self, model: str) -> CapabilityParamSupport:
         """
-        OpenRouter's normalized video schema covers start/end stills (frame_images)
-        and reference-to-video character images (input_references), plus
-        generate_audio via _PASSTHROUGH_PARAMS.
+        The schema covers start/end stills (frame_images) and reference media
+        (input_references), plus generate_audio via _PASSTHROUGH_PARAMS. The audio
+        and video reference parts are declared per model rather than family-wide,
+        since only the endpoints publishing an input for them honor those parts.
 
-        Reference VIDEOS and reference AUDIO have no slot in that schema, and this
-        transformation deliberately ignores unknown top-level fields rather than
-        forwarding them (OpenRouter rejects them), so video_urls / audio_urls /
-        bitrate_mode would be discarded without a trace. They are not declared.
-
-        negative_prompt is not declared for the same reason: it is absent from
-        _PASSTHROUGH_PARAMS and from the normalized schema, so it never leaves this
-        transformation.
+        bitrate_mode has no slot in the schema at all, and negative_prompt is absent
+        from both _PASSTHROUGH_PARAMS and the schema, so neither ever leaves this
+        transformation. Neither is declared.
         """
-        return DeclaredCapabilityParams(_CAPABILITY_PARAMS)
+        normalized: Final = self._strip_openrouter_prefix(model).lower()
+        audited: Final = next(
+            (params for marker, params in _AUDITED_MODEL_CAPABILITY_PARAMS if marker in normalized),
+            None,
+        )
+        return DeclaredCapabilityParams(audited if audited is not None else _CAPABILITY_PARAMS)
+
+    def supports_promptless_video_create(self, model: str) -> bool:
+        normalized: Final = self._strip_openrouter_prefix(model).lower()
+        return any(marker in normalized for marker in _PROMPTLESS_MODEL_MARKERS)
 
     def get_supported_openai_params(self, model: str) -> list:
         return [
@@ -115,19 +146,19 @@ class OpenRouterVideoConfig(BaseVideoConfig):
         return model.removeprefix(_OPENROUTER_PREFIX)
 
     @staticmethod
-    def _image_url_object(url: str) -> dict[str, Any]:
-        return {"type": "image_url", "image_url": {"url": url}}
+    def _media_url_object(kind: str, url: str) -> dict[str, Any]:
+        return {"type": f"{kind}_url", f"{kind}_url": {"url": url}}
 
     @classmethod
-    def _normalize_reference(cls, entry: Any) -> dict[str, Any] | None:
+    def _normalize_reference(cls, entry: Any, kind: str = "image") -> dict[str, Any] | None:
         if isinstance(entry, str) and entry:
-            return cls._image_url_object(entry)
+            return cls._media_url_object(kind, entry)
         if isinstance(entry, dict):
-            if isinstance(entry.get("image_url"), dict):
+            if isinstance(entry.get(f"{kind}_url"), dict):
                 return entry
             url = entry.get("url")
             if isinstance(url, str) and url:
-                return cls._image_url_object(url)
+                return cls._media_url_object(kind, url)
         return None
 
     @classmethod
@@ -160,12 +191,14 @@ class OpenRouterVideoConfig(BaseVideoConfig):
 
     @classmethod
     def _collect_input_references(cls, params: dict[str, Any]) -> list[dict[str, Any]]:
-        # Reference-to-video character images. nolgia-api sends them as the
-        # fal-shaped image_urls; input_references is the canonical equivalent.
-        entries = cls._as_list(params.get("input_references")) + cls._as_list(params.get("image_urls"))
-        return [
-            reference for reference in (cls._normalize_reference(entry) for entry in entries) if reference is not None
-        ]
+        # Images stay first so an existing reference-to-video payload is unchanged.
+        references: Final = (
+            cls._normalize_reference(entry, kind)
+            for kind, keys in _MEDIA_REFERENCE_KEYS
+            for key in keys
+            for entry in cls._as_list(params.get(key))
+        )
+        return [reference for reference in references if reference is not None]
 
     def map_openai_params(
         self,
