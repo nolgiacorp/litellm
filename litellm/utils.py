@@ -9320,6 +9320,12 @@ class ProviderConfigManager:
             )
 
             return get_openrouter_image_edit_config(model)
+        elif LlmProviders.TOPAZ == provider:
+            from litellm.llms.topaz.image_edit.transformation import (
+                TopazImageEditConfig,
+            )
+
+            return TopazImageEditConfig()
         return None
 
     @staticmethod
