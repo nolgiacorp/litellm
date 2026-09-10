@@ -50,7 +50,7 @@ class TopazImageEditConfig(BaseImageEditConfig):
         self._reject_multiple_images(image_edit_optional_params.get("n"), model)
         size: Final = image_edit_optional_params.get("size")
         if size is None:
-            return {}  # mutable-ok: contract returns a dict
+            self._validate_output_size(None, None, model)
         width, separator, height = str(size).partition("x")
         if not separator or not width.isdigit() or not height.isdigit():
             raise litellm.BadRequestError(
@@ -61,6 +61,7 @@ class TopazImageEditConfig(BaseImageEditConfig):
                 model=model,
                 llm_provider=litellm.LlmProviders.TOPAZ.value,
             )
+        self._validate_output_size(width, height, model)
         return dict(zip(_TOPAZ_SIZE_FIELDS, (width, height)))  # mutable-ok: contract returns a dict
 
     def validate_environment(
@@ -103,7 +104,13 @@ class TopazImageEditConfig(BaseImageEditConfig):
         engine: Final = model.removeprefix(f"{litellm.LlmProviders.TOPAZ.value}/")
         self._reject_unknown_engine(engine, model)
         self._reject_prompt(prompt, model)
-        source: Final = image[0] if isinstance(image, list) else image
+        if isinstance(image, list) and len(image) > 1:
+            raise litellm.BadRequestError(
+                message=f"Topaz model '{model}' requires exactly one source image.",
+                model=model,
+                llm_provider=litellm.LlmProviders.TOPAZ.value,
+            )
+        source: Final = (image[0] if image else None) if isinstance(image, list) else image
         if source is None:
             raise litellm.BadRequestError(
                 message=(
@@ -117,6 +124,7 @@ class TopazImageEditConfig(BaseImageEditConfig):
             for key, value in image_edit_optional_request_params.items()
             if key in _TOPAZ_SIZE_FIELDS and value is not None
         }
+        self._validate_output_size(sizing.get("output_width"), sizing.get("output_height"), model)
         form_fields: Final = {  # mutable-ok: httpx sends the multipart fields as a dict
             "model": engine,
             "output_format": TOPAZ_IMAGE_OUTPUT_FORMAT,
@@ -155,6 +163,26 @@ class TopazImageEditConfig(BaseImageEditConfig):
         headers: dict | httpx.Headers,  # mutable-ok: BaseImageEditConfig signature
     ) -> BaseLLMException:
         return TopazException(status_code=status_code, message=error_message, headers=headers)
+
+    @staticmethod
+    def _validate_output_size(width: object, height: object, model: str) -> None:
+        if all(
+            isinstance(value, (str, int))
+            and str(value).isascii()
+            and str(value).isdecimal()
+            and len(str(value)) <= 4
+            and 1 <= int(value) <= 4096
+            for value in (width, height)
+        ):
+            return
+        raise litellm.BadRequestError(
+            message=(
+                f"Topaz model '{model}' requires an explicit output size with each dimension between "
+                "1 and 4096 pixels so the enhancement stays within its flat per-image price."
+            ),
+            model=model,
+            llm_provider=litellm.LlmProviders.TOPAZ.value,
+        )
 
     @staticmethod
     def _reject_unknown_engine(engine: str, model: str) -> None:

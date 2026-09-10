@@ -140,14 +140,21 @@ class TestRequestForm:
         assert data["output_format"] == TOPAZ_IMAGE_OUTPUT_FORMAT
         assert TOPAZ_IMAGE_OUTPUT_FORMAT in ("jpeg", "jpg", "png", "tiff", "tif")
 
-    def test_an_unsized_request_lets_topaz_pick_the_output(self):
-        data, _files = _transform(image_edit_optional_request_params={})
-        assert "output_width" not in data
-        assert "output_height" not in data
+    @pytest.mark.parametrize(
+        "sizing", [{}, {"output_width": "4096"}, {"output_width": "5000", "output_height": "5000"}]
+    )
+    def test_unbounded_output_geometry_is_rejected_before_sending(self, sizing):
+        with pytest.raises(litellm.BadRequestError, match="between 1 and 4096"):
+            _transform(image_edit_optional_request_params=sizing)
 
-    def test_a_missing_image_is_refused_rather_than_sent_as_a_bare_enhance(self):
+    @pytest.mark.parametrize("image", [None, []])
+    def test_a_missing_image_is_refused_rather_than_sent_as_a_bare_enhance(self, image):
         with pytest.raises(litellm.BadRequestError, match="requires one to be uploaded"):
-            _transform(image=None)
+            _transform(image=image)
+
+    def test_multiple_source_images_are_rejected_instead_of_discarded(self):
+        with pytest.raises(litellm.BadRequestError, match="exactly one source image"):
+            _transform(image=[SOURCE_PNG, SOURCE_PNG])
 
     def test_a_prompt_is_refused_instead_of_billed_and_ignored(self):
         """Topaz has no prompt slot; enhancing while dropping the instruction bills a wrong render."""
@@ -171,14 +178,21 @@ class TestOptionalParams:
         """The proxy always forwards `user`; rejecting it would 400 every catalog request."""
         assert "user" in TopazImageEditConfig().get_supported_openai_params(ENGINE)
         mapped = TopazImageEditConfig().map_openai_params(
-            image_edit_optional_params={"user": "customer-1"}, model=ENGINE, drop_params=False
+            image_edit_optional_params={"user": "customer-1", "size": "4096x4096"}, model=ENGINE, drop_params=False
         )
-        assert mapped == {}
+        assert mapped == {"output_width": "4096", "output_height": "4096"}
 
     @pytest.mark.parametrize("size", ["1024", "widthxheight", "1024x", "1024*1024", "4096 x 4096"])
     def test_an_unreadable_size_is_refused_rather_than_defaulted(self, size: str):
         """Topaz bills the OUTPUT geometry, so a silently defaulted size bills a render nobody asked for."""
         with pytest.raises(litellm.BadRequestError, match="width>x<height"):
+            TopazImageEditConfig().map_openai_params(
+                image_edit_optional_params={"size": size}, model=ENGINE, drop_params=False
+            )
+
+    @pytest.mark.parametrize("size", ["5000x5000", "4097x1024", "1024x4097", "0x1024", "1024x0"])
+    def test_output_dimensions_must_fit_the_flat_price(self, size: str):
+        with pytest.raises(litellm.BadRequestError, match="between 1 and 4096"):
             TopazImageEditConfig().map_openai_params(
                 image_edit_optional_params={"size": size}, model=ENGINE, drop_params=False
             )
@@ -247,6 +261,29 @@ class TestResponse:
 
 
 class TestHandlerRoundTrip:
+    @pytest.mark.parametrize(
+        "image, size, message",
+        [
+            (None, "4096x4096", "requires one to be uploaded"),
+            ([], "4096x4096", "requires one to be uploaded"),
+            ([SOURCE_PNG, SOURCE_PNG], "4096x4096", "exactly one source image"),
+            (SOURCE_PNG, "5000x5000", "between 1 and 4096"),
+            (SOURCE_PNG, None, "between 1 and 4096"),
+        ],
+    )
+    def test_public_entry_point_rejects_invalid_requests_without_billing(self, image, size, message):
+        caller_client = _RecordingHTTPHandler()
+        with pytest.raises(litellm.BadRequestError, match=message) as exc:
+            litellm.image_edit(
+                model=MODEL,
+                image=image,
+                size=size,
+                api_key="topaz-key",
+                client=caller_client,
+            )
+        assert exc.value.status_code == 400
+        assert caller_client.calls == []
+
     def test_the_enhancement_posts_multipart_through_the_callers_client(self):
         caller_client = _RecordingHTTPHandler()
 
