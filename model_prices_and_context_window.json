@@ -59481,5 +59481,70 @@
         "supported_endpoints": [
             "/v1/audio/transcriptions"
         ]
+    },
+    "topaz/Standard V2": {
+        "litellm_provider": "topaz",
+        "metadata": {
+            "calculation": "1 Topaz credit per 24 megapixels of output x $0.12/credit (Starter). Every routed output is at most 4096x4096 (16.8 MP), so one credit covers it.",
+            "notes": "Standard 2 - general-purpose precision upscaling for photos and graphics"
+        },
+        "mode": "image_edit",
+        "output_cost_per_image": 0.12,
+        "source": "https://www.topazlabs.com/enhance-api",
+        "supported_endpoints": [
+            "/v1/images/edits"
+        ]
+    },
+    "topaz/High Fidelity V2": {
+        "litellm_provider": "topaz",
+        "metadata": {
+            "calculation": "1 Topaz credit per 24 megapixels of output x $0.12/credit (Starter). Every routed output is at most 4096x4096 (16.8 MP), so one credit covers it.",
+            "notes": "High Fidelity 2 - maximum source preservation for already-sharp, high-resolution photos"
+        },
+        "mode": "image_edit",
+        "output_cost_per_image": 0.12,
+        "source": "https://www.topazlabs.com/enhance-api",
+        "supported_endpoints": [
+            "/v1/images/edits"
+        ]
+    },
+    "topaz/Low Resolution V2": {
+        "litellm_provider": "topaz",
+        "metadata": {
+            "calculation": "1 Topaz credit per 24 megapixels of output x $0.12/credit (Starter). Every routed output is at most 4096x4096 (16.8 MP), so one credit covers it.",
+            "notes": "Low Resolution 2 - very small sources such as thumbnails and web scrapes"
+        },
+        "mode": "image_edit",
+        "output_cost_per_image": 0.12,
+        "source": "https://www.topazlabs.com/enhance-api",
+        "supported_endpoints": [
+            "/v1/images/edits"
+        ]
+    },
+    "topaz/CGI": {
+        "litellm_provider": "topaz",
+        "metadata": {
+            "calculation": "1 Topaz credit per 24 megapixels of output x $0.12/credit (Starter). Every routed output is at most 4096x4096 (16.8 MP), so one credit covers it.",
+            "notes": "Art & CGI - illustrations, renders, game assets and other non-photographic art"
+        },
+        "mode": "image_edit",
+        "output_cost_per_image": 0.12,
+        "source": "https://www.topazlabs.com/enhance-api",
+        "supported_endpoints": [
+            "/v1/images/edits"
+        ]
+    },
+    "topaz/Text Refine": {
+        "litellm_provider": "topaz",
+        "metadata": {
+            "calculation": "1 Topaz credit per 24 megapixels of output x $0.12/credit (Starter). Every routed output is at most 4096x4096 (16.8 MP), so one credit covers it.",
+            "notes": "Text & Shapes - logos, screenshots, UI and typography-heavy images"
+        },
+        "mode": "image_edit",
+        "output_cost_per_image": 0.12,
+        "source": "https://www.topazlabs.com/enhance-api",
+        "supported_endpoints": [
+            "/v1/images/edits"
+        ]
     }
 }

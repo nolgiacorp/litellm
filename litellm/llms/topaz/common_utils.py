@@ -1,14 +1,25 @@
+from typing import Final
+
 from litellm.secret_managers.main import get_secret_str
 from litellm.types.llms.openai import AllMessageValues
 
 from ..base_llm.base_utils import BaseLLMModelInfo
 from ..base_llm.chat.transformation import BaseLLMException
 
-TOPAZ_IMAGE_VARIATION_MODELS = (
+# Topaz image engine codes accepted by POST /image/v1/enhance. Every one is a
+# Gigapixel-family (non-generative) engine, which is what makes them one price:
+# Topaz bills them at 1 credit per 24 megapixels of OUTPUT. "High Resolution V2"
+# used to sit in this tuple and is not a Topaz model at all - the API 400s it
+# with "Unknown model error"; the model it was standing in for is
+# "High Fidelity V2". The generative engines the same route accepts
+# (Wonder, Redefine, Detail, Recover 3, Standard MAX, Upscale High Fidelity V3)
+# are deliberately absent: they bill at 4 and 2 output MP per credit, so they
+# cannot share this tuple's single rate.
+TOPAZ_IMAGE_ENHANCE_MODELS: Final = (
     "Standard V2",
+    "High Fidelity V2",
     "Low Resolution V2",
     "CGI",
-    "High Resolution V2",
     "Text Refine",
 )
 
@@ -83,7 +94,7 @@ class TopazModelInfo(BaseLLMModelInfo):
 
     def get_models(self, api_key: str | None = None, api_base: str | None = None) -> list[str]:
         return [  # mutable-ok: BaseLLMModelInfo contract returns List[str]
-            f"topaz/{model}" for model in (*TOPAZ_IMAGE_VARIATION_MODELS, *sorted(TOPAZ_VIDEO_MODELS))
+            f"topaz/{model}" for model in (*TOPAZ_IMAGE_ENHANCE_MODELS, *sorted(TOPAZ_VIDEO_MODELS))
         ]
 
     @staticmethod
