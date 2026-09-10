@@ -122,6 +122,87 @@ def test_nolgia_api_r2v_shape_image_urls_become_input_references():
     ]
 
 
+def test_lip_sync_portrait_and_voice_track_share_input_references():
+    # heygen/avatar-iv publishes no frame-image slot, so the portrait rides
+    # input_references beside the voice track as a typed audio part.
+    mapped = _config().map_openai_params(
+        {
+            "image_urls": ["https://cdn/portrait.jpg"],
+            "audio_urls": ["https://cdn/line.mp3"],
+        },
+        "heygen/avatar-iv",
+        True,
+    )
+    assert mapped["input_references"] == [
+        {"type": "image_url", "image_url": {"url": "https://cdn/portrait.jpg"}},
+        {"type": "audio_url", "audio_url": {"url": "https://cdn/line.mp3"}},
+    ]
+    assert "frame_images" not in mapped
+
+
+def test_video_edit_source_footage_becomes_a_video_reference():
+    mapped = _config().map_openai_params(
+        {"video_urls": ["https://cdn/src.mp4"]},
+        "runway/aleph-2",
+        True,
+    )
+    assert mapped["input_references"] == [{"type": "video_url", "video_url": {"url": "https://cdn/src.mp4"}}]
+
+
+def test_media_references_accept_url_dicts_and_already_typed_parts():
+    typed = {"type": "video_url", "video_url": {"url": "https://cdn/typed.mp4"}}
+    mapped = _config().map_openai_params(
+        {"audio_urls": [{"url": "https://cdn/line.wav"}], "video_urls": [typed]},
+        "runway/aleph-2",
+        True,
+    )
+    assert mapped["input_references"] == [
+        {"type": "audio_url", "audio_url": {"url": "https://cdn/line.wav"}},
+        typed,
+    ]
+
+
+def test_image_references_stay_first_when_media_types_are_mixed():
+    mapped = _config().map_openai_params(
+        {
+            "image_urls": ["https://cdn/a.png"],
+            "video_urls": ["https://cdn/src.mp4"],
+            "audio_urls": ["https://cdn/line.mp3"],
+        },
+        "heygen/avatar-iv",
+        True,
+    )
+    assert [reference["type"] for reference in mapped["input_references"]] == [
+        "image_url",
+        "audio_url",
+        "video_url",
+    ]
+
+
+@pytest.mark.parametrize(
+    "model,expected",
+    [
+        ("openrouter/heygen/avatar-iv", {"image_urls", "audio_urls"}),
+        ("openrouter/runway/aleph-2", {"video_urls"}),
+        ("openrouter/runway/gen-4.5", {"input_reference", "image_url"}),
+        (
+            "openrouter/bytedance/seedance-2.0",
+            {"input_reference", "image_url", "end_image_url", "image_urls", "generate_audio"},
+        ),
+    ],
+)
+def test_capability_declaration_is_per_audited_model(model, expected):
+    assert set(_config().get_capability_param_support(model).supported) == expected
+
+
+@pytest.mark.parametrize(
+    "model,promptless",
+    [("openrouter/heygen/avatar-iv", True), ("openrouter/runway/aleph-2", False), ("bytedance/seedance-2.0", False)],
+)
+def test_only_lip_sync_renders_without_a_prompt(model, promptless):
+    assert _config().supports_promptless_video_create(model) is promptless
+
+
 def test_empty_reference_lists_are_omitted():
     mapped = _config().map_openai_params({"seconds": 5}, "bytedance/seedance-2.0", True)
     assert "frame_images" not in mapped
