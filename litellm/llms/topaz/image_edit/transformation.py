@@ -39,7 +39,7 @@ _TOPAZ_SIZE_FIELDS: Final = ("output_width", "output_height")
 
 class TopazImageEditConfig(BaseImageEditConfig):
     def get_supported_openai_params(self, model: str) -> list[str]:  # mutable-ok: BaseImageEditConfig signature
-        return ["size", "user"]  # mutable-ok: contract returns a list
+        return ["n", "size", "user"]  # mutable-ok: contract returns a list
 
     def map_openai_params(
         self,
@@ -47,6 +47,7 @@ class TopazImageEditConfig(BaseImageEditConfig):
         model: str,
         drop_params: bool,
     ) -> dict:  # mutable-ok: BaseImageEditConfig signature
+        self._reject_multiple_images(image_edit_optional_params.get("n"), model)
         size: Final = image_edit_optional_params.get("size")
         if size is None:
             return {}  # mutable-ok: contract returns a dict
@@ -164,6 +165,23 @@ class TopazImageEditConfig(BaseImageEditConfig):
                 f"Topaz model '{model}' is not a Topaz image engine. Supported engines are: "
                 f"{', '.join(TOPAZ_IMAGE_ENHANCE_MODELS)}. Topaz answers an unknown code with an opaque "
                 "'Unknown model error', so the check is done here where the accepted set can be named."
+            ),
+            model=model,
+            llm_provider=litellm.LlmProviders.TOPAZ.value,
+        )
+
+    @staticmethod
+    def _reject_multiple_images(n: object, model: str) -> None:
+        if n is None:
+            return
+        requested: Final = str(n).strip()
+        if requested in ("1", "1.0"):
+            return
+        raise litellm.BadRequestError(
+            message=(
+                f"Topaz model '{model}' enhances the uploaded image and returns exactly one result, so `n` must be "
+                f"1, got {n!r}. Returning fewer images than were asked for, and billing for them, would be worse "
+                "than refusing the request."
             ),
             model=model,
             llm_provider=litellm.LlmProviders.TOPAZ.value,

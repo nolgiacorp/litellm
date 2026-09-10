@@ -183,9 +183,29 @@ class TestOptionalParams:
                 image_edit_optional_params={"size": size}, model=ENGINE, drop_params=False
             )
 
+    @pytest.mark.parametrize("n", [1, "1"])
+    def test_one_image_per_request_is_accepted_because_every_caller_sends_it(self, n):
+        """
+        The proxy's image callers send n=1 on every request, and a multipart form delivers it as the
+        STRING "1" rather than an int, so a strict `n == 1` check 400s the entire catalog.
+        """
+        assert "n" in TopazImageEditConfig().get_supported_openai_params(ENGINE)
+        mapped = TopazImageEditConfig().map_openai_params(
+            image_edit_optional_params={"n": n, "size": "4096x4096"}, model=ENGINE, drop_params=False
+        )
+        assert mapped == {"output_width": "4096", "output_height": "4096"}
+
+    @pytest.mark.parametrize("n", [2, "2", 4, "not-a-number"])
+    def test_asking_for_several_images_is_refused_rather_than_under_delivered(self, n):
+        """Topaz returns exactly one image; silently answering with one would bill a request it did not serve."""
+        with pytest.raises(litellm.BadRequestError, match="exactly one result"):
+            TopazImageEditConfig().map_openai_params(
+                image_edit_optional_params={"n": n}, model=ENGINE, drop_params=False
+            )
+
     def test_generation_only_controls_are_not_advertised(self):
         supported = TopazImageEditConfig().get_supported_openai_params(ENGINE)
-        for generation_only in ("prompt", "n", "quality", "background", "mask", "response_format"):
+        for generation_only in ("prompt", "quality", "background", "mask", "response_format"):
             assert generation_only not in supported
 
 
